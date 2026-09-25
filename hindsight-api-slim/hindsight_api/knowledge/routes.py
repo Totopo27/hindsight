@@ -38,6 +38,9 @@ class SearchRequest(BaseModel):
     mode: Literal["hybrid", "vector", "keyword"] = "hybrid"
     tags: list[str] | None = None
     rerank: bool | None = Field(default=None, description="Override the bank's rerank setting")
+    collapse_documents: bool = Field(
+        default=False, description="Best chunk per document, so top_k means k distinct documents"
+    )
 
 
 def build_router(get_request_context: Any) -> APIRouter:
@@ -154,6 +157,7 @@ def build_router(get_request_context: Any) -> APIRouter:
                 mode=body.mode,
                 tags=body.tags,
                 rerank=body.rerank,
+                collapse_documents=body.collapse_documents,
                 request_context=ctx,
             )
         )

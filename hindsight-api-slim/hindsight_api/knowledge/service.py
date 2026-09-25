@@ -258,6 +258,7 @@ class KnowledgeService:
         mode: str = "hybrid",
         tags: list[str] | None = None,
         rerank: bool | None = None,
+        collapse_documents: bool = False,
         request_context: Any = None,
     ) -> list[SearchHit]:
         await self._require_bank(bank_id)
@@ -284,17 +285,30 @@ class KnowledgeService:
                 scores[key] = scores.get(key, 0.0) + 1.0 / (60 + hit.rank)
                 ranks.setdefault(key, {})[arm] = hit.rank
                 texts[key] = hit.text
-        fused = sorted(scores, key=lambda key: -scores[key])[: candidates if use_rerank else top_k]
+        ordered = sorted(scores, key=lambda key: -scores[key])
+        final_scores: dict[tuple[str, int], float] = {key: round(scores[key], 6) for key in ordered}
+        pool = ordered[:candidates] if use_rerank else ordered
 
-        if use_rerank and fused:
-            reranked = await self._rerank(query, fused, texts)
+        if use_rerank and pool:
+            reranked = await self._rerank(query, pool, texts)
             if reranked is not None:
-                fused = reranked[:top_k]
-                return [
-                    SearchHit(doc_id, index, texts[(doc_id, index)], score, ranks[(doc_id, index)])
-                    for (doc_id, index), score in fused
-                ]
-        return [SearchHit(key[0], key[1], texts[key], round(scores[key], 6), ranks[key]) for key in fused[:top_k]]
+                pool = [key for key, _ in reranked]
+                final_scores = dict(reranked)
+
+        if collapse_documents:
+            # One chunk per document: the caller asked for k documents, not k passages.
+            # Without this, a document with two good chunks costs a slot another document
+            # could have filled.
+            seen: set[str] = set()
+            collapsed: list[tuple[str, int]] = []
+            for key in pool:
+                if key[0] in seen:
+                    continue
+                seen.add(key[0])
+                collapsed.append(key)
+            pool = collapsed
+
+        return [SearchHit(key[0], key[1], texts[key], final_scores[key], ranks[key]) for key in pool[:top_k]]
 
     async def _rerank(
         self, query: str, keys: list[tuple[str, int]], texts: dict[tuple[str, int], str]
