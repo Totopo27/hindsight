@@ -777,6 +777,7 @@ ENV_LLM_DEBUG_DUMP_4XX = "HINDSIGHT_API_LLM_DEBUG_DUMP_4XX"
 ENV_KB_CHUNK_SIZE = "HINDSIGHT_API_KB_CHUNK_SIZE"
 ENV_KB_CHUNK_OVERLAP = "HINDSIGHT_API_KB_CHUNK_OVERLAP"
 ENV_KB_SEARCH_CANDIDATES = "HINDSIGHT_API_KB_SEARCH_CANDIDATES"
+ENV_KB_SEARCH_VECTOR_WEIGHT = "HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT"
 ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
 
 # Retain settings
@@ -1623,6 +1624,11 @@ DEFAULT_BANK_STATS_CACHE_MAX_ENTRIES = 1024  # LRU bound across (schema, bank) k
 DEFAULT_KB_CHUNK_SIZE = 512  # Tokens per chunk (the size the RAG baselines use)
 DEFAULT_KB_CHUNK_OVERLAP = 64  # Tokens repeated between neighbouring chunks
 DEFAULT_KB_SEARCH_CANDIDATES = 50  # Candidates each search arm contributes before fusion
+# Weight of the vector arm in the hybrid fusion; the keyword arm gets the rest. 0.5 is an
+# even split (plain RRF). A long query makes the keyword arm noisy — every one of its words
+# is OR-ed — so corpora with paragraph-length queries do better with more of the weight on
+# the vector arm.
+DEFAULT_KB_SEARCH_VECTOR_WEIGHT = 0.5
 DEFAULT_KB_SEARCH_RERANK = True  # Rerank the fused candidates with the configured cross-encoder
 
 # Retain settings
@@ -3328,6 +3334,7 @@ class HindsightConfig:
     kb_chunk_size: int
     kb_chunk_overlap: int
     kb_search_candidates: int
+    kb_search_vector_weight: float
     kb_search_rerank: bool
 
     # Retain settings
@@ -3726,6 +3733,7 @@ class HindsightConfig:
         "kb_chunk_size",
         "kb_chunk_overlap",
         "kb_search_candidates",
+        "kb_search_vector_weight",
         "kb_search_rerank",
         "retain_chunk_size",
         "retain_structured_chunk_size",
@@ -4877,6 +4885,7 @@ class HindsightConfig:
             kb_chunk_size=int(os.getenv(ENV_KB_CHUNK_SIZE, str(DEFAULT_KB_CHUNK_SIZE))),
             kb_chunk_overlap=int(os.getenv(ENV_KB_CHUNK_OVERLAP, str(DEFAULT_KB_CHUNK_OVERLAP))),
             kb_search_candidates=int(os.getenv(ENV_KB_SEARCH_CANDIDATES, str(DEFAULT_KB_SEARCH_CANDIDATES))),
+            kb_search_vector_weight=float(os.getenv(ENV_KB_SEARCH_VECTOR_WEIGHT, str(DEFAULT_KB_SEARCH_VECTOR_WEIGHT))),
             kb_search_rerank=os.getenv(ENV_KB_SEARCH_RERANK, str(DEFAULT_KB_SEARCH_RERANK)).lower()
             in ("true", "1", "yes"),
             retain_chunk_size=int(os.getenv(ENV_RETAIN_CHUNK_SIZE, str(DEFAULT_RETAIN_CHUNK_SIZE))),

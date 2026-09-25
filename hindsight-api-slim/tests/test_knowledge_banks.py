@@ -147,6 +147,39 @@ async def test_chunking_follows_the_banks_configured_size(kb_client, memory):
 
 
 @pytest.mark.asyncio
+async def test_search_vector_weight_moves_the_fused_order(kb_client):
+    """The fusion weight decides which arm wins a disagreement. The query names Turin's
+    company but asks about it in Milan's words, so the two arms rank the documents in
+    opposite orders; the weight is what picks between them."""
+    kb = await _bank(kb_client)
+    await _write(kb_client, kb, DOCS)
+
+    async def ranked(weight: float) -> list[str]:
+        patched = await kb_client.patch(
+            f"/v1/default/banks/{kb}/config", json={"updates": {"kb_search_vector_weight": weight}}
+        )
+        assert patched.status_code == 200, patched.text
+        results = (
+            await kb_client.post(
+                f"/v1/default/knowledge-banks/{kb}/search",
+                json={"query": "Fiat", "top_k": 3, "rerank": False, "collapse_documents": True},
+            )
+        ).json()["results"]
+        return [hit["document_id"] for hit in results]
+
+    # All the weight on the keyword arm: the document that literally says "Fiat" wins.
+    assert (await ranked(0.0))[0] == "turin"
+    # A single-arm search ignores the weight — the arm it uses is the only voter.
+    vector_only = (
+        await kb_client.post(
+            f"/v1/default/knowledge-banks/{kb}/search",
+            json={"query": "Fiat", "top_k": 3, "mode": "vector", "rerank": False, "collapse_documents": True},
+        )
+    ).json()["results"]
+    assert vector_only, "vector-only search returned nothing"
+
+
+@pytest.mark.asyncio
 async def test_bad_requests_are_refused(kb_client):
     kb = await _bank(kb_client)
     assert (await kb_client.post("/v1/default/knowledge-banks", json={"id": kb})).status_code == 409

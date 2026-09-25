@@ -27,8 +27,10 @@ from .chunking import chunk_document
 
 logger = logging.getLogger(__name__)
 
-#: How many documents of one batch are embedded at a time.
-_EMBED_BATCH_DOCUMENTS = 8
+#: How many documents of one batch are embedded at a time. Each window costs two DB
+#: round trips plus one embed call, so a small window spends most of the write in
+#: overhead: at 8 the pipeline ran at a third of the embedding model's own throughput.
+_EMBED_BATCH_DOCUMENTS = 64
 MAX_BATCH_DOCUMENTS = 500
 
 
@@ -282,14 +284,20 @@ class KnowledgeService:
             if mode in ("hybrid", "keyword"):
                 arms["keyword"] = await store.search_keyword(conn, bank_id, query_terms(query), candidates, tags)
 
-        # Reciprocal rank fusion, k=60 — the same constant recall uses.
+        # Weighted reciprocal rank fusion, k=60 — the same constant recall uses. The weight
+        # is what stops a long query's keyword arm from out-voting the vector arm: every
+        # word of the query is OR-ed, so a paragraph-length query matches on topic alone.
+        vector_weight = min(max(float(config.kb_search_vector_weight), 0.0), 1.0)
+        weights = {"vector": vector_weight, "keyword": 1.0 - vector_weight}
         scores: dict[tuple[str, int], float] = {}
         ranks: dict[tuple[str, int], dict[str, int]] = {}
         texts: dict[tuple[str, int], str] = {}
         for arm, hits in arms.items():
+            # A single-arm search must not be scaled down by a weight meant for the mix.
+            weight = weights[arm] if len(arms) > 1 else 1.0
             for hit in hits:
                 key = (hit.doc_id, hit.chunk_index)
-                scores[key] = scores.get(key, 0.0) + 1.0 / (60 + hit.rank)
+                scores[key] = scores.get(key, 0.0) + weight / (60 + hit.rank)
                 ranks.setdefault(key, {})[arm] = hit.rank
                 texts[key] = hit.text
         ordered = sorted(scores, key=lambda key: -scores[key])

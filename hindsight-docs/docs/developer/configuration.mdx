@@ -1682,6 +1682,21 @@ graph or temporal structure to retrieve, and no mental models to reflect over. U
 banks that are genuinely plain retrieval — or to benchmark Hindsight against a baseline
 vector store on equal terms — not as a general latency fix.
 
+### Knowledge Banks
+
+A knowledge bank (`kind: knowledge`) chunks and embeds documents and answers hybrid
+searches over the chunks — no facts, no LLM on either path. These settings control it. All
+are hierarchical — overridable per bank via the [config API](#hierarchical-configuration),
+so two banks on one server can chunk differently.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `HINDSIGHT_API_KB_CHUNK_SIZE` | Chunk size in tokens. Chunks are cut on paragraph, then sentence, then word boundaries, so a chunk is at most this many tokens and usually close to it. | `512` |
+| `HINDSIGHT_API_KB_CHUNK_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
+| `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
+| `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
+| `HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT` | Weight of the vector arm in the fusion; the keyword arm gets the rest (`1 - weight`). `0.5` is an even split. The keyword arm ORs every word of the query, so paragraph-length queries do better with more weight on the vector arm. Ignored for single-arm searches (`mode: vector` / `keyword`). | `0.5` |
+
 ### Retain
 
 Controls the retain (memory ingestion) pipeline.
