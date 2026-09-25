@@ -219,6 +219,16 @@ def test_chunk_overlap_repeats_the_tail_of_the_previous_chunk():
     assert " ".join(tail) in chunks[1].text
 
 
+def test_embedding_text_does_not_repeat_a_title_the_chunk_already_opens_with():
+    from hindsight_api.knowledge.service import embedding_text
+
+    assert embedding_text("Milan", "Milan is in Lombardy.") == "Milan is in Lombardy."
+    assert embedding_text("Milan", "It is in Lombardy.") == "Milan\n\nIt is in Lombardy."
+    assert embedding_text(None, "It is in Lombardy.") == "It is in Lombardy."
+    # Case and leading whitespace are not a reason to repeat it.
+    assert embedding_text("MILAN", "  Milan is in Lombardy.") == "  Milan is in Lombardy."
+
+
 @pytest.mark.asyncio
 async def test_a_documents_title_is_searchable_from_every_chunk(kb_client):
     kb = await _bank(kb_client)
