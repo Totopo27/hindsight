@@ -22,7 +22,9 @@ class CreateKnowledgeBank(BaseModel):
 
 class WriteDocument(BaseModel):
     id: str = Field(min_length=1, max_length=512, description="Caller's document id; writing it again replaces it")
-    text: str = Field(min_length=1)
+    # Empty text is accepted and stored with zero chunks: real corpora carry records
+    # whose body extracted to nothing, and one of them must not fail the whole batch.
+    text: str
     title: str | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -77,3 +77,45 @@ reranking, and jev is what turns a narrow win into a wide one. The deeper pool m
 the same reason: jev ranks 200 candidates listwise in one call, so widening the pool feeds
 it more to sort instead of just costing time.
 
+## BEIR (official nDCG@10)
+
+`multihop` above is a recall metric on a corpus we assembled; BEIR is the benchmark
+every vendor publishes, so it is the one that can be compared to *their* numbers. Added
+to AMB as the `beir` dataset (branch `feat/beir`): one split per BEIR task, queries and
+graded qrels from the official HuggingFace mirrors, scored by **pytrec_eval** — the
+Python binding to NIST `trec_eval`, which is what BEIR itself runs. No LLM anywhere.
+
+```bash
+HINDSIGHT_HTTP_URL=http://localhost:8901 HINDSIGHT_KB_BANK=beir-scifact \
+  uv run amb run --dataset beir --split scifact --mode retrieval --memory hindsight-kb
+uv run amb run --dataset beir --split scifact --mode retrieval --memory qdrant
+```
+
+Primary metric is nDCG@10; the run also reports Recall@100, nDCG@100, MAP@100 and MRR.
+Retrieval depth is 100 documents (`collapse_documents`), so Recall@100 is honest.
+
+### The published bars
+
+Official vendor numbers, nDCG@10, taken from their own posts (no third-party tables, no
+judge). Blanks mean that vendor does not publish that task.
+
+| Task | Vespa BM25 | Vespa hybrid | Elastic BM25 | Elastic + Elastic Rerank | Weaviate hybrid | Weaviate Search Mode |
+|---|---|---|---|---|---|---|
+| nfcorpus | 0.313 | 0.350 | 0.33 | 0.37 | | |
+| scifact | 0.673 | 0.679 | 0.69 | 0.77 | 0.71 | 0.78 |
+| fiqa | 0.244 | 0.292 | 0.25 | 0.45 | 0.45 | 0.54 |
+| arguana | 0.393 | 0.404 | 0.47 | 0.68 | | |
+| scidocs | 0.160 | 0.161 | 0.16 | 0.20 | | |
+| trec-covid | 0.690 | 0.750 | 0.69 | 0.86 | | |
+| **nq** | 0.327 | 0.404 | 0.33 | 0.62 | 0.61 | 0.70 |
+| hotpotqa | 0.623 | 0.632 | 0.60 | 0.77 | | |
+| fever | 0.751 | 0.779 | 0.69 | 0.89 | | |
+| dbpedia-entity | 0.327 | 0.365 | 0.32 | 0.45 | | |
+| climate-fever | 0.207 | 0.191 | 0.19 | 0.33 | | |
+| quora | 0.761 | 0.826 | 0.81 | 0.88 | | |
+| webis-touche2020 | 0.413 | 0.415 | 0.35 | 0.36 | | |
+
+Sources: [Vespa hybrid part two](https://blog.vespa.ai/improving-zero-shot-ranking-with-vespa-part-two/),
+[Elastic Rerank](https://www.elastic.co/search-labs/blog/elastic-semantic-reranker-part-2),
+[Weaviate Search Mode benchmarking](https://weaviate.io/blog/search-mode-benchmarking).
+Elastic's and Weaviate's are rounded to two decimals in the source.

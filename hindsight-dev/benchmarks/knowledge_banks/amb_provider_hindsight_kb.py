@@ -10,6 +10,8 @@ with the bank's hybrid search — the like-for-like comparison against `qdrant`
     HINDSIGHT_KB_BANK    bank id to use (default amb-kb)
     HINDSIGHT_KB_MODE    hybrid | vector | keyword (default hybrid)
     HINDSIGHT_KB_RERANK  true | false (default: the bank's setting)
+    HINDSIGHT_KB_WRITE_BATCH      documents per write operation (default 100, max 500)
+    HINDSIGHT_KB_INGEST_TIMEOUT_S how long the whole ingest may take (default 1800)
 """
 
 import os
@@ -21,8 +23,11 @@ import httpx
 from ..models import Document
 from .base import MemoryProvider
 
-_WRITE_BATCH = 100
-_OPERATION_TIMEOUT_S = 1800
+# Documents per write operation, and how long the whole corpus may take to land.
+# A million-passage corpus (BEIR nq) needs both raised: 500 is the API's per-batch
+# ceiling, and its ingest runs for hours, not minutes.
+_WRITE_BATCH = int(os.environ.get("HINDSIGHT_KB_WRITE_BATCH", "100"))
+_OPERATION_TIMEOUT_S = int(os.environ.get("HINDSIGHT_KB_INGEST_TIMEOUT_S", "1800"))
 
 
 class HindsightKnowledgeBankProvider(MemoryProvider):
@@ -72,6 +77,9 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
                 {
                     "id": doc.id,
                     "text": doc.content,
+                    # Indexed with every chunk. Datasets that carry a real title put
+                    # it in `context` (BEIR); 2Wiki's document id IS the page title.
+                    "title": doc.context or doc.id,
                     "tags": [f"user:{doc.user_id}"] if doc.user_id else [],
                     "metadata": {"user_id": doc.user_id} if doc.user_id else {},
                 }

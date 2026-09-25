@@ -715,6 +715,18 @@ def _migrate_table_embedding_dimension(
     logger.info(f"Successfully changed {table_name}.embedding dimension to {required_dimension}")
 
 
+def _table_has_embedding_column(conn: Connection, schema_name: str, table_name: str) -> bool:
+    return bool(
+        conn.execute(
+            text("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = :schema AND table_name = :table AND column_name = 'embedding'
+            """),
+            {"schema": schema_name, "table": table_name},
+        ).scalar()
+    )
+
+
 def _has_embedding_vector_index(conn: Connection, schema_name: str, table_name: str) -> bool:
     return bool(_vector_index_names(conn, schema_name, table_name))
 
@@ -815,6 +827,20 @@ def ensure_embedding_dimension(
         _migrate_table_embedding_dimension(
             conn, schema_name, "mental_models", required_dimension, vector_ext, indexed=not store_owned_memories
         )
+        # Knowledge banks' chunks. The table is created with an untyped `vector` column
+        # (the dimension is a property of the model, not of the schema), so this is what
+        # pins it and builds the vector index — without one, every knowledge search
+        # seq-scans the whole bank, which only shows up at corpus scale.
+        _migrate_table_embedding_dimension(conn, schema_name, "kb_chunks", required_dimension, vector_ext)
+        if _table_has_embedding_column(conn, schema_name, "kb_chunks") and not _has_embedding_vector_index(
+            conn, schema_name, "kb_chunks"
+        ):
+            # Column already at the model's dimension (so the resize path above did
+            # nothing) but never indexed — a bank written before this ran.
+            row_count = conn.execute(
+                text(f"SELECT COUNT(*) FROM {schema_name}.kb_chunks WHERE embedding IS NOT NULL")
+            ).scalar()
+            _create_embedding_vector_index(conn, schema_name, "kb_chunks", required_dimension, vector_ext, row_count)
         if not store_owned_memories and not _has_embedding_vector_index(conn, schema_name, "mental_models"):
             # A deployment that ran with a custom store and moved back to Postgres has the column at
             # the right dimension but no index (the store-owned branch above dropped it). Without

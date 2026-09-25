@@ -431,6 +431,29 @@ class TestEmbeddingDimension:
         assert get_column_dimension(db_url, schema, table="mental_models") == 384
         assert get_vector_index_names(db_url, schema, "mental_models")
 
+    def test_kb_chunks_gets_typed_column_and_index(self, dimension_test_schema):
+        """Knowledge-bank chunks are created with an untyped `vector` column, so this is what
+        pins the dimension and builds the vector index. Without the index every knowledge
+        search seq-scans the bank."""
+        db_url, schema = dimension_test_schema
+
+        _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
+        assert get_column_dimension(db_url, schema, table="kb_chunks") == 384
+        indexes = get_vector_index_names(db_url, schema, "kb_chunks")
+        assert indexes, "kb_chunks.embedding has no vector index"
+
+        # A bank written before this ran: column already at the model's dimension, so the
+        # resize path does nothing — the missing index is still rebuilt.
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            for name in indexes:
+                conn.execute(text(f"DROP INDEX {schema}.{name}"))
+            conn.commit()
+        assert get_vector_index_names(db_url, schema, "kb_chunks") == []
+
+        _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
+        assert get_vector_index_names(db_url, schema, "kb_chunks")
+
     async def test_local_embeddings_dimension_detection(self, embeddings):
         """Test that LocalSTEmbeddings correctly detects dimension."""
         # Initialize embeddings if not already done

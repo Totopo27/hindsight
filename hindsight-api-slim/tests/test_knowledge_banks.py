@@ -162,6 +162,21 @@ async def test_bad_requests_are_refused(kb_client):
     ).status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_a_document_with_no_text_is_stored_with_no_chunks(kb_client):
+    """Corpora carry records whose body extracted to nothing. Writing one must not fail the
+    batch around it: the document is stored, contributes no chunks, and is never a hit."""
+    kb = await _bank(kb_client)
+    await _write(kb_client, kb, [{"id": "empty", "text": ""}, {"id": "real", "text": "Turin has Fiat."}])
+
+    listed = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents")).json()["items"]
+    assert {d["doc_id"]: d["chunk_count"] for d in listed} == {"empty": 0, "real": 1}
+    hits = (
+        await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Fiat", "top_k": 5})
+    ).json()["results"]
+    assert [hit["document_id"] for hit in hits] == ["real"]
+
+
 def test_chunk_overlap_repeats_the_tail_of_the_previous_chunk():
     text = " ".join(f"word{i}" for i in range(2000))
     chunks = chunk_document(text, chunk_size=64, chunk_overlap=16)
