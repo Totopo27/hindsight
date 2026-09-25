@@ -169,3 +169,41 @@ def test_chunk_overlap_repeats_the_tail_of_the_previous_chunk():
     assert all(c.token_count <= 64 for c in chunks)
     tail = chunks[0].text.split()[-3:]
     assert " ".join(tail) in chunks[1].text
+
+
+@pytest.mark.asyncio
+async def test_a_documents_title_is_searchable_from_every_chunk(kb_client):
+    kb = await _bank(kb_client)
+    # The body never names its subject — only the title does, as in encyclopedia text.
+    await _write(
+        kb_client,
+        kb,
+        [{"id": "p1", "title": "Barack Obama", "text": "He served as the 44th president of the United States."}],
+    )
+    keyword = (
+        await kb_client.post(
+            f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Obama", "mode": "keyword", "top_k": 3}
+        )
+    ).json()["results"]
+    assert [hit["document_id"] for hit in keyword] == ["p1"]
+    assert "Obama" not in keyword[0]["text"]  # the text is returned as written
+
+
+@pytest.mark.asyncio
+async def test_collapse_documents_returns_one_chunk_per_document(kb_client):
+    kb = await _bank(kb_client)
+    long_text = " ".join(f"Milan hosts fair number {i} for design and fashion." for i in range(300))
+    await _write(kb_client, kb, [{"id": "milan", "text": long_text}, {"id": "turin", "text": "Turin has Fiat."}])
+    plain = (
+        await kb_client.post(
+            f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Milan design fair", "top_k": 3}
+        )
+    ).json()["results"]
+    assert len({hit["document_id"] for hit in plain}) < len(plain)  # several chunks of one document
+    collapsed = (
+        await kb_client.post(
+            f"/v1/default/knowledge-banks/{kb}/search",
+            json={"query": "Milan design fair", "top_k": 3, "collapse_documents": True},
+        )
+    ).json()["results"]
+    assert len({hit["document_id"] for hit in collapsed}) == len(collapsed)

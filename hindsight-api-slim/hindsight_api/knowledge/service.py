@@ -177,7 +177,13 @@ class KnowledgeService:
                 )
             if not pending:
                 continue
-            texts = [chunk.text for _, _, chunks in pending for chunk in chunks]
+            # Embed the title with the chunk. A paragraph usually names its subject once,
+            # in the title, and a chunk without it is unfindable by that name.
+            texts = [
+                f"{document.title}\n\n{chunk.text}" if document.title else chunk.text
+                for document, _, chunks in pending
+                for chunk in chunks
+            ]
             vectors = await self.memory.embeddings.encode_documents(texts) if texts else []
             offset = 0
             async with acquire_with_retry(pool) as conn:
@@ -189,6 +195,7 @@ class KnowledgeService:
                                 document.doc_id,
                                 chunk.index,
                                 chunk.text,
+                                document.title,
                                 chunk.token_count,
                                 store.vector_literal(vectors[offset + i]),
                             )

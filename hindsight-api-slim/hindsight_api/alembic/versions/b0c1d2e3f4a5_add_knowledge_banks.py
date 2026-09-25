@@ -66,9 +66,14 @@ def _pg_upgrade() -> None:
             doc_id TEXT NOT NULL,
             chunk_index INT NOT NULL,
             text TEXT NOT NULL,
+            heading TEXT,
             token_count INT NOT NULL DEFAULT 0,
             embedding vector NOT NULL,
-            search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+            -- The document's title is indexed with every chunk of it: a paragraph often
+            -- never repeats the subject it is about, and both arms need it to match.
+            search_vector tsvector GENERATED ALWAYS AS (
+                to_tsvector('english', coalesce(heading, '') || ' ' || text)
+            ) STORED,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (bank_id, doc_id, chunk_index),
             FOREIGN KEY (bank_id, doc_id) REFERENCES {s}kb_documents(bank_id, doc_id) ON DELETE CASCADE

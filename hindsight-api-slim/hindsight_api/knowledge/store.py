@@ -150,8 +150,9 @@ async def replace_chunks(conn: Any, bank_id: str, doc_id: str, rows: list[tuple[
     await conn.execute(f"DELETE FROM {fq_table('kb_chunks')} WHERE bank_id = $1 AND doc_id = $2", bank_id, doc_id)
     if rows:
         await conn.executemany(
-            f"INSERT INTO {fq_table('kb_chunks')} (bank_id, doc_id, chunk_index, text, token_count, embedding) "
-            "VALUES ($1, $2, $3, $4, $5, $6::vector)",
+            f"INSERT INTO {fq_table('kb_chunks')} "
+            "(bank_id, doc_id, chunk_index, text, heading, token_count, embedding) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7::vector)",
             rows,
         )
 

@@ -84,6 +84,9 @@ BACKUP_TABLES = [
     "llm_requests",
     "graph_maintenance_queue",
     "entity_maintenance_queue",
+    # Knowledge banks: the document owns its chunks by FK, so documents first.
+    "kb_documents",
+    "kb_chunks",
 ]
 
 MANIFEST_VERSION = "2"
