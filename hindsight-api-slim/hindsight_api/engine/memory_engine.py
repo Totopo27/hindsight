@@ -4258,6 +4258,10 @@ class MemoryEngine(MemoryEngineInterface):
                     await self._handle_vector_index_maintenance(task_dict)
                 elif task_type == "refresh_mental_model":
                     await self._handle_refresh_mental_model(task_dict)
+                elif task_type == "knowledge_write_batch":
+                    from ..knowledge.service import run_write_batch_task
+
+                    await run_write_batch_task(self, task_dict)
                 elif task_type == "webhook_delivery":
                     await self._handle_webhook_delivery(task_dict)
                 else:

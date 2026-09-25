@@ -773,6 +773,12 @@ ENV_LLM_PROMPT_CACHE_ENABLED = "HINDSIGHT_API_LLM_PROMPT_CACHE_ENABLED"
 # previews). Off by default; server-level only. See engine/providers/llm_debug.py.
 ENV_LLM_DEBUG_DUMP_4XX = "HINDSIGHT_API_LLM_DEBUG_DUMP_4XX"
 
+# Knowledge bank settings (document retrieval; see hindsight_api/knowledge/)
+ENV_KB_CHUNK_SIZE = "HINDSIGHT_API_KB_CHUNK_SIZE"
+ENV_KB_CHUNK_OVERLAP = "HINDSIGHT_API_KB_CHUNK_OVERLAP"
+ENV_KB_SEARCH_CANDIDATES = "HINDSIGHT_API_KB_SEARCH_CANDIDATES"
+ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
+
 # Retain settings
 ENV_RETAIN_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"
 ENV_RETAIN_CHUNK_SIZE = "HINDSIGHT_API_RETAIN_CHUNK_SIZE"
@@ -1612,6 +1618,12 @@ DEFAULT_BANK_ALIAS_CACHE_TTL_SECONDS = 10.0
 DEFAULT_BANK_ALIAS_CACHE_MAX_ENTRIES = 2048  # LRU bound across (schema, alias) keys
 DEFAULT_BANK_STATS_CACHE_TTL_SECONDS = 60.0  # TTL for get_bank_stats result cache; 0 disables
 DEFAULT_BANK_STATS_CACHE_MAX_ENTRIES = 1024  # LRU bound across (schema, bank) keys
+
+# Knowledge bank settings
+DEFAULT_KB_CHUNK_SIZE = 512  # Tokens per chunk (the size the RAG baselines use)
+DEFAULT_KB_CHUNK_OVERLAP = 64  # Tokens repeated between neighbouring chunks
+DEFAULT_KB_SEARCH_CANDIDATES = 50  # Candidates each search arm contributes before fusion
+DEFAULT_KB_SEARCH_RERANK = True  # Rerank the fused candidates with the configured cross-encoder
 
 # Retain settings
 DEFAULT_RETAIN_MAX_COMPLETION_TOKENS = 64000  # Max tokens for fact extraction LLM call
@@ -3312,6 +3324,12 @@ class HindsightConfig:
     bank_stats_cache_ttl_seconds: float
     bank_stats_cache_max_entries: int
 
+    # Knowledge bank settings
+    kb_chunk_size: int
+    kb_chunk_overlap: int
+    kb_search_candidates: int
+    kb_search_rerank: bool
+
     # Retain settings
     retain_max_completion_tokens: int
     retain_chunk_size: int
@@ -3704,6 +3722,11 @@ class HindsightConfig:
         # others retain the raw source for expansion/re-extraction.
         "store_document_text",
         # Retention settings (behavioral)
+        # Knowledge banks: how documents are chunked and how search is run, per bank.
+        "kb_chunk_size",
+        "kb_chunk_overlap",
+        "kb_search_candidates",
+        "kb_search_rerank",
         "retain_chunk_size",
         "retain_structured_chunk_size",
         "retain_extraction_mode",
@@ -4851,6 +4874,11 @@ class HindsightConfig:
             retain_max_completion_tokens=int(
                 os.getenv(ENV_RETAIN_MAX_COMPLETION_TOKENS, str(DEFAULT_RETAIN_MAX_COMPLETION_TOKENS))
             ),
+            kb_chunk_size=int(os.getenv(ENV_KB_CHUNK_SIZE, str(DEFAULT_KB_CHUNK_SIZE))),
+            kb_chunk_overlap=int(os.getenv(ENV_KB_CHUNK_OVERLAP, str(DEFAULT_KB_CHUNK_OVERLAP))),
+            kb_search_candidates=int(os.getenv(ENV_KB_SEARCH_CANDIDATES, str(DEFAULT_KB_SEARCH_CANDIDATES))),
+            kb_search_rerank=os.getenv(ENV_KB_SEARCH_RERANK, str(DEFAULT_KB_SEARCH_RERANK)).lower()
+            in ("true", "1", "yes"),
             retain_chunk_size=int(os.getenv(ENV_RETAIN_CHUNK_SIZE, str(DEFAULT_RETAIN_CHUNK_SIZE))),
             retain_structured_chunk_size=_parse_optional_positive_int(
                 ENV_RETAIN_STRUCTURED_CHUNK_SIZE,

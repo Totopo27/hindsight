@@ -5266,6 +5266,10 @@ def _register_routes(app: FastAPI):
         request.state.hs_request_context = context
         return context
 
+    from hindsight_api.knowledge.routes import build_router as _build_knowledge_router
+
+    app.include_router(_build_knowledge_router(get_request_context))
+
     async def _resolve_bank_alias(request: Request, bank_id: str) -> str:
         """Turn an aliased bank id from the path into the bank's canonical id.
 
