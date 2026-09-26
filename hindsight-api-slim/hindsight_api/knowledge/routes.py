@@ -27,7 +27,17 @@ class WriteDocument(BaseModel):
     text: str
     title: str | None = None
     tags: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Free-form metadata, stored as given")
+    properties: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Values for the bank's metadata-schema properties, supplied instead of extracted. They land in the "
+            "same object extraction fills, and a property supplied here is not sent to the LLM for this document."
+        ),
+    )
+    chunk_properties: dict[int, dict[str, Any]] = Field(
+        default_factory=dict, description="The same, per chunk index, for the schema's chunk properties"
+    )
 
 
 class WriteRequest(BaseModel):
@@ -44,6 +54,21 @@ class MetadataSchemaRequest(BaseModel):
 class ExtractRequest(BaseModel):
     doc_ids: list[str] = Field(default_factory=list, description="Only these documents; empty means all")
     only_missing: bool = Field(default=True, description="Skip documents that already have extracted values")
+
+
+class QueryRequest(BaseModel):
+    """A query in the knowledge-bank DSL. See hindsight_api/knowledge/query.py."""
+
+    from_: Literal["documents", "chunks"] = Field(default="chunks", alias="from")
+    select: list[Any] = Field(min_length=1, description="Fields, aggregates and expressions over them")
+    where: dict[str, Any] | None = Field(default=None, description="The same metadata filter search takes")
+    group_by: list[Any] | None = None
+    having: dict[str, Any] | None = Field(default=None, description="Conditions on select's aggregate columns")
+    order_by: list[Any] | None = None
+    limit: int = Field(default=100, ge=0, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+    model_config = {"populate_by_name": True}
 
 
 class SearchRequest(BaseModel):
@@ -113,7 +138,15 @@ def build_router(get_request_context: Any) -> APIRouter:
     )
     async def write_documents(kb: str, body: WriteRequest, svc: KnowledgeService = Depends(service)):
         documents = [
-            DocumentInput(doc_id=d.id, text=d.text, title=d.title, tags=d.tags, metadata=d.metadata)
+            DocumentInput(
+                doc_id=d.id,
+                text=d.text,
+                title=d.title,
+                tags=d.tags,
+                metadata=d.metadata,
+                properties=d.properties,
+                chunk_properties=d.chunk_properties,
+            )
             for d in body.documents
         ]
         return await run(svc.submit_write(kb, documents))
@@ -200,6 +233,18 @@ def build_router(get_request_context: Any) -> APIRouter:
         svc: KnowledgeService = Depends(service),
     ):
         return await run(svc.submit_extract(kb, body.doc_ids, body.only_missing))
+
+    @router.post("/{kb}/query", summary="Aggregate and filter over documents and chunks")
+    async def query(
+        kb: str,
+        body: QueryRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        # The DSL is compiled to one parameterised statement; nothing the caller sends
+        # reaches it as text. See knowledge/query.py for the language and its limits.
+        payload = body.model_dump(by_alias=True, exclude_none=True)
+        return await run(svc.query(kb, payload, request_context=ctx))
 
     @router.post("/{kb}/search", summary="Hybrid search over the documents")
     async def search(

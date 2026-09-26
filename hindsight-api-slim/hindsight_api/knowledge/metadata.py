@@ -13,6 +13,12 @@ A schema is a flat map of property name -> spec, one for documents and one for c
 ``values`` is how classification is expressed: the LLM picks one of the listed values or
 leaves the property out. Every property is optional in the extraction model — "not in this
 document" has to be expressible, or the model invents values to fill the shape.
+
+A property's ``source`` says who fills it: ``extract`` (the LLM reads the document, the
+default) or ``request`` (the caller supplies it on write, and the LLM never sees it). Either
+way the value lands in the same object, so a query and a filter cannot tell them apart —
+and a write may also supply a value for an ``extract`` property, which skips the call for
+that document. A write whose properties cover the whole schema costs no LLM call at all.
 """
 
 from __future__ import annotations
@@ -31,6 +37,9 @@ PROPERTY_TYPES: tuple[str, ...] = get_args(PropertyType)
 #: Element types an ``array`` property may hold. Arrays of objects are not a v1 shape:
 #: that is a structured record, which is what v3 is for.
 ITEM_TYPES: tuple[str, ...] = ("string", "integer", "number", "boolean", "date", "datetime")
+
+#: Who fills a property in.
+SOURCES: tuple[str, ...] = ("extract", "request")
 
 MAX_PROPERTIES = 50
 MAX_VALUES = 200
@@ -72,7 +81,10 @@ def validate_schema(raw: Any, *, level: str) -> dict[str, dict[str, Any]]:
         if property_type not in PROPERTY_TYPES:
             raise MetadataSchemaError(f"property {name!r} has unknown type {property_type!r}; one of {PROPERTY_TYPES}")
 
-        normalised: dict[str, Any] = {"type": property_type}
+        source = spec.get("source", "extract")
+        if source not in SOURCES:
+            raise MetadataSchemaError(f"property {name!r}: source must be one of {SOURCES}")
+        normalised: dict[str, Any] = {"type": property_type, "source": source}
         description = spec.get("description")
         if description is not None:
             if not isinstance(description, str):
@@ -148,3 +160,39 @@ def jsonable(values: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+def extract_only(schema: dict[str, dict[str, Any]], supplied: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The properties the LLM still has to read, given what the write already supplied.
+
+    A ``request`` property is never extracted, and a value supplied for an ``extract``
+    property overrides it for that document — so a caller who already knows the answer does
+    not pay for a call to rediscover it.
+    """
+    supplied_names = set(supplied or {})
+    return {
+        name: spec
+        for name, spec in schema.items()
+        if spec.get("source", "extract") == "extract" and name not in supplied_names
+    }
+
+
+def validate_values(schema: dict[str, dict[str, Any]], values: dict[str, Any], *, level: str) -> dict[str, Any]:
+    """Coerce caller-supplied property values against the schema, or say what is wrong.
+
+    The same model the LLM fills validates them, so a supplied value and an extracted one
+    are held to exactly one definition of the property — including its allowed values.
+    """
+    if not values:
+        return {}
+    unknown = sorted(set(values) - set(schema))
+    if unknown:
+        raise MetadataSchemaError(f"{level} properties not in the schema: {unknown}")
+    model = extraction_model({name: schema[name] for name in values}, name="SuppliedMetadata")
+    if model is None:
+        return {}
+    try:
+        validated = model.model_validate(values)
+    except Exception as e:
+        raise MetadataSchemaError(f"{level} properties do not match the schema: {e}") from e
+    return jsonable(validated.model_dump())

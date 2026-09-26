@@ -1727,6 +1727,45 @@ on request, as a background operation, because re-reading a corpus costs LLM cal
 value (`?level=chunks` for a chunk property). Extraction uses the bank's own LLM, so a bank
 can extract on a cheaper model than the one the rest of the server runs.
 
+##### Values the write supplies
+
+A property's `source` says who fills it: `extract` (the LLM reads the document — the
+default) or `request` (the caller sends it on write). Either way it lands in the same
+object, so a filter and a query cannot tell them apart. A write may also supply a value for
+an `extract` property, which overrides it for that document:
+
+<CodeSnippet code={configurationSh} section="kb-metadata-supplied" language="bash" />
+
+A document whose supplied values cover the schema costs no LLM call, which is how a corpus
+with known metadata is loaded without model spend.
+
+##### Querying the metadata {#knowledge-bank-query}
+
+`POST …/query` aggregates and filters over documents and chunks. It is a JSON DSL with
+SQL's shape — projection, filtering, grouping, aggregates, arithmetic and functions over
+aggregates, `having`, `order_by`, paging — and no SQL crosses the wire: every identifier is
+matched against a fixed column list or bound as a parameter, and every literal is a bind
+parameter.
+
+<CodeSnippet code={configurationSh} section="kb-query" language="bash" />
+
+- **`from`**: `chunks` (joined to its document, so document properties group too) or `documents`.
+- **Fields**: `doc_id`, `title`, `tags`, `chunk_count`, `text_length`, `created_at`,
+  `updated_at`, plus `chunk_index`, `token_count`, `chunk_text_length`, `heading` on chunks,
+  and `metadata.<property>` (or `doc_metadata.` / `chunk_metadata.` to pin the level).
+- **Aggregates**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`.
+- **Arithmetic**: `add`, `subtract`, `multiply`, `divide` — over fields *or* aggregates.
+- **Functions**: `round`, `abs`, `ceil`, `floor`, `length`, `lower`, `upper`, `coalesce`,
+  `date_trunc`, `extract`.
+- **Limits** (a structure from a caller is a cost the server pays): 32 select items, 8
+  group-by and order-by items, expression depth 8, 400 bound values, 500 `$in` values,
+  `limit` 1000.
+
+A metadata property is stored as JSON, so a numeric one is compared and ordered as a number
+and a non-numeric value aggregates to `NULL` rather than failing the query. `min`/`max` on a
+metadata property are numeric for the same reason — wrap the field in `lower()` to get the
+text extreme instead.
+
 ### Retain
 
 Controls the retain (memory ingestion) pipeline.

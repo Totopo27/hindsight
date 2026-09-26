@@ -113,6 +113,47 @@ curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/met
 # [/docs:kb-metadata-extract]
 echo
 
+# [docs:kb-metadata-supplied]
+# A property whose source is "request" is never sent to the LLM: the write supplies it.
+# A write may also supply a value for an "extract" property, which skips the call for that
+# document - so a corpus whose properties are all known costs no LLM call at all.
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/documents" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [{
+      "id": "inv-1",
+      "text": "Acme invoice for 1200 EUR, payable in 30 days.",
+      "properties": {"doc_type": "invoice", "vendor": "Acme", "total": 1200},
+      "chunk_properties": {"0": {"clause": "payment"}}
+    }]
+  }'
+# [/docs:kb-metadata-supplied]
+echo
+
+# [docs:kb-query]
+# Aggregate over the corpus: the same filter DSL in `where`, aggregates and arithmetic over
+# them in `select`, and `having` over the columns select names.
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "chunks",
+    "select": [
+      {"field": "metadata.doc_type", "as": "doc_type"},
+      {"count": "*", "as": "chunks"},
+      {"count_distinct": "doc_id", "as": "documents"},
+      {"sum": "metadata.total", "as": "total"},
+      {"round": [{"divide": [{"sum": "metadata.total"}, {"count_distinct": "doc_id"}]}, 2],
+       "as": "per_document"}
+    ],
+    "where": {"clause": "payment"},
+    "group_by": ["metadata.doc_type"],
+    "having": {"documents": {"$gte": 1}},
+    "order_by": [{"field": "total", "direction": "desc"}],
+    "limit": 50
+  }'
+# [/docs:kb-query]
+echo
+
 curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb" > /dev/null
 
 # =============================================================================

@@ -26,7 +26,8 @@ from . import store
 from .chunking import chunk_document
 from .extraction import extract_chunks, extract_document
 from .filters import FilterError
-from .metadata import MetadataSchemaError, validate_schema
+from .metadata import MetadataSchemaError, extract_only, validate_schema, validate_values
+from .query import CompiledQuery, Limits, compile_query, json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,11 @@ class DocumentInput:
     title: str | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    #: Values for schema properties, supplied instead of extracted. They land in the same
+    #: object the LLM would have filled, and a property supplied here is not read by it.
+    properties: dict[str, Any] | None = None
+    #: Values for schema chunk properties, by chunk index, same rule.
+    chunk_properties: dict[int, dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +223,66 @@ class KnowledgeService:
         )
         return ExtractedMetadata(document=document_values, chunks=chunk_values)
 
+    async def _metadata_for_document(
+        self,
+        *,
+        bank_id: str,
+        config: Any,
+        schema: dict[str, Any] | None,
+        document: DocumentInput,
+        chunk_texts: list[tuple[int, str]],
+    ) -> ExtractedMetadata:
+        """One document's metadata: what the write supplied, plus what is left to extract.
+
+        Both halves land in the same object. Supplying every property of the schema means
+        no LLM call for that document, which is how a corpus can be loaded with full
+        metadata and no model spend at all.
+        """
+        document_schema = (schema or {}).get("document", {})
+        chunk_schema = (schema or {}).get("chunks", {})
+        supplied = self._validated_properties(schema or {"document": {}, "chunks": {}}, document)
+        supplied_document, supplied_chunks = supplied.document, supplied.chunks
+
+        if schema is None:
+            return ExtractedMetadata(document=supplied_document, chunks=supplied_chunks)
+
+        pending_document = extract_only(document_schema, document.properties)
+        pending_chunks = extract_only(chunk_schema, None)
+        chunks_to_read = [
+            (index, text) for index, text in chunk_texts if not set(chunk_schema) <= set(supplied_chunks.get(index, {}))
+        ]
+        if not pending_document and not pending_chunks:
+            return ExtractedMetadata(document=supplied_document, chunks=supplied_chunks)
+
+        llm = self._metadata_llm(bank_id, config)
+        char_limit = int(config.kb_metadata_max_chars)
+        document_values = await extract_document(
+            llm,
+            pending_document,
+            doc_id=document.doc_id,
+            title=document.title,
+            text=document.text,
+            char_limit=char_limit,
+        )
+        chunk_values = await extract_chunks(
+            llm,
+            pending_chunks,
+            doc_id=document.doc_id,
+            title=document.title,
+            chunks=chunks_to_read,
+            char_limit=char_limit,
+            concurrency=int(config.kb_metadata_concurrency),
+        )
+        # The supplied value wins: the caller knew it, the model only guessed at it.
+        merged_chunks = {
+            index: {**chunk_values.get(index, {}), **supplied_chunks.get(index, {})}
+            for index in set(chunk_values) | set(supplied_chunks)
+        }
+        return ExtractedMetadata(
+            document={**document_values, **supplied_document},
+            chunks={index: values for index, values in merged_chunks.items() if values},
+        )
+
     async def run_extract_metadata(self, task: dict[str, Any]) -> dict[str, Any]:
         """Worker side of a re-extraction: read stored documents, fill the schema again."""
         bank_id = task["bank_id"]
@@ -277,11 +343,42 @@ class KnowledgeService:
         logger.info("knowledge metadata extraction bank=%s %s", bank_id, counts)
         return counts
 
+    # ---- query
+
+    async def query(self, bank_id: str, body: dict[str, Any], request_context: Any = None) -> dict[str, Any]:
+        """Run one DSL query. The bank is bound as $1, so it cannot read another bank."""
+        await self._require_bank(bank_id)
+        try:
+            compiled: CompiledQuery = compile_query(body, bank_id, limits=Limits())
+        except FilterError as e:
+            raise KnowledgeBankError(400, str(e)) from e
+        pool = await self._pool()
+        async with acquire_with_retry(pool) as conn:
+            try:
+                rows = await conn.fetch(compiled.sql, *compiled.params)
+            except Exception as e:
+                # A query that Postgres rejects is the caller's structure, not a server
+                # fault: a bad cast or an unorderable type gets the message, not a 500.
+                logger.info("knowledge query failed bank=%s: %s", bank_id, e)
+                raise KnowledgeBankError(400, f"query could not run: {e}") from e
+        return {
+            "columns": compiled.columns,
+            "rows": [[json_safe(value) for value in row] for row in rows],
+            "row_count": len(rows),
+            "grouped": compiled.grouped,
+        }
+
     # ---- writing (always async, always a batch)
 
     async def submit_write(self, bank_id: str, documents: list[DocumentInput]) -> dict[str, Any]:
         """Queue one ``knowledge_write_batch`` operation for these documents."""
         await self._require_bank(bank_id)
+        # Supplied property values are validated here, not in the worker: the write is
+        # async, so a value that does not fit the schema has to fail the request the caller
+        # is holding rather than an operation they would have to go and read.
+        schema = await self.get_metadata_schema(bank_id)
+        for document in documents:
+            self._validated_properties(schema, document)
         if not documents:
             raise KnowledgeBankError(400, "documents must not be empty")
         if len(documents) > MAX_BATCH_DOCUMENTS:
@@ -301,6 +398,8 @@ class KnowledgeService:
                     "title": document.title,
                     "tags": document.tags or [],
                     "metadata": document.metadata or {},
+                    "properties": document.properties or {},
+                    "chunk_properties": {str(k): v for k, v in (document.chunk_properties or {}).items()},
                 }
             )
         result = await self.memory._submit_async_operation(
@@ -312,11 +411,29 @@ class KnowledgeService:
         )
         return {"operation_id": result["operation_id"], "documents": len(payload_docs), "status": "pending"}
 
+    def _validated_properties(self, schema: dict[str, Any], document: DocumentInput) -> ExtractedMetadata:
+        """The document's supplied property values, coerced against the schema."""
+        try:
+            return ExtractedMetadata(
+                document=validate_values(schema.get("document", {}), document.properties or {}, level="document"),
+                chunks={
+                    index: validate_values(schema.get("chunks", {}), values, level=f"chunk {index}")
+                    for index, values in (document.chunk_properties or {}).items()
+                },
+            )
+        except MetadataSchemaError as e:
+            raise KnowledgeBankError(400, str(e)) from e
+
     async def run_write_batch(self, task: dict[str, Any]) -> dict[str, Any]:
         """Worker side of a write batch: chunk, embed and store each document."""
         bank_id = task["bank_id"]
-        documents = [DocumentInput(**{k: d.get(k) for k in ("doc_id", "text", "title", "tags", "metadata")})
-                     for d in task["documents"]]  # fmt: skip
+        documents = [
+            DocumentInput(
+                **{k: d.get(k) for k in ("doc_id", "text", "title", "tags", "metadata", "properties")},
+                chunk_properties={int(k): v for k, v in (d.get("chunk_properties") or {}).items()},
+            )
+            for d in task["documents"]
+        ]
         config = await self._config(bank_id, None)
         chunk_size = int(config.kb_chunk_size)
         overlap = min(int(config.kb_chunk_overlap), max(chunk_size - 1, 0))
@@ -354,17 +471,14 @@ class KnowledgeService:
             texts = [embedding_text(document.title, chunk.text) for document, _, chunks in pending for chunk in chunks]
             vectors = await self.memory.embeddings.encode_documents(texts) if texts else []
             extracted: dict[str, ExtractedMetadata] = {}
-            if extracting and schema is not None:
-                for document, _, chunks in pending:
-                    extracted[document.doc_id] = await self._extract_for_document(
-                        bank_id=bank_id,
-                        config=config,
-                        schema=schema,
-                        doc_id=document.doc_id,
-                        title=document.title,
-                        text=document.text,
-                        chunk_texts=[(chunk.index, chunk.text) for chunk in chunks],
-                    )
+            for document, _, chunks in pending:
+                extracted[document.doc_id] = await self._metadata_for_document(
+                    bank_id=bank_id,
+                    config=config,
+                    schema=schema if extracting else None,
+                    document=document,
+                    chunk_texts=[(chunk.index, chunk.text) for chunk in chunks],
+                )
             offset = 0
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
