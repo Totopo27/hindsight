@@ -191,3 +191,25 @@ Two things this measurement changed:
   bound `jsonb[]` and `= ANY` is a hash lookup, and the same query at 200k now costs 606 ms;
 - a document query self-joined `kb_documents` to itself, purely so the filter compiler had
   a second alias to read. That scanned the table twice; the compiler now takes the aliases.
+
+## Records and joins at scale (2026-09-26)
+
+5,000 vendor records and 200,000 contract records, written through the records endpoint —
+deterministic, no LLM — in the same bank as the 200k documents above. Contracts carry a
+relationship field to vendors, which is what the joins follow. Median of three runs.
+
+| Query | Median |
+|---|---|
+| `count(*)` over 200k records | 32 ms |
+| group by a field, sum + count | 173 ms |
+| **join** + group by the joined collection's field | 260 ms |
+| join + filter on a joined field (`v.tier`) | 950 ms |
+| join + `having` + arithmetic over aggregates, top 20 | 256 ms |
+
+Writing the 205k records took 33 seconds: a record write is a JSONB upsert, with none of
+the embedding a document write pays for.
+
+A join is a hash join on the relationship's record id, so it costs little over the
+ungrouped scan (260 ms vs 173 ms). Filtering *on the joined collection* is the slow shape
+(950 ms) because the filter cannot be pushed to the index on either side — the same thing
+SQL would do, and the first place to look if this becomes a hot path.
