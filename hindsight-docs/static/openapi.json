@@ -718,6 +718,271 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/metadata-schema": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "What this bank extracts, and how much is extracted",
+        "operationId": "get_metadata_schema_v1_default_knowledge_banks__kb__metadata_schema_get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Define what the LLM extracts per document and per chunk",
+        "operationId": "put_metadata_schema_v1_default_knowledge_banks__kb__metadata_schema_put",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetadataSchemaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/metadata-values/{property_name}": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "How the corpus splits per value",
+        "operationId": "metadata_values_v1_default_knowledge_banks__kb__metadata_values__property_name__get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "property_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Property Name"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "document",
+                "chunks"
+              ],
+              "type": "string",
+              "default": "document",
+              "title": "Level"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/metadata/extract": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Re-extract metadata for stored documents",
+        "operationId": "extract_metadata_v1_default_knowledge_banks__kb__metadata_extract_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/search": {
       "post": {
         "tags": [
@@ -12885,6 +13150,26 @@
         "title": "EntityStateResponse",
         "description": "Current mental model of an entity."
       },
+      "ExtractRequest": {
+        "properties": {
+          "doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Doc Ids",
+            "description": "Only these documents; empty means all"
+          },
+          "only_missing": {
+            "type": "boolean",
+            "title": "Only Missing",
+            "description": "Skip documents that already have extracted values",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ExtractRequest"
+      },
       "ExtractedFact": {
         "properties": {
           "text": {
@@ -16567,6 +16852,24 @@
         "title": "MentalModelTrigger",
         "description": "Trigger settings for a mental model.\n\nInherits the reflect options an operator can also default per bank\n(``reflect_default_options``): set here they apply to this model's refreshes\nonly, and win over the bank default."
       },
+      "MetadataSchemaRequest": {
+        "properties": {
+          "document": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Document",
+            "description": "Property name -> {type, description, values, items}"
+          },
+          "chunks": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Chunks",
+            "description": "Same shape, extracted per chunk"
+          }
+        },
+        "type": "object",
+        "title": "MetadataSchemaRequest"
+      },
       "MinScores": {
         "properties": {
           "semantic": {
@@ -18967,6 +19270,19 @@
             ],
             "title": "Tags"
           },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Metadata filter: {property: value} or {property: {$gte: 1, $in: [...], $contains: x, $exists: true}}. Matches chunk-level values, then document-level extracted values, then metadata written with the document."
+          },
           "rerank": {
             "anyOf": [
               {
@@ -20317,7 +20633,6 @@
           },
           "text": {
             "type": "string",
-            "minLength": 1,
             "title": "Text"
           },
           "title": {

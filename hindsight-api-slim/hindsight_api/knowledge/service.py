@@ -24,6 +24,9 @@ from ..engine.db_utils import acquire_with_retry
 from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
 from . import store
 from .chunking import chunk_document
+from .extraction import extract_chunks, extract_document
+from .filters import FilterError
+from .metadata import MetadataSchemaError, validate_schema
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,14 @@ class DocumentInput:
     title: str | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ExtractedMetadata:
+    """What one document's extraction produced: its own values, and its chunks' by index."""
+
+    document: dict[str, Any]
+    chunks: dict[int, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -123,6 +134,149 @@ class KnowledgeService:
         if kind != store.KNOWLEDGE_KIND:
             raise KnowledgeBankError(409, f"bank {bank_id!r} is a {kind} bank")
 
+    # ---- metadata schema
+
+    async def get_metadata_schema(self, bank_id: str) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            schema = await store.get_metadata_schema(conn, bank_id)
+            counts = {
+                "documents_extracted": await conn.fetchval(
+                    f"SELECT count(*) FROM {store.fq_table('kb_documents')} "
+                    "WHERE bank_id = $1 AND extracted_metadata <> '{}'::jsonb",
+                    bank_id,
+                ),
+                "chunks_extracted": await conn.fetchval(
+                    f"SELECT count(*) FROM {store.fq_table('kb_chunks')} "
+                    "WHERE bank_id = $1 AND metadata <> '{}'::jsonb",
+                    bank_id,
+                ),
+            }
+        return {"bank_id": bank_id, **schema, **counts}
+
+    async def put_metadata_schema(self, bank_id: str, document: Any, chunks: Any) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        try:
+            document_schema = validate_schema(document, level="document")
+            chunk_schema = validate_schema(chunks, level="chunk")
+        except MetadataSchemaError as e:
+            raise KnowledgeBankError(400, str(e)) from e
+        async with acquire_with_retry(await self._pool()) as conn:
+            await store.put_metadata_schema(conn, bank_id, document_schema, chunk_schema)
+        return await self.get_metadata_schema(bank_id)
+
+    async def metadata_values(self, bank_id: str, property_name: str, level: str) -> dict[str, Any]:
+        """How the corpus splits per value of one property."""
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            values = await store.value_counts(conn, bank_id, property_name, level=level)
+        return {"property": property_name, "level": level, "values": values}
+
+    async def submit_extract(self, bank_id: str, doc_ids: list[str] | None, only_missing: bool) -> dict[str, Any]:
+        """Queue re-extraction for documents already in the bank (after a schema change)."""
+        await self._require_bank(bank_id)
+        schema = await self.get_metadata_schema(bank_id)
+        if not schema["document"] and not schema["chunks"]:
+            raise KnowledgeBankError(400, "this bank has no metadata schema to extract with")
+        result = await self.memory._submit_async_operation(
+            bank_id=bank_id,
+            operation_type="knowledge_extract_metadata",
+            task_type="knowledge_extract_metadata",
+            task_payload={"doc_ids": doc_ids or [], "only_missing": only_missing},
+        )
+        return {"operation_id": result["operation_id"], "status": "pending"}
+
+    def _metadata_llm(self, bank_id: str, config: Any) -> Any:
+        """The bank's LLM for extraction — the same resolved config retain would use."""
+        return self.memory._llm_config.with_config(config, bank_id=bank_id, operation="knowledge_metadata")
+
+    async def _extract_for_document(
+        self,
+        *,
+        bank_id: str,
+        config: Any,
+        schema: dict[str, Any],
+        doc_id: str,
+        title: str | None,
+        text: str,
+        chunk_texts: list[tuple[int, str]],
+    ) -> ExtractedMetadata:
+        llm = self._metadata_llm(bank_id, config)
+        char_limit = int(config.kb_metadata_max_chars)
+        document_values = await extract_document(
+            llm, schema["document"], doc_id=doc_id, title=title, text=text, char_limit=char_limit
+        )
+        chunk_values = await extract_chunks(
+            llm,
+            schema["chunks"],
+            doc_id=doc_id,
+            title=title,
+            chunks=chunk_texts,
+            char_limit=char_limit,
+            concurrency=int(config.kb_metadata_concurrency),
+        )
+        return ExtractedMetadata(document=document_values, chunks=chunk_values)
+
+    async def run_extract_metadata(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Worker side of a re-extraction: read stored documents, fill the schema again."""
+        bank_id = task["bank_id"]
+        config = await self._config(bank_id, None)
+        schema = await self.get_metadata_schema(bank_id)
+        pool = await self._pool()
+        doc_ids: list[str] = task.get("doc_ids") or []
+        only_missing = bool(task.get("only_missing"))
+
+        where = "bank_id = $1"
+        params: list[Any] = [bank_id]
+        if doc_ids:
+            params.append(doc_ids)
+            where += f" AND doc_id = ANY(${len(params)}::text[])"
+        if only_missing:
+            where += " AND extracted_metadata = '{}'::jsonb"
+        async with acquire_with_retry(pool) as conn:
+            rows = await conn.fetch(
+                f"SELECT doc_id, title, text FROM {store.fq_table('kb_documents')} WHERE {where} ORDER BY doc_id",
+                *params,
+            )
+
+        documents = updated_chunks = 0
+        for row in rows:
+            async with acquire_with_retry(pool) as conn:
+                chunk_rows = await conn.fetch(
+                    f"SELECT chunk_index, text FROM {store.fq_table('kb_chunks')} "
+                    "WHERE bank_id = $1 AND doc_id = $2 ORDER BY chunk_index",
+                    bank_id,
+                    row["doc_id"],
+                )
+            extracted = await self._extract_for_document(
+                bank_id=bank_id,
+                config=config,
+                schema=schema,
+                doc_id=row["doc_id"],
+                title=row["title"],
+                text=row["text"],
+                chunk_texts=[(c["chunk_index"], c["text"]) for c in chunk_rows],
+            )
+            async with acquire_with_retry(pool) as conn:
+                await store.set_document_extracted(conn, bank_id, row["doc_id"], extracted.document)
+                await store.set_chunk_metadata(conn, bank_id, row["doc_id"], extracted.chunks)
+            documents += 1
+            updated_chunks += len(extracted.chunks)
+
+        counts = {"documents_extracted": documents, "chunks_extracted": updated_chunks}
+        operation_id = task.get("operation_id")
+        if operation_id:
+            async with acquire_with_retry(pool) as conn:
+                await conn.execute(
+                    f"UPDATE {store.fq_table('async_operations')} "
+                    "SET result_metadata = COALESCE(result_metadata, '{}'::jsonb) || $1::jsonb "
+                    "WHERE operation_id = $2",
+                    json.dumps(counts),
+                    uuid.UUID(str(operation_id)),
+                )
+        logger.info("knowledge metadata extraction bank=%s %s", bank_id, counts)
+        return counts
+
     # ---- writing (always async, always a batch)
 
     async def submit_write(self, bank_id: str, documents: list[DocumentInput]) -> dict[str, Any]:
@@ -167,6 +321,10 @@ class KnowledgeService:
         chunk_size = int(config.kb_chunk_size)
         overlap = min(int(config.kb_chunk_overlap), max(chunk_size - 1, 0))
         pool = await self._pool()
+        # The schema is read once for the batch: extraction is per document, but what to
+        # extract is a property of the bank.
+        schema = await self.get_metadata_schema(bank_id) if config.kb_metadata_extraction else None
+        extracting = bool(schema and (schema["document"] or schema["chunks"]))
 
         written = skipped = chunk_total = 0
         for start in range(0, len(documents), _EMBED_BATCH_DOCUMENTS):
@@ -195,6 +353,18 @@ class KnowledgeService:
             # their title).
             texts = [embedding_text(document.title, chunk.text) for document, _, chunks in pending for chunk in chunks]
             vectors = await self.memory.embeddings.encode_documents(texts) if texts else []
+            extracted: dict[str, ExtractedMetadata] = {}
+            if extracting and schema is not None:
+                for document, _, chunks in pending:
+                    extracted[document.doc_id] = await self._extract_for_document(
+                        bank_id=bank_id,
+                        config=config,
+                        schema=schema,
+                        doc_id=document.doc_id,
+                        title=document.title,
+                        text=document.text,
+                        chunk_texts=[(chunk.index, chunk.text) for chunk in chunks],
+                    )
             offset = 0
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
@@ -208,6 +378,7 @@ class KnowledgeService:
                                 document.title,
                                 chunk.token_count,
                                 store.vector_literal(vectors[offset + i]),
+                                None,
                             )
                             for i, chunk in enumerate(chunks)
                         ]
@@ -222,8 +393,17 @@ class KnowledgeService:
                             metadata=document.metadata or {},
                             content_hash=content_hash,
                             chunk_count=len(chunks),
+                            extracted_metadata=(
+                                extracted[document.doc_id].document if document.doc_id in extracted else {}
+                            ),
                         )
                         await store.replace_chunks(conn, bank_id, document.doc_id, rows)
+                        await store.set_chunk_metadata(
+                            conn,
+                            bank_id,
+                            document.doc_id,
+                            extracted[document.doc_id].chunks if document.doc_id in extracted else {},
+                        )
                         written += 1
                         chunk_total += len(chunks)
         logger.info(
@@ -274,6 +454,7 @@ class KnowledgeService:
         top_k: int,
         mode: str = "hybrid",
         tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
         rerank: bool | None = None,
         collapse_documents: bool = False,
         request_context: Any = None,
@@ -284,13 +465,19 @@ class KnowledgeService:
         use_rerank = config.kb_search_rerank if rerank is None else rerank
 
         pool = await self._pool()
-        async with acquire_with_retry(pool) as conn:
-            arms: dict[str, list[store.ChunkHit]] = {}
-            if mode in ("hybrid", "vector"):
-                [vector] = await self.memory.embeddings.encode_query([query])
-                arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, tags)
-            if mode in ("hybrid", "keyword"):
-                arms["keyword"] = await store.search_keyword(conn, bank_id, query_terms(query), candidates, tags)
+        try:
+            async with acquire_with_retry(pool) as conn:
+                arms: dict[str, list[store.ChunkHit]] = {}
+                if mode in ("hybrid", "vector"):
+                    [vector] = await self.memory.embeddings.encode_query([query])
+                    arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, tags, metadata)
+                if mode in ("hybrid", "keyword"):
+                    arms["keyword"] = await store.search_keyword(
+                        conn, bank_id, query_terms(query), candidates, tags, metadata
+                    )
+        except FilterError as e:
+            # A filter the caller cannot have meant is a 400, not a 500.
+            raise KnowledgeBankError(400, str(e)) from e
 
         # Weighted reciprocal rank fusion, k=60 — the same constant recall uses. The weight
         # is what stops a long query's keyword arm from out-voting the vector arm: every
@@ -364,10 +551,16 @@ async def run_write_batch_task(memory: Any, task: dict[str, Any]) -> dict[str, A
     return await KnowledgeService(memory).run_write_batch(task)
 
 
+async def run_extract_metadata_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Entry point the engine's task dispatch calls for ``knowledge_extract_metadata``."""
+    return await KnowledgeService(memory).run_extract_metadata(task)
+
+
 __all__ = [
     "DocumentInput",
     "KnowledgeBankError",
     "KnowledgeService",
     "SearchHit",
+    "run_extract_metadata_task",
     "run_write_batch_task",
 ]

@@ -16,11 +16,28 @@ export interface KnowledgeBank {
   updated_at: string;
 }
 
+export interface MetadataProperty {
+  type: "string" | "integer" | "number" | "boolean" | "date" | "datetime" | "array" | "object";
+  description?: string;
+  values?: (string | number | boolean)[];
+  items?: string;
+}
+
+export interface MetadataSchema {
+  bank_id: string;
+  document: Record<string, MetadataProperty>;
+  chunks: Record<string, MetadataProperty>;
+  documents_extracted: number;
+  chunks_extracted: number;
+  updated_at: string | null;
+}
+
 export interface KnowledgeDocument {
   doc_id: string;
   title: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  extracted_metadata: Record<string, unknown>;
   chunk_count: number;
   chars: number;
   created_at: string;

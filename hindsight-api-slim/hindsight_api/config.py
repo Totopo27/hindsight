@@ -778,6 +778,9 @@ ENV_KB_CHUNK_SIZE = "HINDSIGHT_API_KB_CHUNK_SIZE"
 ENV_KB_CHUNK_OVERLAP = "HINDSIGHT_API_KB_CHUNK_OVERLAP"
 ENV_KB_SEARCH_CANDIDATES = "HINDSIGHT_API_KB_SEARCH_CANDIDATES"
 ENV_KB_SEARCH_VECTOR_WEIGHT = "HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT"
+ENV_KB_METADATA_EXTRACTION = "HINDSIGHT_API_KB_METADATA_EXTRACTION"
+ENV_KB_METADATA_MAX_CHARS = "HINDSIGHT_API_KB_METADATA_MAX_CHARS"
+ENV_KB_METADATA_CONCURRENCY = "HINDSIGHT_API_KB_METADATA_CONCURRENCY"
 ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
 
 # Retain settings
@@ -1629,6 +1632,15 @@ DEFAULT_KB_SEARCH_CANDIDATES = 50  # Candidates each search arm contributes befo
 # is OR-ed — so corpora with paragraph-length queries do better with more of the weight on
 # the vector arm.
 DEFAULT_KB_SEARCH_VECTOR_WEIGHT = 0.5
+# Metadata extraction runs only where a bank has a metadata schema, so this on-by-default
+# switch costs nothing until someone defines one. Turn it off to stop extracting without
+# throwing the schema away.
+DEFAULT_KB_METADATA_EXTRACTION = True
+# How much of a document (and of a chunk) the extraction LLM reads. A metadata property is
+# almost always stated early, and the whole point of the feature is that it is cheap.
+DEFAULT_KB_METADATA_MAX_CHARS = 12000
+# Chunk-level extraction is one call per chunk; this is how many run at once per document.
+DEFAULT_KB_METADATA_CONCURRENCY = 4
 DEFAULT_KB_SEARCH_RERANK = True  # Rerank the fused candidates with the configured cross-encoder
 
 # Retain settings
@@ -3335,6 +3347,9 @@ class HindsightConfig:
     kb_chunk_overlap: int
     kb_search_candidates: int
     kb_search_vector_weight: float
+    kb_metadata_extraction: bool
+    kb_metadata_max_chars: int
+    kb_metadata_concurrency: int
     kb_search_rerank: bool
 
     # Retain settings
@@ -3734,6 +3749,9 @@ class HindsightConfig:
         "kb_chunk_overlap",
         "kb_search_candidates",
         "kb_search_vector_weight",
+        "kb_metadata_extraction",
+        "kb_metadata_max_chars",
+        "kb_metadata_concurrency",
         "kb_search_rerank",
         "retain_chunk_size",
         "retain_structured_chunk_size",
@@ -4886,6 +4904,10 @@ class HindsightConfig:
             kb_chunk_overlap=int(os.getenv(ENV_KB_CHUNK_OVERLAP, str(DEFAULT_KB_CHUNK_OVERLAP))),
             kb_search_candidates=int(os.getenv(ENV_KB_SEARCH_CANDIDATES, str(DEFAULT_KB_SEARCH_CANDIDATES))),
             kb_search_vector_weight=float(os.getenv(ENV_KB_SEARCH_VECTOR_WEIGHT, str(DEFAULT_KB_SEARCH_VECTOR_WEIGHT))),
+            kb_metadata_extraction=os.getenv(ENV_KB_METADATA_EXTRACTION, str(DEFAULT_KB_METADATA_EXTRACTION)).lower()
+            in ("true", "1", "yes"),
+            kb_metadata_max_chars=int(os.getenv(ENV_KB_METADATA_MAX_CHARS, str(DEFAULT_KB_METADATA_MAX_CHARS))),
+            kb_metadata_concurrency=int(os.getenv(ENV_KB_METADATA_CONCURRENCY, str(DEFAULT_KB_METADATA_CONCURRENCY))),
             kb_search_rerank=os.getenv(ENV_KB_SEARCH_RERANK, str(DEFAULT_KB_SEARCH_RERANK)).lower()
             in ("true", "1", "yes"),
             retain_chunk_size=int(os.getenv(ENV_RETAIN_CHUNK_SIZE, str(DEFAULT_RETAIN_CHUNK_SIZE))),

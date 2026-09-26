@@ -636,6 +636,10 @@ def _drop_embedding_vector_indexes(conn: Connection, schema_name: str, table_nam
         _drop_index(conn, schema_name, index_name)
 
 
+#: pgvector refuses to build an HNSW index above this many dimensions.
+PGVECTOR_HNSW_MAX_DIMENSION = 2000
+
+
 def _migrate_table_embedding_dimension(
     conn: Connection,
     schema_name: str,
@@ -740,9 +744,10 @@ def _create_embedding_vector_index(
     row_count: int,
 ) -> None:
     """Build the vector index on ``table_name.embedding`` for the detected extension."""
-    if vector_ext == "pgvector" and dimension > 2000:
+    if vector_ext == "pgvector" and dimension > PGVECTOR_HNSW_MAX_DIMENSION:
         raise RuntimeError(
-            f"Embedding dimension {dimension} exceeds pgvector HNSW index limit of 2000. "
+            f"Embedding dimension {dimension} exceeds pgvector HNSW index limit of "
+            f"{PGVECTOR_HNSW_MAX_DIMENSION}. "
             f"Use an embedding model with <= 2000 dimensions, or switch to a vector extension "
             f"that supports higher dimensions (e.g., pgvectorscale/DiskANN or AlloyDB ScaNN)."
         )
@@ -831,9 +836,17 @@ def ensure_embedding_dimension(
         # (the dimension is a property of the model, not of the schema), so this is what
         # pins it and builds the vector index — without one, every knowledge search
         # seq-scans the whole bank, which only shows up at corpus scale.
-        _migrate_table_embedding_dimension(conn, schema_name, "kb_chunks", required_dimension, vector_ext)
-        if _table_has_embedding_column(conn, schema_name, "kb_chunks") and not _has_embedding_vector_index(
-            conn, schema_name, "kb_chunks"
+        # A dimension pgvector cannot index is a slower knowledge bank, not a broken server:
+        # the column still follows the model and the search falls back to a scan. (For
+        # memory_units the same case raises, because that path is not optional.)
+        kb_indexed = not (vector_ext == "pgvector" and required_dimension > PGVECTOR_HNSW_MAX_DIMENSION)
+        _migrate_table_embedding_dimension(
+            conn, schema_name, "kb_chunks", required_dimension, vector_ext, indexed=kb_indexed
+        )
+        if (
+            kb_indexed
+            and _table_has_embedding_column(conn, schema_name, "kb_chunks")
+            and not _has_embedding_vector_index(conn, schema_name, "kb_chunks")
         ):
             # Column already at the model's dimension (so the resize path above did
             # nothing) but never indexed — a bank written before this ran.

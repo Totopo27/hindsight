@@ -87,6 +87,7 @@ BACKUP_TABLES = [
     # Knowledge banks: the document owns its chunks by FK, so documents first.
     "kb_documents",
     "kb_chunks",
+    "kb_metadata_schemas",
 ]
 
 MANIFEST_VERSION = "2"

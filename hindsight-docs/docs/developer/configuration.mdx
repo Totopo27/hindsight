@@ -1695,7 +1695,37 @@ so two banks on one server can chunk differently.
 | `HINDSIGHT_API_KB_CHUNK_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
 | `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
 | `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
+| `HINDSIGHT_API_KB_METADATA_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
+| `HINDSIGHT_API_KB_METADATA_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
+| `HINDSIGHT_API_KB_METADATA_CONCURRENCY` | Chunk-level extraction is one LLM call per chunk; this many run at once per document. | `4` |
 | `HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT` | Weight of the vector arm in the fusion; the keyword arm gets the rest (`1 - weight`). `0.5` is an even split. The keyword arm ORs every word of the query, so paragraph-length queries do better with more weight on the vector arm. Ignored for single-arm searches (`mode: vector` / `keyword`). | `0.5` |
+
+#### Metadata extraction {#knowledge-bank-metadata}
+
+A knowledge bank can carry a *metadata schema*: the properties an LLM should fill in for
+every document, and for every chunk. Writes extract them, and search filters on them.
+
+<CodeSnippet code={configurationSh} section="kb-metadata-schema" language="bash" />
+
+Property types: `string`, `integer`, `number`, `boolean`, `date`, `datetime`, `array` (of
+any of those, via `items`) and `object` for anything the flat types cannot say.
+
+<CodeSnippet code={configurationSh} section="kb-metadata-search" language="bash" />
+
+Filter operators: a bare value for equality, `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`,
+`$in`, `$nin`, `$contains` (an array holds the value, or a string contains it) and
+`$exists`. A property name resolves against the chunk's extracted values first, then the
+document's, then the metadata supplied with the document — so filtering works the same
+whether a value was extracted per chunk, per document, or written by the caller.
+
+The schema takes effect on the next write. Documents already in the bank are re-extracted
+on request, as a background operation, because re-reading a corpus costs LLM calls:
+
+<CodeSnippet code={configurationSh} section="kb-metadata-extract" language="bash" />
+
+`GET /v1/default/knowledge-banks/{kb}/metadata-values/{property}` returns the counts per
+value (`?level=chunks` for a chunk property). Extraction uses the bank's own LLM, so a bank
+can extract on a cheaper model than the one the rest of the server runs.
 
 ### Retain
 

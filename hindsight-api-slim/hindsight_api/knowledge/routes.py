@@ -34,11 +34,30 @@ class WriteRequest(BaseModel):
     documents: list[WriteDocument] = Field(min_length=1, max_length=MAX_BATCH_DOCUMENTS)
 
 
+class MetadataSchemaRequest(BaseModel):
+    document: dict[str, Any] = Field(
+        default_factory=dict, description="Property name -> {type, description, values, items}"
+    )
+    chunks: dict[str, Any] = Field(default_factory=dict, description="Same shape, extracted per chunk")
+
+
+class ExtractRequest(BaseModel):
+    doc_ids: list[str] = Field(default_factory=list, description="Only these documents; empty means all")
+    only_missing: bool = Field(default=True, description="Skip documents that already have extracted values")
+
+
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=10, ge=1, le=200)
     mode: Literal["hybrid", "vector", "keyword"] = "hybrid"
     tags: list[str] | None = None
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Metadata filter: {property: value} or {property: {$gte: 1, $in: [...], $contains: x, $exists: true}}. "
+            "Matches chunk-level values, then document-level extracted values, then metadata written with the document."
+        ),
+    )
     rerank: bool | None = Field(default=None, description="Override the bank's rerank setting")
     collapse_documents: bool = Field(
         default=False, description="Best chunk per document, so top_k means k distinct documents"
@@ -144,6 +163,44 @@ def build_router(get_request_context: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail="operation not found")
         return result
 
+    @router.get("/{kb}/metadata-schema", summary="What this bank extracts, and how much is extracted")
+    async def get_metadata_schema(
+        kb: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.get_metadata_schema(kb))
+
+    @router.put("/{kb}/metadata-schema", summary="Define what the LLM extracts per document and per chunk")
+    async def put_metadata_schema(
+        kb: str,
+        body: MetadataSchemaRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        # Takes effect on the next write; existing documents are re-extracted on request
+        # (POST metadata/extract), because re-reading a corpus costs LLM calls.
+        return await run(svc.put_metadata_schema(kb, body.document, body.chunks))
+
+    @router.get("/{kb}/metadata-values/{property_name}", summary="How the corpus splits per value")
+    async def metadata_values(
+        kb: str,
+        property_name: str,
+        level: Literal["document", "chunks"] = Query(default="document"),
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.metadata_values(kb, property_name, level))
+
+    @router.post("/{kb}/metadata/extract", status_code=202, summary="Re-extract metadata for stored documents")
+    async def extract_metadata(
+        kb: str,
+        body: ExtractRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.submit_extract(kb, body.doc_ids, body.only_missing))
+
     @router.post("/{kb}/search", summary="Hybrid search over the documents")
     async def search(
         kb: str,
@@ -158,6 +215,7 @@ def build_router(get_request_context: Any) -> APIRouter:
                 top_k=body.top_k,
                 mode=body.mode,
                 tags=body.tags,
+                metadata=body.metadata,
                 rerank=body.rerank,
                 collapse_documents=body.collapse_documents,
                 request_context=ctx,

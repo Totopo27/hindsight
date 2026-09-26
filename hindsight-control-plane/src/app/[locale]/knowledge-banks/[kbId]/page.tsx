@@ -34,11 +34,19 @@ import {
   type KnowledgeBank,
   type KnowledgeDocument,
   type KnowledgeOperation,
+  type MetadataSchema,
   type SearchResult,
 } from "@/components/knowledge-bank-api";
 import { withBasePath } from "@/lib/base-path";
 
-const SECTIONS: KbSection[] = ["overview", "documents", "search", "operations", "configuration"];
+const SECTIONS: KbSection[] = [
+  "overview",
+  "documents",
+  "search",
+  "metadata",
+  "operations",
+  "configuration",
+];
 
 function Card({
   title,
@@ -128,6 +136,7 @@ export default function KnowledgeBankPage() {
                   {section === "overview" && <Overview bank={bank} onGo={go} />}
                   {section === "documents" && <Documents kbId={kbId} onChanged={loadBank} />}
                   {section === "search" && <SearchPanel kbId={kbId} />}
+                  {section === "metadata" && <MetadataPanel kbId={kbId} />}
                   {section === "operations" && <Operations kbId={kbId} />}
                   {section === "configuration" && <Configuration kbId={kbId} />}
                 </div>
@@ -341,18 +350,28 @@ function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void })
 function SearchPanel({ kbId }: { kbId: string }) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"hybrid" | "vector" | "keyword">("hybrid");
+  const [filter, setFilter] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     if (!query.trim()) return;
+    let metadata: unknown = undefined;
+    if (filter.trim()) {
+      try {
+        metadata = JSON.parse(filter);
+      } catch {
+        toast.error("The metadata filter is not valid JSON");
+        return;
+      }
+    }
     setLoading(true);
     try {
       const response = await kbFetch<{ results: SearchResult[] }>(
         `/${encodeURIComponent(kbId)}/search`,
         {
           method: "POST",
-          body: { query, mode, top_k: 10 },
+          body: { query, mode, top_k: 10, metadata },
         }
       );
       setResults(response.results);
@@ -395,6 +414,13 @@ function SearchPanel({ kbId }: { kbId: string }) {
         </Button>
       </form>
 
+      <Input
+        className="mt-2 font-mono text-xs"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder={'Metadata filter, e.g. {"doc_type": "invoice", "total": {"$gte": 1000}}'}
+      />
+
       {results && (
         <div className="mt-4 space-y-3">
           {results.length === 0 && <p className="text-sm text-muted-foreground">Nothing found.</p>}
@@ -426,6 +452,88 @@ function SearchPanel({ kbId }: { kbId: string }) {
           ))}
         </div>
       )}
+    </Card>
+  );
+}
+
+function MetadataPanel({ kbId }: { kbId: string }) {
+  const [schema, setSchema] = useState<MetadataSchema | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    const response = await kbFetch<MetadataSchema>(`/${encodeURIComponent(kbId)}/metadata-schema`);
+    setSchema(response);
+    setDraft(JSON.stringify({ document: response.document, chunks: response.chunks }, null, 2));
+  }, [kbId]);
+
+  useEffect(() => {
+    load().catch((e) => toast.error((e as Error).message));
+  }, [load]);
+
+  const save = async () => {
+    let body: unknown;
+    try {
+      body = JSON.parse(draft);
+    } catch {
+      toast.error("That is not valid JSON");
+      return;
+    }
+    setSaving(true);
+    try {
+      await kbFetch(`/${encodeURIComponent(kbId)}/metadata-schema`, { method: "PUT", body });
+      toast.success("Saved. It applies to the next write.");
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const extract = async () => {
+    try {
+      await kbFetch(`/${encodeURIComponent(kbId)}/metadata/extract`, {
+        method: "POST",
+        body: { only_missing: true },
+      });
+      toast.success("Extracting in the background — watch it in Operations.");
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
+  if (!schema) return <Spinner />;
+  return (
+    <Card
+      title="Metadata"
+      description="What the LLM extracts from every document and chunk. Search filters on these values."
+    >
+      <p className="text-sm text-muted-foreground mb-2">
+        {schema.documents_extracted} document(s) and {schema.chunks_extracted} chunk(s) carry
+        extracted values.
+      </p>
+      <Textarea
+        rows={18}
+        className="font-mono text-xs"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        spellCheck={false}
+      />
+      <p className="mt-2 text-xs text-muted-foreground">
+        A property is <code>{'{"type": "string"}'}</code> plus an optional <code>description</code>,
+        an <code>items</code> type for arrays, and <code>values</code> — a fixed list, which is how
+        classification is expressed. Types: string, integer, number, boolean, date, datetime, array,
+        object.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? <Spinner size="sm" /> : "Save schema"}
+        </Button>
+        <Button size="sm" variant="outline" onClick={extract}>
+          Extract documents missing values
+        </Button>
+      </div>
     </Card>
   );
 }

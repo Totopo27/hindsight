@@ -4262,6 +4262,10 @@ class MemoryEngine(MemoryEngineInterface):
                     from ..knowledge.service import run_write_batch_task
 
                     await run_write_batch_task(self, task_dict)
+                elif task_type == "knowledge_extract_metadata":
+                    from ..knowledge.service import run_extract_metadata_task
+
+                    await run_extract_metadata_task(self, task_dict)
                 elif task_type == "webhook_delivery":
                     await self._handle_webhook_delivery(task_dict)
                 else:

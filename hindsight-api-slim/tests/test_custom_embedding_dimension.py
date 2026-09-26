@@ -454,6 +454,23 @@ class TestEmbeddingDimension:
         _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
         assert get_vector_index_names(db_url, schema, "kb_chunks")
 
+    def test_kb_chunks_follows_a_dimension_pgvector_cannot_index(self, dimension_test_schema):
+        """A 3072-dimension model is a slower knowledge bank, not a refused startup: the
+        column follows the model and the search falls back to a scan. (memory_units raises
+        in the same case, because vector search there is not optional.)"""
+        db_url, schema = dimension_test_schema
+
+        clear_embeddings(db_url, schema)
+        clear_mental_model_embeddings(db_url, schema)
+        ensure_embedding_dimension(db_url, 3072, schema=schema, store_owned_memories=True)
+        assert get_column_dimension(db_url, schema, table="kb_chunks") == 3072
+        assert get_vector_index_names(db_url, schema, "kb_chunks") == []
+
+        # Back to an indexable dimension and the index comes back.
+        _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
+        assert get_column_dimension(db_url, schema, table="kb_chunks") == 384
+        assert get_vector_index_names(db_url, schema, "kb_chunks")
+
     async def test_local_embeddings_dimension_detection(self, embeddings):
         """Test that LocalSTEmbeddings correctly detects dimension."""
         # Initialize embeddings if not already done

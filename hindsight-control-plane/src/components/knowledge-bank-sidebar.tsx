@@ -5,15 +5,22 @@
 // product. Only the items differ: a knowledge bank has documents and search, not memories.
 
 import { useState } from "react";
-import { FileText, LayoutGrid, Search, Settings, ListChecks } from "lucide-react";
+import { FileText, LayoutGrid, Search, Settings, ListChecks, Tags } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type KbSection = "overview" | "documents" | "search" | "operations" | "configuration";
+export type KbSection =
+  | "overview"
+  | "documents"
+  | "search"
+  | "metadata"
+  | "operations"
+  | "configuration";
 
 const ITEMS: { id: KbSection; label: string; icon: typeof LayoutGrid }[] = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "documents", label: "Documents", icon: FileText },
   { id: "search", label: "Search", icon: Search },
+  { id: "metadata", label: "Metadata", icon: Tags },
   { id: "operations", label: "Operations", icon: ListChecks },
   { id: "configuration", label: "Configuration", icon: Settings },
 ];
