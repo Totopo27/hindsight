@@ -33,7 +33,9 @@ import {
   kbFetch,
   type KnowledgeBank,
   type KnowledgeDocument,
+  type KnowledgeCollection,
   type KnowledgeOperation,
+  type QueryResult,
   type KnowledgeSchema,
   type SearchResult,
 } from "@/components/knowledge-bank-api";
@@ -44,6 +46,7 @@ const SECTIONS: KbSection[] = [
   "documents",
   "search",
   "schemas",
+  "collections",
   "operations",
   "configuration",
 ];
@@ -137,6 +140,7 @@ export default function KnowledgeBankPage() {
                   {section === "documents" && <Documents kbId={kbId} onChanged={loadBank} />}
                   {section === "search" && <SearchPanel kbId={kbId} />}
                   {section === "schemas" && <SchemaPanel kbId={kbId} />}
+                  {section === "collections" && <CollectionsPanel kbId={kbId} />}
                   {section === "operations" && <Operations kbId={kbId} />}
                   {section === "configuration" && <Configuration kbId={kbId} />}
                 </div>
@@ -540,6 +544,168 @@ function SchemaPanel({ kbId }: { kbId: string }) {
           Extract documents missing values
         </Button>
       </div>
+    </Card>
+  );
+}
+
+function CollectionsPanel({ kbId }: { kbId: string }) {
+  const [collections, setCollections] = useState<KnowledgeCollection[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [query, setQuery] = useState('{\n  "select": [{"count": "*", "as": "records"}]\n}');
+  const [result, setResult] = useState<QueryResult | null>(null);
+  const [running, setRunning] = useState(false);
+
+  const load = useCallback(async () => {
+    const response = await kbFetch<{ items: KnowledgeCollection[] }>(
+      `/${encodeURIComponent(kbId)}/collections`
+    );
+    setCollections(response.items);
+    setSelected((current) => current ?? response.items[0]?.collection_id ?? null);
+  }, [kbId]);
+
+  useEffect(() => {
+    load().catch((e) => toast.error((e as Error).message));
+  }, [load]);
+
+  const run = async () => {
+    if (!selected) return;
+    let body: unknown;
+    try {
+      body = JSON.parse(query);
+    } catch {
+      toast.error("That is not valid JSON");
+      return;
+    }
+    setRunning(true);
+    try {
+      setResult(
+        await kbFetch<QueryResult>(
+          `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(selected)}/query`,
+          { method: "POST", body }
+        )
+      );
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const derive = async (collectionId: string) => {
+    try {
+      await kbFetch(
+        `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/derive`,
+        {
+          method: "POST",
+          body: {},
+        }
+      );
+      toast.success("Deriving in the background — watch it in Operations.");
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
+  if (!collections) return <Spinner />;
+  return (
+    <Card
+      title="Collections"
+      description="Structured records derived from the documents. Query them, joins included."
+    >
+      {collections.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No collections yet. Define one with PUT /collections/&#123;id&#125;.
+        </p>
+      ) : (
+        <>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Collection</TableHead>
+                <TableHead>Identity</TableHead>
+                <TableHead>Fields</TableHead>
+                <TableHead>Records</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {collections.map((collection) => (
+                <TableRow key={collection.collection_id}>
+                  <TableCell className="font-mono text-xs">{collection.collection_id}</TableCell>
+                  <TableCell className="text-xs">{collection.identity ?? "—"}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {Object.entries(collection.fields)
+                      .map(([name, spec]) =>
+                        spec.collection ? `${name} → ${spec.collection}` : name
+                      )
+                      .join(", ")}
+                  </TableCell>
+                  <TableCell className="text-xs">{collection.records ?? 0}</TableCell>
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => derive(collection.collection_id)}
+                    >
+                      Derive
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          <div className="mt-4 flex gap-2 items-center">
+            <select
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              value={selected ?? ""}
+              onChange={(e) => setSelected(e.target.value)}
+            >
+              {collections.map((collection) => (
+                <option key={collection.collection_id} value={collection.collection_id}>
+                  {collection.collection_id}
+                </option>
+              ))}
+            </select>
+            <Button size="sm" onClick={run} disabled={running}>
+              {running ? <Spinner size="sm" /> : "Run query"}
+            </Button>
+          </div>
+          <Textarea
+            rows={10}
+            className="mt-2 font-mono text-xs"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+          />
+
+          {result && (
+            <div className="mt-4 overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {result.columns.map((column) => (
+                      <TableHead key={column}>{column}</TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {result.rows.map((row, i) => (
+                    <TableRow key={i}>
+                      {row.map((value, j) => (
+                        <TableCell key={j} className="text-xs">
+                          {value === null ? "—" : String(value)}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <p className="mt-1 text-xs text-muted-foreground">{result.row_count} row(s)</p>
+            </div>
+          )}
+        </>
+      )}
     </Card>
   );
 }

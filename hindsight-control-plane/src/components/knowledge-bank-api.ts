@@ -32,6 +32,22 @@ export interface KnowledgeSchema {
   updated_at: string | null;
 }
 
+export interface KnowledgeCollection {
+  collection_id: string;
+  name: string | null;
+  description: string | null;
+  fields: Record<string, { type?: string; collection?: string; values?: unknown[] }>;
+  identity: string | null;
+  records?: number;
+}
+
+export interface QueryResult {
+  columns: string[];
+  rows: unknown[][];
+  row_count: number;
+  grouped: boolean;
+}
+
 export interface KnowledgeDocument {
   doc_id: string;
   title: string | null;
