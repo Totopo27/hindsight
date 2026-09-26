@@ -25,11 +25,20 @@ class FilterError(ValueError):
     """A filter the caller cannot have meant: unknown operator, wrong value shape."""
 
 
-def _field(name: str, params: list[Any]) -> str:
-    """The JSONB value for this property, wherever it lives."""
+def _field(name: str, params: list[Any], aliases: tuple[str, str]) -> str:
+    """The JSONB value for this field, wherever it lives.
+
+    ``aliases`` is (passage, document). They are the same table when the caller is
+    querying documents, which is why this is a parameter: a self-join added only to give
+    this function two names to read cost a second scan of the whole table.
+    """
+    passage, document = aliases
     params.append(name)
     placeholder = f"${len(params)}"
-    return f"COALESCE(c.fields -> {placeholder}, d.fields -> {placeholder}, d.metadata -> {placeholder})"
+    return (
+        f"COALESCE({passage}.fields -> {placeholder}, {document}.fields -> {placeholder}, "
+        f"{document}.metadata -> {placeholder})"
+    )
 
 
 def _numeric(value: Any) -> bool:
@@ -42,8 +51,8 @@ def _literal(value: Any, params: list[Any]) -> str:
     return f"${len(params)}::jsonb"
 
 
-def _condition(name: str, spec: Any, params: list[Any]) -> str:
-    field = _field(name, params)
+def _condition(name: str, spec: Any, params: list[Any], aliases: tuple[str, str]) -> str:
+    field = _field(name, params, aliases)
 
     if not isinstance(spec, dict):
         # Bare value: equality. A list means "the array property holds all of these".
@@ -92,7 +101,9 @@ def _condition(name: str, spec: Any, params: list[Any]) -> str:
     return " AND ".join(clauses) if clauses else "TRUE"
 
 
-def compile_filters(metadata: dict[str, Any] | None, params: list[Any]) -> str:
+def compile_filters(
+    metadata: dict[str, Any] | None, params: list[Any], aliases: tuple[str, str] = ("c", "d")
+) -> str:
     """Return a SQL fragment starting with AND, appending its parameters to ``params``.
 
     The caller must have joined ``kb_documents d`` to ``kb_passages c`` when this returns
@@ -102,5 +113,5 @@ def compile_filters(metadata: dict[str, Any] | None, params: list[Any]) -> str:
         return ""
     if not isinstance(metadata, dict):
         raise FilterError("metadata filter must be an object of property name -> value or operators")
-    conditions = [_condition(name, spec, params) for name, spec in metadata.items()]
+    conditions = [_condition(name, spec, params, aliases) for name, spec in metadata.items()]
     return "".join(f" AND ({condition})" for condition in conditions)

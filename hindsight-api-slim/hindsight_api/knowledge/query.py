@@ -366,7 +366,9 @@ def compile_query(body: dict[str, Any], bank_id: str, *, limits: Limits | None =
                     raise FilterError(f"{name}: {operator} has {len(value)} values; at most {limits.max_in_values}")
     if metadata_filter:
         # The same filter DSL search takes, so one mental model covers both.
-        where = compile_filters(metadata_filter, compiler.params)
+        # A document query reads both halves off the document row: same alias twice.
+        aliases = ("c", "d") if source == "passages" else ("d", "d")
+        where = compile_filters(metadata_filter, compiler.params, aliases)
     if len(compiler.params) > limits.max_parameters:
         raise FilterError(f"query binds more than {limits.max_parameters} values")
 
@@ -400,9 +402,9 @@ def compile_query(body: dict[str, Any], bank_id: str, *, limits: Limits | None =
         )
         bank_predicate = "c.bank_id = $1"
     else:
-        # The metadata filter and the field compiler both reference ``c``; for a document
-        # query it is the document itself, so the names resolve with no special cases.
-        from_clause = f"FROM {_fq('kb_documents')} d JOIN {_fq('kb_documents')} c ON c.ctid = d.ctid"
+        # No self-join: the filter compiler is told to read both halves off ``d``. The
+        # join that used to give it a ``c`` scanned the whole table a second time.
+        from_clause = f"FROM {_fq('kb_documents')} d"
         bank_predicate = "d.bank_id = $1"
 
     sql = f"SELECT {', '.join(select_parts)} {from_clause} WHERE {bank_predicate}{where}"

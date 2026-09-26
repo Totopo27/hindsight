@@ -159,3 +159,35 @@ What each finding was worth, largest first:
 five times the size of ours — and on the tasks we win, reranking is what wins them. ArguAna
 is the exception that proves the rule: no reranker helps when "relevant" means *opposing*
 rather than *similar*, and there our plain dense arm is the best configuration we have.
+
+## Query DSL at scale (2026-09-26)
+
+200,000 documents (one passage each), six document fields and one passage field, all
+`source: "request"` — so the corpus was loaded through the ordinary write path with **no
+LLM call at all**, which is the point of request-served fields. Machine: the same laptop
+and embedded Postgres (pg0) the retrieval benchmarks used. Median of three runs, hot cache.
+
+| Query | Median |
+|---|---|
+| `count(*)` over every passage | 1257 ms |
+| group by one field, sum + count | 1179 ms |
+| group by two fields (200 vendors × 3 regions) | 1154 ms |
+| filtered + `having` + arithmetic over aggregates | 224 ms |
+| passage → document join, `count_distinct` | 2271 ms |
+| `date_trunc` by month | 140 ms |
+| array `$contains` + group | 103 ms |
+| 8 columns, nested expression over aggregates | 607 ms |
+| 300-value `$in` | 606 ms |
+
+**What the numbers say.** An unfiltered group-by reads every row — no index helps, and a
+JSONB field costs a text extract and a numeric cast per row, so a whole-bank aggregate is
+about a second per 200k documents. Anything with a `where` drops to 0.1-0.4s because the
+GIN index on the field column carries the filter. The passage→document join is the
+slowest shape and the one to optimise first if this becomes a hot path.
+
+Two things this measurement changed:
+
+- a 300-value `$in` compiled to 300 OR-ed equality tests (480 ms on 22k documents); one
+  bound `jsonb[]` and `= ANY` is a hash lookup, and the same query at 200k now costs 606 ms;
+- a document query self-joined `kb_documents` to itself, purely so the filter compiler had
+  a second alias to read. That scanned the table twice; the compiler now takes the aliases.
