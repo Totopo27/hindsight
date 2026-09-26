@@ -100,8 +100,11 @@ def test_filter_compiler_covers_the_operators():
     sql = compile_filters({"a": "x", "b": {"$gte": 3}, "c": {"$in": ["p", "q"]}, "d": {"$exists": True}}, params)
     assert sql.startswith(" AND")
     assert "numeric" in sql and "IS NOT NULL" in sql
-    # Each property name and each value is a bound parameter, never inlined.
-    assert "x" in [p.strip('"') for p in params]
+    # Each property name and each value is a bound parameter, never inlined; an $in list
+    # binds as one array parameter rather than one comparison per value.
+    flat = [item for p in params for item in (p if isinstance(p, list) else [p])]
+    assert "x" in [str(item).strip('"') for item in flat]
+    assert any(isinstance(p, list) and len(p) == 2 for p in params)
     assert compile_filters(None, []) == ""
 
 
