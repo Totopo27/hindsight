@@ -64,6 +64,47 @@ class ExtractRequest(BaseModel):
     schema_id: str | None = Field(default=None, description="Which schema to extract with")
 
 
+class CollectionRequest(BaseModel):
+    """A collection: what one record is, and which field identifies it."""
+
+    name: str | None = Field(default=None, description="Human name, e.g. 'Vendors'")
+    description: str | None = Field(default=None, description="What one record of this collection is")
+    fields: dict[str, Any] = Field(
+        description="Field name -> {type, description, values, items} or {collection: '<other>'} for a relationship"
+    )
+    identity: str | None = Field(
+        default=None,
+        description="The field that identifies one record, so the same thing found twice is one row",
+    )
+
+
+class RecordsRequest(BaseModel):
+    records: list[dict[str, Any]] = Field(
+        min_length=1, description="[{record_id?, values, evidence?, doc_ids?}] — written as given, no LLM"
+    )
+
+
+class DeriveRequest(BaseModel):
+    doc_ids: list[str] = Field(default_factory=list, description="Only these documents; empty means all")
+
+
+class PinRequest(BaseModel):
+    values: dict[str, Any] = Field(min_length=1, description="Values that outrank what the documents say")
+
+
+class RecordQueryRequest(BaseModel):
+    """The document query DSL, over records, with joins across relationship fields."""
+
+    join: list[dict[str, Any]] | None = Field(default=None, description="[{on: <relationship field>, as: <alias>}]")
+    select: list[Any] = Field(min_length=1)
+    where: dict[str, Any] | None = None
+    group_by: list[Any] | None = None
+    having: dict[str, Any] | None = None
+    order_by: list[Any] | None = None
+    limit: int = Field(default=100, ge=0, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+
 class QueryRequest(BaseModel):
     """A query in the knowledge-bank DSL. See hindsight_api/knowledge/query.py."""
 
@@ -289,6 +330,128 @@ def build_router(get_request_context: Any) -> APIRouter:
         svc: KnowledgeService = Depends(service),
     ):
         return await run(svc.submit_extract(kb, body.doc_ids, body.only_missing, body.schema_id))
+
+    @router.get("/{kb}/collections", summary="The collections of this bank")
+    async def list_collections(
+        kb: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.list_collections(kb))
+
+    @router.post("/{kb}/collections", status_code=201, summary="Define a collection and its record fields")
+    async def create_collection(
+        kb: str,
+        body: CollectionRequest,
+        collection_id: str = Query(description="Id for this collection, e.g. 'vendors'"),
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(
+            svc.put_collection(
+                kb,
+                collection_id,
+                name=body.name,
+                description=body.description,
+                fields=body.fields,
+                identity=body.identity,
+            )
+        )
+
+    @router.get("/{kb}/collections/{collection_id}", summary="One collection")
+    async def get_collection(
+        kb: str,
+        collection_id: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.get_collection(kb, collection_id))
+
+    @router.put("/{kb}/collections/{collection_id}", summary="Define or redefine a collection")
+    async def put_collection(
+        kb: str,
+        collection_id: str,
+        body: CollectionRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(
+            svc.put_collection(
+                kb,
+                collection_id,
+                name=body.name,
+                description=body.description,
+                fields=body.fields,
+                identity=body.identity,
+            )
+        )
+
+    @router.delete("/{kb}/collections/{collection_id}", summary="Delete a collection and its records")
+    async def delete_collection(
+        kb: str,
+        collection_id: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.delete_collection(kb, collection_id))
+
+    @router.post("/{kb}/collections/{collection_id}/records", summary="Write records directly (no LLM)")
+    async def put_records(
+        kb: str,
+        collection_id: str,
+        body: RecordsRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.put_records(kb, collection_id, body.records))
+
+    @router.post(
+        "/{kb}/collections/{collection_id}/derive",
+        status_code=202,
+        summary="Derive this collection's records from the documents",
+    )
+    async def derive_records(
+        kb: str,
+        collection_id: str,
+        body: DeriveRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.submit_derive_records(kb, collection_id, body.doc_ids))
+
+    @router.post("/{kb}/collections/{collection_id}/query", summary="Query records, joins included")
+    async def query_records(
+        kb: str,
+        collection_id: str,
+        body: RecordQueryRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.query_records(kb, collection_id, body.model_dump(exclude_none=True), request_context=ctx))
+
+    @router.get("/{kb}/collections/{collection_id}/records/{record_id}", summary="One record, with its evidence")
+    async def get_record(
+        kb: str,
+        collection_id: str,
+        record_id: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.get_record(kb, collection_id, record_id))
+
+    @router.put(
+        "/{kb}/collections/{collection_id}/records/{record_id}/pins",
+        summary="Pin corrected values, which outrank the documents",
+    )
+    async def pin_record(
+        kb: str,
+        collection_id: str,
+        record_id: str,
+        body: PinRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.pin_record_values(kb, collection_id, record_id, body.values))
 
     @router.post("/{kb}/query", summary="Aggregate and filter over documents and passages")
     async def query(

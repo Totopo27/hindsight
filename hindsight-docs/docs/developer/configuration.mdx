@@ -1780,6 +1780,43 @@ and a non-numeric value aggregates to `NULL` rather than failing the query. `min
 metadata property are numeric for the same reason — wrap the field in `lower()` to get the
 text extreme instead.
 
+#### Collections and records {#knowledge-bank-collections}
+
+A **collection** is a structured dataset derived from a bank's documents — vendors,
+contracts, invoices — and a **record** is one row of it: one real-world thing, gathered
+across every document that mentions it rather than one row per file.
+
+<CodeSnippet code={configurationSh} section="kb-collection" language="bash" />
+
+- **`identity`** is the field that decides which record a value belongs to, so the same
+  vendor found in ten documents is one row that ten documents filled in.
+- A field with **`collection`** is a *relationship*: its value is a record id in that
+  collection, and it is what a query joins on.
+
+Records arrive two ways, and both land in the same table — derived by the LLM from the
+documents, with the sentence behind each value kept as evidence:
+
+<CodeSnippet code={configurationSh} section="kb-derive-records" language="bash" />
+
+or written directly, when the caller already has the data (no LLM, which is also how a
+corpus is set up for testing):
+
+<CodeSnippet code={configurationSh} section="kb-write-records" language="bash" />
+
+A later write merges into the record rather than replacing it, so two documents each fill
+part of a row. `PUT …/records/{id}/pins` sets values a human corrected: they outrank
+anything the documents say afterwards, and `GET …/records/{id}` returns the values, the
+evidence and the documents behind them.
+
+**Querying records** uses the same DSL as documents and passages, plus `join`:
+
+<CodeSnippet code={configurationSh} section="kb-record-query" language="bash" />
+
+`on` names a relationship field of the collection being queried; the joined collection's
+fields are then `<alias>.<field>`, in `select`, `where`, `group_by` and `order_by` alike.
+Joins are LEFT joins — a contract with no vendor is still a contract and still counts — and
+a query is capped at four of them.
+
 ### Retain
 
 Controls the retain (memory ingestion) pipeline.

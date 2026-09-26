@@ -1196,6 +1196,721 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/collections": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "The collections of this bank",
+        "operationId": "list_collections_v1_default_knowledge_banks__kb__collections_get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Define a collection and its record fields",
+        "operationId": "create_collection_v1_default_knowledge_banks__kb__collections_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Id for this collection, e.g. 'vendors'",
+              "title": "Collection Id"
+            },
+            "description": "Id for this collection, e.g. 'vendors'"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "One collection",
+        "operationId": "get_collection_v1_default_knowledge_banks__kb__collections__collection_id__get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Define or redefine a collection",
+        "operationId": "put_collection_v1_default_knowledge_banks__kb__collections__collection_id__put",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Delete a collection and its records",
+        "operationId": "delete_collection_v1_default_knowledge_banks__kb__collections__collection_id__delete",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/records": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Write records directly (no LLM)",
+        "operationId": "put_records_v1_default_knowledge_banks__kb__collections__collection_id__records_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/derive": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Derive this collection's records from the documents",
+        "operationId": "derive_records_v1_default_knowledge_banks__kb__collections__collection_id__derive_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeriveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/query": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Query records, joins included",
+        "operationId": "query_records_v1_default_knowledge_banks__kb__collections__collection_id__query_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordQueryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/records/{record_id}": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "One record, with its evidence",
+        "operationId": "get_record_v1_default_knowledge_banks__kb__collections__collection_id__records__record_id__get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/records/{record_id}/pins": {
+      "put": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Pin corrected values, which outrank the documents",
+        "operationId": "pin_record_v1_default_knowledge_banks__kb__collections__collection_id__records__record_id__pins_put",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/query": {
       "post": {
         "tags": [
@@ -11347,6 +12062,58 @@
           "deleted_count": 3
         }
       },
+      "CollectionRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Human name, e.g. 'Vendors'"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "What one record of this collection is"
+          },
+          "fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Fields",
+            "description": "Field name -> {type, description, values, items} or {collection: '<other>'} for a relationship"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity",
+            "description": "The field that identifies one record, so the same thing found twice is one row"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fields"
+        ],
+        "title": "CollectionRequest",
+        "description": "A collection: what one record is, and which field identifies it."
+      },
       "ConsolidationRequest": {
         "properties": {
           "observation_scopes": {
@@ -12315,6 +13082,20 @@
           "message": "Deleted successfully",
           "success": true
         }
+      },
+      "DeriveRequest": {
+        "properties": {
+          "doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Doc Ids",
+            "description": "Only these documents; empty means all"
+          }
+        },
+        "type": "object",
+        "title": "DeriveRequest"
       },
       "DirectiveListResponse": {
         "properties": {
@@ -17718,6 +18499,22 @@
           "total": 150
         }
       },
+      "PinRequest": {
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object",
+            "minProperties": 1,
+            "title": "Values",
+            "description": "Values that outrank what the documents say"
+          }
+        },
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "title": "PinRequest"
+      },
       "PromptBlockModel": {
         "properties": {
           "text": {
@@ -18571,6 +19368,118 @@
         ],
         "title": "RecallScores",
         "description": "Per-result recall scores from different stages of the pipeline.\n\n``final`` is the value results are ranked by. The others are diagnostic and\ncan be filtered on via the recall ``min_scores`` request parameter. ``semantic``\nand ``keyword`` are the raw per-strategy retrieval scores (``None`` when that\nstrategy did not surface this result); ``reranker`` is the cross-encoder's\nnormalized relevance."
+      },
+      "RecordQueryRequest": {
+        "properties": {
+          "join": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Join",
+            "description": "[{on: <relationship field>, as: <alias>}]"
+          },
+          "select": {
+            "items": {},
+            "type": "array",
+            "minItems": 1,
+            "title": "Select"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where"
+          },
+          "group_by": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group By"
+          },
+          "having": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Having"
+          },
+          "order_by": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order By"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "select"
+        ],
+        "title": "RecordQueryRequest",
+        "description": "The document query DSL, over records, with joins across relationship fields."
+      },
+      "RecordsRequest": {
+        "properties": {
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Records",
+            "description": "[{record_id?, values, evidence?, doc_ids?}] \u2014 written as given, no LLM"
+          }
+        },
+        "type": "object",
+        "required": [
+          "records"
+        ],
+        "title": "RecordsRequest"
       },
       "RecoverConsolidationResponse": {
         "properties": {

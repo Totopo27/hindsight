@@ -154,6 +154,73 @@ curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/query
 # [/docs:kb-query]
 echo
 
+# [docs:kb-collection]
+# A collection is a structured dataset derived from the documents. `identity` is the field
+# that makes the same real-world thing found in two documents one record, and a field with
+# `collection` is a relationship the query endpoint can join on.
+curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Vendors", "identity": "name",
+    "fields": {
+      "name":    {"type": "string"},
+      "country": {"type": "string", "values": ["de", "fr", "it", "us"]},
+      "tier":    {"type": "string", "values": ["gold", "silver"]}
+    }
+  }'
+echo
+
+curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/contracts" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Contracts", "identity": "reference",
+    "fields": {
+      "reference": {"type": "string"},
+      "value":     {"type": "number"},
+      "status":    {"type": "string", "values": ["active", "expired"]},
+      "vendor":    {"collection": "vendors", "description": "The vendor this contract is with"}
+    }
+  }'
+# [/docs:kb-collection]
+echo
+
+# [docs:kb-derive-records]
+# Fill the collection from the documents already in the bank (a background operation)
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors/derive" \
+  -H "Content-Type: application/json" -d '{}'
+# [/docs:kb-derive-records]
+echo
+
+# [docs:kb-write-records]
+# Or write records yourself, when you already have the data: same rows, no LLM
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors/records" \
+  -H "Content-Type: application/json" \
+  -d '{"records": [{"values": {"name": "acme", "country": "de", "tier": "gold"}}]}'
+# [/docs:kb-write-records]
+echo
+
+# [docs:kb-record-query]
+# Query records with the same DSL, joining a relationship field
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/contracts/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "join": [{"on": "vendor", "as": "vendor"}],
+    "select": [
+      {"field": "vendor.country", "as": "country"},
+      {"count": "*", "as": "contracts"},
+      {"sum": "value", "as": "total"}
+    ],
+    "where": {"status": "active", "vendor.tier": "gold"},
+    "group_by": ["vendor.country"],
+    "having": {"contracts": {"$gte": 1}},
+    "order_by": [{"field": "total", "direction": "desc"}]
+  }'
+# [/docs:kb-record-query]
+echo
+
+curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/contracts" > /dev/null
+curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors" > /dev/null
+
 curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb" > /dev/null
 
 # =============================================================================

@@ -88,6 +88,8 @@ BACKUP_TABLES = [
     "kb_documents",
     "kb_passages",
     "kb_schemas",
+    "kb_collections",
+    "kb_records",
 ]
 
 MANIFEST_VERSION = "2"

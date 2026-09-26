@@ -4266,6 +4266,10 @@ class MemoryEngine(MemoryEngineInterface):
                     from ..knowledge.service import run_extract_fields_task
 
                     await run_extract_fields_task(self, task_dict)
+                elif task_type == "knowledge_derive_records":
+                    from ..knowledge.service import run_derive_records_task
+
+                    await run_derive_records_task(self, task_dict)
                 elif task_type == "webhook_delivery":
                     await self._handle_webhook_delivery(task_dict)
                 else:

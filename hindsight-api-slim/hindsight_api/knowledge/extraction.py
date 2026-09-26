@@ -164,3 +164,74 @@ async def classify_schema(
         logger.warning("knowledge schema classification failed for %s: %s", doc_id, e)
         return None
     return None if chosen in (None, "none") else str(chosen)
+
+
+_RECORDS_SYSTEM = (
+    "You pull structured records out of a document. One record is one real-world thing — "
+    "a vendor, a contract, a person — not one per document: a document may describe "
+    "several, or add detail to one you have seen before. Fill only the fields the text "
+    "supports, quote the sentence each value came from, and return nothing at all rather "
+    "than inventing a record the document does not describe."
+)
+
+
+async def derive_records(
+    llm: Any,
+    fields: dict[str, dict[str, Any]],
+    *,
+    collection_name: str,
+    doc_id: str,
+    title: str | None,
+    text: str,
+    char_limit: int,
+) -> list[dict[str, Any]]:
+    """The records this document contributes to one collection, with their evidence.
+
+    Each returned item is ``{"values": {...}, "evidence": {field: quote}}``. The quote is
+    what makes a derived number auditable: a total nobody can trace is a claim, not data.
+    """
+    if not fields:
+        return []
+    value_model = extraction_model(fields, name="RecordValues")
+    if value_model is None:
+        return []
+    record_model = create_model(
+        "Record",
+        values=(value_model, Field(description="The record's fields")),
+        evidence=(dict[str, str], Field(default_factory=dict, description="field name -> the sentence it came from")),
+    )
+    batch_model = create_model(
+        "Records",
+        records=(
+            list[record_model],
+            Field(default_factory=list, description=f"Every {collection_name} this text describes"),
+        ),  # type: ignore[valid-type]
+    )
+    messages = [
+        {"role": "system", "content": _RECORDS_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"Collection: {collection_name}\n\nDocument{f' titled {title}' if title else ''}:\n{text[:char_limit]}"
+            ),
+        },
+    ]
+    try:
+        result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_records")
+        content = result.content
+        records = content.records if isinstance(content, BaseModel) else (content or {}).get("records") or []
+    except Exception as e:
+        logger.warning("knowledge record derivation failed for %s: %s", doc_id, e)
+        return []
+
+    out: list[dict[str, Any]] = []
+    for record in records:
+        if isinstance(record, BaseModel):
+            values, evidence = jsonable(record.values.model_dump()), dict(record.evidence or {})
+        elif isinstance(record, dict):
+            values, evidence = jsonable(record.get("values") or {}), dict(record.get("evidence") or {})
+        else:
+            continue
+        if values:
+            out.append({"values": values, "evidence": {k: v for k, v in evidence.items() if k in values}})
+    return out

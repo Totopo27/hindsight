@@ -22,12 +22,14 @@ from typing import Any
 
 from ..engine.db_utils import acquire_with_retry
 from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
+from . import collections as collections_store
 from . import store
-from .extraction import classify_schema, extract_document, extract_passages
+from .extraction import classify_schema, derive_records, extract_document, extract_passages
 from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
 from .passages import split_into_passages
 from .query import CompiledQuery, Limits, compile_query, json_safe
+from .records_query import compile_record_query
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +477,226 @@ class KnowledgeService:
         logger.info("knowledge field extraction bank=%s %s", bank_id, counts)
         return counts
 
+    # ---- collections and records
+
+    async def list_collections(self, bank_id: str) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            items = await collections_store.list_collections(conn, bank_id)
+        return {"items": items, "total": len(items)}
+
+    async def get_collection(self, bank_id: str, collection_id: str) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            collection = await collections_store.get_collection(conn, bank_id, collection_id)
+            if collection is None:
+                raise KnowledgeBankError(404, f"collection {collection_id!r} not found")
+            collection["records"] = await conn.fetchval(
+                f"SELECT count(*) FROM {store.fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2",
+                bank_id,
+                collection_id,
+            )
+        return collection
+
+    async def put_collection(
+        self,
+        bank_id: str,
+        collection_id: str,
+        *,
+        name: str | None,
+        description: str | None,
+        fields: Any,
+        identity: str | None,
+    ) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        if not collection_id or not collection_id.replace("_", "").replace("-", "").isalnum():
+            raise KnowledgeBankError(400, "collection id must be alphanumeric with _ or -")
+        async with acquire_with_retry(await self._pool()) as conn:
+            existing = {c["collection_id"] for c in await collections_store.list_collections(conn, bank_id)}
+        try:
+            # A relationship may point at this collection itself (a contract that
+            # supersedes another), so its own id counts as known.
+            definition = collections_store.validate_collection_fields(
+                fields, known_collections=existing | {collection_id}
+            )
+        except SchemaError as e:
+            raise KnowledgeBankError(400, str(e)) from e
+        if identity is not None and identity not in definition:
+            raise KnowledgeBankError(400, f"identity {identity!r} is not one of this collection's fields")
+        async with acquire_with_retry(await self._pool()) as conn:
+            await collections_store.put_collection(
+                conn,
+                bank_id,
+                collection_id,
+                name=name,
+                description=description,
+                fields=definition,
+                identity=identity,
+            )
+        return await self.get_collection(bank_id, collection_id)
+
+    async def delete_collection(self, bank_id: str, collection_id: str) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            if not await collections_store.delete_collection(conn, bank_id, collection_id):
+                raise KnowledgeBankError(404, f"collection {collection_id!r} not found")
+        return {"collection_id": collection_id, "deleted": True}
+
+    async def put_records(self, bank_id: str, collection_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
+        """Write records directly — the deterministic path, no LLM involved."""
+        collection = await self.get_collection(bank_id, collection_id)
+        written = 0
+        async with acquire_with_retry(await self._pool()) as conn:
+            for record in records:
+                record_id = self._record_id(collection, record.get("record_id"), record.get("values") or {})
+                await collections_store.upsert_record(
+                    conn,
+                    bank_id,
+                    collection_id,
+                    record_id,
+                    values=record.get("values") or {},
+                    evidence=record.get("evidence") or {},
+                    doc_ids=record.get("doc_ids") or [],
+                )
+                written += 1
+        return {"collection_id": collection_id, "records_written": written}
+
+    async def get_record(self, bank_id: str, collection_id: str, record_id: str) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            record = await collections_store.get_record(conn, bank_id, collection_id, record_id)
+        if record is None:
+            raise KnowledgeBankError(404, f"record {record_id!r} not found")
+        return record
+
+    async def pin_record_values(
+        self, bank_id: str, collection_id: str, record_id: str, pinned: dict[str, Any]
+    ) -> dict[str, Any]:
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            if not await collections_store.pin_values(conn, bank_id, collection_id, record_id, pinned):
+                raise KnowledgeBankError(404, f"record {record_id!r} not found")
+        return await self.get_record(bank_id, collection_id, record_id)
+
+    def _record_id(self, collection: dict[str, Any], given: str | None, values: dict[str, Any]) -> str:
+        """Which record this is.
+
+        The identity field is what makes two documents about the same vendor one record
+        rather than two, so it decides the id; without one, a record is whatever the
+        caller called it, and failing that a hash of its values.
+        """
+        if given:
+            return str(given)
+        identity = collection.get("identity")
+        if identity and values.get(identity) not in (None, ""):
+            return str(values[identity]).strip().lower()
+        return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:24]
+
+    async def submit_derive_records(
+        self, bank_id: str, collection_id: str, doc_ids: list[str] | None
+    ) -> dict[str, Any]:
+        """Queue LLM derivation of this collection's records from the bank's documents."""
+        await self.get_collection(bank_id, collection_id)
+        result = await self.memory._submit_async_operation(
+            bank_id=bank_id,
+            operation_type="knowledge_derive_records",
+            task_type="knowledge_derive_records",
+            task_payload={"collection_id": collection_id, "doc_ids": doc_ids or []},
+        )
+        return {"operation_id": result["operation_id"], "collection_id": collection_id, "status": "pending"}
+
+    async def run_derive_records(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Worker side: read the documents, ask for records, merge them by identity."""
+        bank_id = task["bank_id"]
+        collection_id = task["collection_id"]
+        collection = await self.get_collection(bank_id, collection_id)
+        config = await self._config(bank_id, None)
+        pool = await self._pool()
+        llm = self._field_extraction_llm(bank_id, config)
+
+        where = "bank_id = $1"
+        params: list[Any] = [bank_id]
+        if task.get("doc_ids"):
+            params.append(task["doc_ids"])
+            where += f" AND doc_id = ANY(${len(params)}::text[])"
+        async with acquire_with_retry(pool) as conn:
+            documents = await conn.fetch(
+                f"SELECT doc_id, title, text FROM {store.fq_table('kb_documents')} WHERE {where} ORDER BY doc_id",
+                *params,
+            )
+
+        # A relationship's value is another record's id, and the model is told the field
+        # by name; it is not asked to invent ids, so relationships come from whatever the
+        # text names and are resolved by the same identity rule the other collection uses.
+        derivable = {name: spec for name, spec in (collection["fields"] or {}).items() if not spec.get("collection")}
+        relationship_fields = collections_store.relationships(collection["fields"] or {})
+        records_written = 0
+        for row in documents:
+            derived = await derive_records(
+                llm,
+                {**derivable, **{name: {"type": "string"} for name in relationship_fields}},
+                collection_name=collection.get("name") or collection_id,
+                doc_id=row["doc_id"],
+                title=row["title"],
+                text=row["text"],
+                char_limit=int(config.kb_field_extraction_max_chars),
+            )
+            async with acquire_with_retry(pool) as conn:
+                for record in derived:
+                    values = dict(record["values"])
+                    for name in relationship_fields:
+                        if values.get(name) is not None:
+                            values[name] = str(values[name]).strip().lower()
+                    await collections_store.upsert_record(
+                        conn,
+                        bank_id,
+                        collection_id,
+                        self._record_id(collection, None, values),
+                        values=values,
+                        evidence={
+                            name: [{"doc_id": row["doc_id"], "quote": quote}]
+                            for name, quote in (record["evidence"] or {}).items()
+                        },
+                        doc_ids=[row["doc_id"]],
+                    )
+                    records_written += 1
+
+        counts = {"documents_read": len(documents), "records_written": records_written}
+        operation_id = task.get("operation_id")
+        if operation_id:
+            async with acquire_with_retry(pool) as conn:
+                await conn.execute(
+                    f"UPDATE {store.fq_table('async_operations')} "
+                    "SET result_metadata = COALESCE(result_metadata, '{}'::jsonb) || $1::jsonb "
+                    "WHERE operation_id = $2",
+                    json.dumps(counts),
+                    uuid.UUID(str(operation_id)),
+                )
+        logger.info("knowledge records derived bank=%s collection=%s %s", bank_id, collection_id, counts)
+        return counts
+
+    async def query_records(
+        self, bank_id: str, collection_id: str, body: dict[str, Any], request_context: Any = None
+    ) -> dict[str, Any]:
+        """Run one record query, joins included."""
+        collection = await self.get_collection(bank_id, collection_id)
+        try:
+            compiled = compile_record_query(body, bank_id, collection, limits=Limits())
+        except FilterError as e:
+            raise KnowledgeBankError(400, str(e)) from e
+        async with acquire_with_retry(await self._pool()) as conn:
+            try:
+                rows = await conn.fetch(compiled.sql, *compiled.params)
+            except Exception as e:
+                logger.info("knowledge record query failed bank=%s: %s", bank_id, e)
+                raise KnowledgeBankError(400, f"query could not run: {e}") from e
+        return {
+            "columns": compiled.columns,
+            "rows": [[json_safe(value) for value in row] for row in rows],
+            "row_count": len(rows),
+            "grouped": compiled.grouped,
+        }
+
     # ---- query
 
     async def query(self, bank_id: str, body: dict[str, Any], request_context: Any = None) -> dict[str, Any]:
@@ -727,6 +949,9 @@ class KnowledgeService:
         async with acquire_with_retry(await self._pool()) as conn:
             if not await store.delete_document(conn, bank_id, doc_id):
                 raise KnowledgeBankError(404, f"document {doc_id!r} not found")
+            # Records are derived from documents: a record only this document was behind
+            # goes with it, and one several documents contribute to just loses this source.
+            await collections_store.delete_records_for_document(conn, bank_id, doc_id)
         return {"doc_id": doc_id, "deleted": True}
 
     async def search(
@@ -841,11 +1066,17 @@ async def run_extract_fields_task(memory: Any, task: dict[str, Any]) -> dict[str
     return await KnowledgeService(memory).run_extract_fields(task)
 
 
+async def run_derive_records_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Entry point the engine's task dispatch calls for ``knowledge_derive_records``."""
+    return await KnowledgeService(memory).run_derive_records(task)
+
+
 __all__ = [
     "DocumentInput",
     "KnowledgeBankError",
     "KnowledgeService",
     "SearchHit",
+    "run_derive_records_task",
     "run_extract_fields_task",
     "run_write_batch_task",
 ]
