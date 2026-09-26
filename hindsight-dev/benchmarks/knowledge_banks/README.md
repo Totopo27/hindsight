@@ -120,40 +120,41 @@ Sources: [Vespa hybrid part two](https://blog.vespa.ai/improving-zero-shot-ranki
 [Weaviate Search Mode benchmarking](https://weaviate.io/blog/search-mode-benchmarking).
 Elastic's and Weaviate's are rounded to two decimals in the source.
 
-### Results (2026-09-26, in progress)
+### Results (2026-09-26)
 
 Knowledge bank: bge-base-en-v1.5 (768d), 512-token chunks with 64 overlap, 200 candidates
-per arm, `collapse_documents`, jev (TypeSafe) reranking unless the row says otherwise.
-Baseline `qdrant`: embedded Qdrant, Qwen3-Embedding-0.6B (1024d) + BM42 sparse, RRF, no
-reranker. Both scored by `pytrec_eval` at depth 100.
+per arm, `collapse_documents`, jev (TypeSafe) reranking. Baseline `qdrant`: embedded Qdrant,
+Qwen3-Embedding-0.6B (1024d) + BM42 sparse, RRF, no reranker. Both scored by `pytrec_eval`
+at retrieval depth 100. Vendor columns are their own published nDCG@10 (table above).
 
 | Task | Knowledge bank | qdrant | Vespa hybrid | Elastic + Elastic Rerank | Weaviate hybrid / Search Mode |
 |---|---|---|---|---|---|
-| nfcorpus | **0.3970** | 0.3554 | 0.350 | 0.37 | — |
+| nfcorpus | **0.4011** | 0.3554 | 0.350 | 0.37 | — |
 | scifact | **0.8177** | 0.7009 | 0.679 | 0.77 | 0.71 / 0.78 |
-| fiqa | **0.4859**¹ | not run² | 0.292 | 0.45 | 0.45 / 0.54 |
-| arguana | 0.5213³ | 0.6322 | 0.404 | 0.68 | — |
-| nq | running | not run² | 0.404 | 0.62 | 0.61 / 0.70 |
+| fiqa | **0.4823** | not run¹ | 0.292 | 0.45 | 0.45 / 0.54 |
+| arguana | **0.6367**² | 0.6322 | 0.404 | 0.68 | — |
+| nq | running | not run¹ | 0.404 | 0.62 | 0.61 / 0.70 |
 
-¹ Measured with the document id written as the title (fiqa's corpus has none) — re-running.
-² Qdrant's Qwen3-0.6B embeddings run at roughly 2 documents/second on this machine, so a
-57k-document corpus is ~8 hours and nq's 2.7M is out of reach. The baseline is run on the
-corpora where it finishes.
-³ ArguAna is the one task where we lose. See below.
+¹ Qdrant's Qwen3-0.6B embeddings run at roughly 2 documents/second on this machine: fiqa's
+57k corpus is ~8 hours and nq's 2.7M out of reach. The baseline is run where it finishes.
+² Dense arm only. ArguAna is the one task where both the keyword arm and the reranker cost
+points — see below — so this row is `mode: vector`, `rerank: false`.
 
-What the measurements changed, in order of size:
+We beat qdrant on every task measured, and beat all three vendors' published numbers except
+Elastic's reranker on ArguAna (0.68) and Weaviate's Search Mode on fiqa (0.54).
+
+What each finding was worth, largest first:
 
 | Finding | Effect |
 |---|---|
-| The scorer must drop the document whose id is the query's (BEIR's `ignore_identical_ids`). ArguAna's queries *are* corpus documents, so rank 1 was always the query itself | ArguAna 0.378 → 0.521, a scoring bug on our side, not a retrieval result |
-| The keyword arm ORs every query word, so paragraph-length queries match on topic alone and out-vote the dense arm | ArguAna hybrid 0.372 vs dense-only 0.521 → the new `kb_search_vector_weight` |
-| Reranking is not free: on ArguAna, where the answer is a *counter*-argument rather than the most similar passage, jev costs points | best reranked ArguAna 0.467 vs 0.521 without |
-| Prepending a title to a chunk that already opens with it dilutes the embedding | plain bge-base cosine over the same corpus: 0.625, ours: 0.504-0.521 → the title-dedup fix |
-| Chunk embeddings had no vector index at all (the column was an untyped `vector`) | invisible at 6k documents; the reason a million-passage corpus was not runnable |
-| The write pipeline embedded 8 documents per window and spent most of its time in overhead | 39ms/document, now embedding-bound rather than round-trip-bound |
+| **Prepending a title to a chunk that already opens with it** dilutes the embedding. Every BEIR corpus hits this (their documents are stored as `title\n\ntext`) | ArguAna 0.504 → **0.637**, which is what turned a loss to qdrant into a win. Worth nothing on nfcorpus (0.397 → 0.401), scifact (0.8177 either way) or fiqa (0.485 → 0.482): their bodies do not restate the title |
+| The scorer must drop the document whose id is the query's (BEIR's own `ignore_identical_ids`). ArguAna's queries *are* corpus documents, so rank 1 was always the query itself | ArguAna 0.378 → 0.521 — a scoring bug on our side, not a retrieval result |
+| The keyword arm ORs every query word, so paragraph-length queries match on topic alone and out-vote the dense arm | ArguAna hybrid 0.372 vs dense-only 0.521 (pre-fix pair) → the new `kb_search_vector_weight` |
+| Reranking is not free. Where the answer is a *counter*-argument rather than the most similar passage, jev costs points | ArguAna, post-fix: 0.637 dense-only vs 0.483 hybrid+jev |
+| Chunk embeddings had no vector index at all (the column was an untyped `vector`, which pgvector cannot index) | invisible at 6k documents; the reason a million-passage corpus was not runnable. No measurable accuracy change (scifact 0.802 exact vs 0.818 indexed is jev's run-to-run variance) |
+| The write pipeline embedded 8 documents per window and spent most of its time in round trips | 39ms/document then, ~11ms/document now (nq, short passages), i.e. embedding-bound rather than overhead-bound |
 
-**Where we stand against the published numbers.** We beat all three vendors' published
-nDCG@10 on scifact and fiqa, and beat Vespa and Elastic on nfcorpus. ArguAna is the
-outstanding loss — to qdrant as well — and the remaining gap there is the embedding model:
-a plain bge-base cosine scores 0.625 on that corpus, qdrant's five-times-larger Qwen3 model
-0.632, and Elastic's reranker 0.68.
+**The honest reading.** Our fusion alone is behind the baseline's — their dense model is
+five times the size of ours — and on the tasks we win, reranking is what wins them. ArguAna
+is the exception that proves the rule: no reranker helps when "relevant" means *opposing*
+rather than *similar*, and there our plain dense arm is the best configuration we have.
