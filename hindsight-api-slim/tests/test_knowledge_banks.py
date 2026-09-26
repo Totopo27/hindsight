@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 
 from hindsight_api.api import create_app
-from hindsight_api.knowledge.chunking import chunk_document
+from hindsight_api.knowledge.passages import split_into_passages
 
 DOCS = [
     {
@@ -74,7 +74,7 @@ async def test_write_batch_runs_as_an_operation_and_becomes_searchable(kb_client
     assert [o["task_type"] for o in listed["operations"]] == ["knowledge_write_batch"]
 
     stats = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}")).json()
-    assert stats["documents"] == 3 and stats["chunks"] >= 3
+    assert stats["documents"] == 3 and stats["passages"] >= 3
 
     hits = (
         await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "stock exchange", "top_k": 3})
@@ -118,11 +118,11 @@ async def test_rewriting_a_document_replaces_it_and_identical_text_is_a_no_op(kb
     await _write(kb_client, kb, changed)
     document = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/milan")).json()
     assert "Salone" in document["text"]
-    assert len(document["chunks"]) == document["chunk_count"]
+    assert len(document["passages"]) == document["passage_count"]
     stale = (
         await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Duomo cathedral"})
     ).json()["results"]
-    assert all("Duomo" not in hit["text"] for hit in stale)  # the old chunks are gone
+    assert all("Duomo" not in hit["text"] for hit in stale)  # the old passages are gone
 
     deleted = await kb_client.delete(f"/v1/default/knowledge-banks/{kb}/documents/milan")
     assert deleted.status_code == 200
@@ -135,13 +135,13 @@ async def test_chunking_follows_the_banks_configured_size(kb_client, memory):
     kb = await _bank(kb_client)
     long_text = " ".join(f"Sentence number {i} about retrieval quality." for i in range(400))
     await _write(kb_client, kb, [{"id": "long", "text": long_text}])
-    default_chunks = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/long")).json()["chunks"]
+    default_chunks = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/long")).json()["passages"]
     assert max(c["token_count"] for c in default_chunks) <= 512
 
-    patched = await kb_client.patch(f"/v1/default/banks/{kb}/config", json={"updates": {"kb_chunk_size": 128}})
+    patched = await kb_client.patch(f"/v1/default/banks/{kb}/config", json={"updates": {"kb_passage_size": 128}})
     assert patched.status_code == 200, patched.text
     await _write(kb_client, kb, [{"id": "long2", "text": long_text}])
-    small_chunks = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/long2")).json()["chunks"]
+    small_chunks = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/long2")).json()["passages"]
     assert max(c["token_count"] for c in small_chunks) <= 128
     assert len(small_chunks) > len(default_chunks)
 
@@ -198,12 +198,12 @@ async def test_bad_requests_are_refused(kb_client):
 @pytest.mark.asyncio
 async def test_a_document_with_no_text_is_stored_with_no_chunks(kb_client):
     """Corpora carry records whose body extracted to nothing. Writing one must not fail the
-    batch around it: the document is stored, contributes no chunks, and is never a hit."""
+    batch around it: the document is stored, contributes no passages, and is never a hit."""
     kb = await _bank(kb_client)
     await _write(kb_client, kb, [{"id": "empty", "text": ""}, {"id": "real", "text": "Turin has Fiat."}])
 
     listed = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents")).json()["items"]
-    assert {d["doc_id"]: d["chunk_count"] for d in listed} == {"empty": 0, "real": 1}
+    assert {d["doc_id"]: d["passage_count"] for d in listed} == {"empty": 0, "real": 1}
     hits = (
         await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Fiat", "top_k": 5})
     ).json()["results"]
@@ -212,11 +212,11 @@ async def test_a_document_with_no_text_is_stored_with_no_chunks(kb_client):
 
 def test_chunk_overlap_repeats_the_tail_of_the_previous_chunk():
     text = " ".join(f"word{i}" for i in range(2000))
-    chunks = chunk_document(text, chunk_size=64, chunk_overlap=16)
-    assert len(chunks) > 1
-    assert all(c.token_count <= 64 for c in chunks)
-    tail = chunks[0].text.split()[-3:]
-    assert " ".join(tail) in chunks[1].text
+    passages = split_into_passages(text, passage_size=64, passage_overlap=16)
+    assert len(passages) > 1
+    assert all(c.token_count <= 64 for c in passages)
+    tail = passages[0].text.split()[-3:]
+    assert " ".join(tail) in passages[1].text
 
 
 def test_embedding_text_does_not_repeat_a_title_the_chunk_already_opens_with():
@@ -257,7 +257,7 @@ async def test_collapse_documents_returns_one_chunk_per_document(kb_client):
             f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Milan design fair", "top_k": 3}
         )
     ).json()["results"]
-    assert len({hit["document_id"] for hit in plain}) < len(plain)  # several chunks of one document
+    assert len({hit["document_id"] for hit in plain}) < len(plain)  # several passages of one document
     collapsed = (
         await kb_client.post(
             f"/v1/default/knowledge-banks/{kb}/search",

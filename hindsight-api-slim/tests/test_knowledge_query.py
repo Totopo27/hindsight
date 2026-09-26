@@ -16,14 +16,16 @@ from hindsight_api.knowledge.filters import FilterError
 from hindsight_api.knowledge.query import Limits, compile_query
 
 SCHEMA = {
-    "document": {
+    "document_fields": {
         "doc_type": {"type": "string", "values": ["invoice", "contract", "memo"], "source": "request"},
         "vendor": {"type": "string", "source": "request"},
         "total": {"type": "number", "source": "request"},
         "region": {"type": "string", "source": "request"},
         "signed_on": {"type": "date", "source": "request"},
     },
-    "chunks": {"clause": {"type": "string", "values": ["payment", "termination", "liability"], "source": "request"}},
+    "passage_fields": {
+        "clause": {"type": "string", "values": ["payment", "termination", "liability"], "source": "request"}
+    },
 }
 
 CORPUS = [
@@ -48,7 +50,7 @@ async def bank(kb_client, memory):
     """A bank whose whole schema is request-served, so nothing here calls an LLM."""
     kb = f"kb-{uuid.uuid4().hex[:8]}"
     assert (await kb_client.post("/v1/default/knowledge-banks", json={"id": kb})).status_code == 201
-    assert (await kb_client.put(f"/v1/default/knowledge-banks/{kb}/metadata-schema", json=SCHEMA)).status_code == 200
+    assert (await kb_client.put(f"/v1/default/knowledge-banks/{kb}/schemas/default", json=SCHEMA)).status_code == 200
 
     documents = []
     for doc_id, doc_type, vendor, total, region, signed_on, clause in CORPUS:
@@ -62,8 +64,8 @@ async def bank(kb_client, memory):
                 "id": doc_id,
                 "title": f"{doc_type} {doc_id}",
                 "text": f"{doc_type} from {vendor} in {region}. " * 20,
-                "properties": properties,
-                "chunk_properties": {"0": {"clause": clause}} if clause else {},
+                "fields": properties,
+                "passage_fields": {"0": {"clause": clause}} if clause else {},
             }
         )
     write = await kb_client.post(f"/v1/default/knowledge-banks/{kb}/documents", json={"documents": documents})
@@ -90,20 +92,20 @@ async def test_supplied_properties_land_where_extraction_would_and_cost_no_llm_c
     assert provider.get_mock_calls() == [], "a fully request-served schema must not call the LLM"
 
     document = (await kb_client.get(f"/v1/default/knowledge-banks/{bank}/documents/inv-1")).json()
-    assert document["extracted_metadata"] == {
+    assert document["fields"] == {
         "doc_type": "invoice",
         "vendor": "Acme",
         "total": 1200,
         "region": "emea",
         "signed_on": "2026-01-31",
     }
-    assert document["chunks"][0]["metadata"] == {"clause": "payment"}
+    assert document["passages"][0]["fields"] == {"clause": "payment"}
 
     # And the values filter exactly like extracted ones, because they are the same object.
     hits = (
         await kb_client.post(
             f"/v1/default/knowledge-banks/{bank}/search",
-            json={"query": "invoice", "top_k": 10, "metadata": {"vendor": "Globex"}},
+            json={"query": "invoice", "top_k": 10, "fields": {"vendor": "Globex"}},
         )
     ).json()["results"]
     assert {hit["document_id"] for hit in hits} == {"inv-3"}
@@ -115,18 +117,18 @@ async def test_a_supplied_value_overrides_extraction_for_that_document(kb_client
     kb = f"kb-{uuid.uuid4().hex[:8]}"
     await kb_client.post("/v1/default/knowledge-banks", json={"id": kb})
     await kb_client.put(
-        f"/v1/default/knowledge-banks/{kb}/metadata-schema",
-        json={"document": {"doc_type": {"type": "string", "values": ["invoice", "memo"]}}},
+        f"/v1/default/knowledge-banks/{kb}/schemas/default",
+        json={"document_fields": {"doc_type": {"type": "string", "values": ["invoice", "memo"]}}},
     )
     provider = memory._llm_config._provider_impl
     provider.set_response_callback(lambda messages, scope: {"doc_type": "memo"})
 
     await kb_client.post(
         f"/v1/default/knowledge-banks/{kb}/documents",
-        json={"documents": [{"id": "d1", "text": "Acme invoice.", "properties": {"doc_type": "invoice"}}]},
+        json={"documents": [{"id": "d1", "text": "Acme invoice.", "fields": {"doc_type": "invoice"}}]},
     )
     document = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/d1")).json()
-    assert document["extracted_metadata"] == {"doc_type": "invoice"}
+    assert document["fields"] == {"doc_type": "invoice"}
     assert provider.get_mock_calls() == [], "the supplied value should have skipped the call"
 
     # A document that supplies nothing still gets extracted.
@@ -135,7 +137,7 @@ async def test_a_supplied_value_overrides_extraction_for_that_document(kb_client
         json={"documents": [{"id": "d2", "text": "Internal note."}]},
     )
     other = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/d2")).json()
-    assert other["extracted_metadata"] == {"doc_type": "memo"}
+    assert other["fields"] == {"doc_type": "memo"}
     assert len(provider.get_mock_calls()) == 1
 
 
@@ -143,13 +145,13 @@ async def test_a_supplied_value_overrides_extraction_for_that_document(kb_client
 async def test_supplied_values_are_held_to_the_schema(kb_client, bank):
     bad_value = await kb_client.post(
         f"/v1/default/knowledge-banks/{bank}/documents",
-        json={"documents": [{"id": "x", "text": "t", "properties": {"doc_type": "receipt"}}]},
+        json={"documents": [{"id": "x", "text": "t", "fields": {"doc_type": "receipt"}}]},
     )
     assert bad_value.status_code == 400 and "schema" in bad_value.json()["detail"]
 
     unknown = await kb_client.post(
         f"/v1/default/knowledge-banks/{bank}/documents",
-        json={"documents": [{"id": "x", "text": "t", "properties": {"nope": 1}}]},
+        json={"documents": [{"id": "x", "text": "t", "fields": {"nope": 1}}]},
     )
     assert unknown.status_code == 400 and "nope" in unknown.json()["detail"]
 
@@ -160,10 +162,10 @@ async def test_supplied_values_are_held_to_the_schema(kb_client, bank):
 def test_compiler_binds_every_value_and_never_interpolates_input():
     compiled = compile_query(
         {
-            "from": "chunks",
-            "select": [{"field": "metadata.doc_type", "as": "kind"}, {"count": "*", "as": "n"}],
-            "where": {"vendor": "Acme'; DROP TABLE kb_chunks; --"},
-            "group_by": ["metadata.doc_type"],
+            "from": "passages",
+            "select": [{"field": "fields.doc_type", "as": "kind"}, {"count": "*", "as": "n"}],
+            "where": {"vendor": "Acme'; DROP TABLE kb_passages; --"},
+            "group_by": ["fields.doc_type"],
         },
         "bank-1",
     )
@@ -186,7 +188,7 @@ def test_compiler_binds_every_value_and_never_interpolates_input():
         ({"select": [{"count": "*", "as": "a"}, {"count": "*", "as": "a"}]}, "duplicate"),
         ({"select": [{"date_trunc": ["century", "created_at"]}]}, "date_trunc"),
         ({"select": [{"nonsense": "doc_id"}]}, "unknown operator"),
-        ({"from": "documents", "select": [{"field": "chunk_metadata.x"}]}, "not available"),
+        ({"from": "documents", "select": [{"field": "passage_fields.x"}]}, "not available"),
         ({"from": "nothing", "select": ["doc_id"]}, "documents"),
     ],
 )
@@ -208,7 +210,7 @@ def test_compiler_bounds_the_work_a_single_query_can_ask_for():
 
     with pytest.raises(FilterError, match="at most"):
         compile_query(
-            {"select": ["doc_id"], "group_by": [f"metadata.p{i}" for i in range(limits.max_group_by + 1)]},
+            {"select": ["doc_id"], "group_by": [f"fields.p{i}" for i in range(limits.max_group_by + 1)]},
             "bank-1",
         )
 
@@ -230,13 +232,13 @@ async def test_counts_and_sums_group_the_way_sql_would(kb_client, bank):
         {
             "from": "documents",
             "select": [
-                {"field": "metadata.doc_type", "as": "doc_type"},
+                {"field": "fields.doc_type", "as": "doc_type"},
                 {"count": "*", "as": "documents"},
-                {"sum": "metadata.total", "as": "total"},
-                {"round": [{"avg": "metadata.total"}, 2], "as": "avg_total"},
-                {"max": "metadata.total", "as": "biggest"},
+                {"sum": "fields.total", "as": "total"},
+                {"round": [{"avg": "fields.total"}, 2], "as": "avg_total"},
+                {"max": "fields.total", "as": "biggest"},
             ],
-            "group_by": ["metadata.doc_type"],
+            "group_by": ["fields.doc_type"],
             "order_by": [{"field": "total", "direction": "desc"}],
         },
     )
@@ -255,16 +257,16 @@ async def test_where_having_and_expressions_over_aggregates(kb_client, bank):
         {
             "from": "documents",
             "select": [
-                {"field": "metadata.vendor", "as": "vendor"},
+                {"field": "fields.vendor", "as": "vendor"},
                 {"count": "*", "as": "documents"},
-                {"sum": "metadata.total", "as": "total"},
+                {"sum": "fields.total", "as": "total"},
                 {
-                    "round": [{"divide": [{"sum": "metadata.total"}, {"count": "metadata.total"}]}, 1],
+                    "round": [{"divide": [{"sum": "fields.total"}, {"count": "fields.total"}]}, 1],
                     "as": "per_document",
                 },
             ],
             "where": {"region": "emea"},
-            "group_by": ["metadata.vendor"],
+            "group_by": ["fields.vendor"],
             "having": {"documents": {"$gte": 2}},
         },
     )
@@ -278,20 +280,20 @@ async def test_chunk_level_aggregation_joins_its_document(kb_client, bank):
         kb_client,
         bank,
         {
-            "from": "chunks",
+            "from": "passages",
             "select": [
-                {"field": "chunk_metadata.clause", "as": "clause"},
-                {"count": "*", "as": "chunks"},
+                {"field": "passage_fields.clause", "as": "clause"},
+                {"count": "*", "as": "passages"},
                 {"count_distinct": "doc_id", "as": "documents"},
                 {"sum": "token_count", "as": "tokens"},
             ],
-            "group_by": ["chunk_metadata.clause"],
-            "order_by": [{"field": "chunks", "direction": "desc"}, "clause"],
+            "group_by": ["passage_fields.clause"],
+            "order_by": [{"field": "passages", "direction": "desc"}, "clause"],
         },
     )
     rows = _rows(result)
     payment = next(row for row in rows if row["clause"] == "payment")
-    assert payment["documents"] == 3 and payment["chunks"] >= 3 and payment["tokens"] > 0
+    assert payment["documents"] == 3 and payment["passages"] >= 3 and payment["tokens"] > 0
 
 
 @pytest.mark.asyncio
@@ -301,7 +303,7 @@ async def test_a_query_with_no_aggregate_returns_rows(kb_client, bank):
         bank,
         {
             "from": "documents",
-            "select": ["doc_id", {"field": "metadata.total", "as": "total"}, {"length": "title", "as": "title_length"}],
+            "select": ["doc_id", {"field": "fields.total", "as": "total"}, {"length": "title", "as": "title_length"}],
             "where": {"total": {"$gte": 5000}},
             "order_by": [{"field": "total", "direction": "desc"}],
             "limit": 10,
@@ -319,11 +321,11 @@ async def test_date_functions_group_by_period(kb_client, bank):
         {
             "from": "documents",
             "select": [
-                {"extract": ["year", "metadata.signed_on"], "as": "year"},
+                {"extract": ["year", "fields.signed_on"], "as": "year"},
                 {"count": "*", "as": "documents"},
             ],
             "where": {"signed_on": {"$exists": True}},
-            "group_by": [{"extract": ["year", "metadata.signed_on"]}],
+            "group_by": [{"extract": ["year", "fields.signed_on"]}],
             "order_by": ["year"],
         },
     )
@@ -336,7 +338,7 @@ async def test_a_query_postgres_rejects_is_a_400_not_a_500(kb_client, bank):
     # still has to come back as the caller's problem.
     response = await kb_client.post(
         f"/v1/default/knowledge-banks/{bank}/query",
-        json={"select": [{"date_trunc": ["day", "metadata.vendor"]}, {"count": "*", "as": "n"}]},
+        json={"select": [{"date_trunc": ["day", "fields.vendor"]}, {"count": "*", "as": "n"}]},
     )
     assert response.status_code == 400, response.text
 
@@ -347,7 +349,7 @@ async def test_text_values_never_break_a_numeric_aggregate(kb_client, bank):
     result = await _query(
         kb_client,
         bank,
-        {"from": "documents", "select": [{"sum": "metadata.vendor", "as": "nonsense"}, {"count": "*", "as": "n"}]},
+        {"from": "documents", "select": [{"sum": "fields.vendor", "as": "nonsense"}, {"count": "*", "as": "n"}]},
     )
     assert _rows(result) == [{"nonsense": None, "n": len(CORPUS)}]
 

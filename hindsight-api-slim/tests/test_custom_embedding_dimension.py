@@ -438,9 +438,9 @@ class TestEmbeddingDimension:
         db_url, schema = dimension_test_schema
 
         _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
-        assert get_column_dimension(db_url, schema, table="kb_chunks") == 384
-        indexes = get_vector_index_names(db_url, schema, "kb_chunks")
-        assert indexes, "kb_chunks.embedding has no vector index"
+        assert get_column_dimension(db_url, schema, table="kb_passages") == 384
+        indexes = get_vector_index_names(db_url, schema, "kb_passages")
+        assert indexes, "kb_passages.embedding has no vector index"
 
         # A bank written before this ran: column already at the model's dimension, so the
         # resize path does nothing — the missing index is still rebuilt.
@@ -449,10 +449,10 @@ class TestEmbeddingDimension:
             for name in indexes:
                 conn.execute(text(f"DROP INDEX {schema}.{name}"))
             conn.commit()
-        assert get_vector_index_names(db_url, schema, "kb_chunks") == []
+        assert get_vector_index_names(db_url, schema, "kb_passages") == []
 
         _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
-        assert get_vector_index_names(db_url, schema, "kb_chunks")
+        assert get_vector_index_names(db_url, schema, "kb_passages")
 
     def test_kb_chunks_follows_a_dimension_pgvector_cannot_index(self, dimension_test_schema):
         """A 3072-dimension model is a slower knowledge bank, not a refused startup: the
@@ -463,13 +463,13 @@ class TestEmbeddingDimension:
         clear_embeddings(db_url, schema)
         clear_mental_model_embeddings(db_url, schema)
         ensure_embedding_dimension(db_url, 3072, schema=schema, store_owned_memories=True)
-        assert get_column_dimension(db_url, schema, table="kb_chunks") == 3072
-        assert get_vector_index_names(db_url, schema, "kb_chunks") == []
+        assert get_column_dimension(db_url, schema, table="kb_passages") == 3072
+        assert get_vector_index_names(db_url, schema, "kb_passages") == []
 
         # Back to an indexable dimension and the index comes back.
         _ensure_embedding_dimension_with_retry(db_url, 384, schema=schema)
-        assert get_column_dimension(db_url, schema, table="kb_chunks") == 384
-        assert get_vector_index_names(db_url, schema, "kb_chunks")
+        assert get_column_dimension(db_url, schema, table="kb_passages") == 384
+        assert get_vector_index_names(db_url, schema, "kb_passages")
 
     async def test_local_embeddings_dimension_detection(self, embeddings):
         """Test that LocalSTEmbeddings correctly detects dimension."""

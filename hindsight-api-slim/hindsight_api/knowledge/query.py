@@ -6,17 +6,17 @@ JSONB path parameter, every literal is a bind parameter, and the shape of the qu
 built here. What the DSL keeps from SQL is its *expressiveness*: projection, filtering,
 grouping, aggregates, arithmetic and functions over aggregates, HAVING, ORDER BY, paging.
 
-    {"from": "chunks",
-     "select": [{"field": "metadata.doc_type", "as": "kind"},
-                {"count": "*", "as": "chunks"},
+    {"from": "passages",
+     "select": [{"field": "fields.doc_type", "as": "kind"},
+                {"count": "*", "as": "passages"},
                 {"count_distinct": "doc_id", "as": "documents"},
                 {"sum": "token_count", "as": "tokens"},
                 {"round": [{"divide": [{"sum": "token_count"}, {"count": "*"}]}, 1],
                  "as": "avg_tokens"}],
      "where": {"doc_type": {"$in": ["invoice", "contract"]}},
-     "group_by": ["metadata.doc_type"],
-     "having": {"chunks": {"$gte": 10}},
-     "order_by": [{"field": "chunks", "direction": "desc"}],
+     "group_by": ["fields.doc_type"],
+     "having": {"passages": {"$gte": 10}},
+     "order_by": [{"field": "passages", "direction": "desc"}],
      "limit": 50}
 
 Aggregate-free queries are row queries; a query with any aggregate is grouped by whatever
@@ -34,7 +34,7 @@ from typing import Any, Literal
 
 from .filters import FilterError, compile_filters
 
-Source = Literal["documents", "chunks"]
+Source = Literal["documents", "passages"]
 
 #: Aggregates, and the SQL each one becomes. ``count`` is the only one that takes "*".
 AGGREGATES = ("count", "count_distinct", "sum", "avg", "min", "max")
@@ -49,16 +49,16 @@ _DOCUMENT_COLUMNS: dict[str, str] = {
     "doc_id": "d.doc_id",
     "title": "d.title",
     "tags": "d.tags",
-    "chunk_count": "d.chunk_count",
+    "passage_count": "d.passage_count",
     "text_length": "length(d.text)",
     "created_at": "d.created_at",
     "updated_at": "d.updated_at",
 }
 _CHUNK_COLUMNS: dict[str, str] = {
     **_DOCUMENT_COLUMNS,
-    "chunk_index": "c.chunk_index",
+    "passage_index": "c.passage_index",
     "token_count": "c.token_count",
-    "chunk_text_length": "length(c.text)",
+    "passage_text_length": "length(c.text)",
     "heading": "c.heading",
 }
 
@@ -100,18 +100,18 @@ class _Compiler:
     # SQL, or Postgres cannot match the grouping expression to the selected one. Binding a
     # fresh parameter each time produced `... -> $2` in one place and `... -> $5` in the
     # other, which failed with "must appear in the GROUP BY clause".
-    property_placeholders: dict[str, str] = field(default_factory=dict)
-    #: Which compiled expressions came from a metadata property. Those arrive as JSONB text,
+    field_placeholders: dict[str, str] = field(default_factory=dict)
+    #: Which compiled expressions came from a field. Those arrive as JSONB text,
     #: so "7500" sorts above "20000" and max() returns the wrong row: in a numeric context
     #: they have to be cast, and ordering has to try the number before the text.
-    metadata_expressions: set[str] = field(default_factory=set)
+    field_expressions: set[str] = field(default_factory=set)
     has_aggregate: bool = False
 
     # ---- leaves
 
     @property
     def columns(self) -> dict[str, str]:
-        return _CHUNK_COLUMNS if self.source == "chunks" else _DOCUMENT_COLUMNS
+        return _CHUNK_COLUMNS if self.source == "passages" else _DOCUMENT_COLUMNS
 
     def bind(self, value: Any) -> str:
         if len(self.params) >= self.limits.max_parameters:
@@ -120,46 +120,46 @@ class _Compiler:
         return f"${len(self.params)}"
 
     def field(self, name: str) -> str:
-        """A column, or a metadata property as JSONB text."""
+        """A column, or a field as JSONB text."""
         if not isinstance(name, str) or not name:
             raise FilterError("a field must be a non-empty string")
         if name in self.columns:
             return self.columns[name]
-        prefix, _, property_name = name.partition(".")
-        if prefix in ("metadata", "doc_metadata", "chunk_metadata") and property_name:
-            return self.metadata_field(prefix, property_name)
-        raise FilterError(f"unknown field {name!r}; columns are {sorted(self.columns)} plus metadata.<property>")
+        prefix, _, field_name = name.partition(".")
+        if prefix in ("fields", "document_fields", "passage_fields") and field_name:
+            return self.field_expression(prefix, field_name)
+        raise FilterError(
+            f"unknown field {name!r}; columns are {sorted(self.columns)} plus fields.<name> "
+            "(or document_fields.<name> / passage_fields.<name> to pin the level)"
+        )
 
-    def metadata_field(self, prefix: str, property_name: str) -> str:
-        """The JSONB value of a metadata property, as text.
+    def field_expression(self, prefix: str, field_name: str) -> str:
+        """The JSONB value of a field, as text.
 
-        ``metadata.x`` follows the same precedence filters use — the chunk's extracted
+        ``fields.x`` follows the same precedence filters use — the passage's extracted
         value, then the document's, then what the caller wrote — so a query and a search
         filter never disagree about where a property lives. The explicit prefixes exist for
         the case where that matters.
         """
-        placeholder = self.property_placeholders.get(property_name)
+        placeholder = self.field_placeholders.get(field_name)
         if placeholder is None:
-            placeholder = self.property_placeholders[property_name] = self.bind(property_name)
-        if prefix == "doc_metadata" or self.source == "documents":
-            expression = f"COALESCE(d.extracted_metadata -> {placeholder}, d.metadata -> {placeholder})"
-            if prefix == "chunk_metadata":
-                raise FilterError("chunk_metadata is not available when querying documents")
-        elif prefix == "chunk_metadata":
-            expression = f"c.metadata -> {placeholder}"
+            placeholder = self.field_placeholders[field_name] = self.bind(field_name)
+        if prefix == "document_fields" or self.source == "documents":
+            expression = f"COALESCE(d.fields -> {placeholder}, d.metadata -> {placeholder})"
+            if prefix == "passage_fields":
+                raise FilterError("passage_fields is not available when querying documents")
+        elif prefix == "passage_fields":
+            expression = f"c.fields -> {placeholder}"
         else:
-            expression = (
-                f"COALESCE(c.metadata -> {placeholder}, d.extracted_metadata -> {placeholder}, "
-                f"d.metadata -> {placeholder})"
-            )
-        self.metadata_expressions.add(f"({expression} #>> '{{}}')")
+            expression = f"COALESCE(c.fields -> {placeholder}, d.fields -> {placeholder}, d.metadata -> {placeholder})"
+        self.field_expressions.add(f"({expression} #>> '{{}}')")
         return f"({expression} #>> '{{}}')"
 
     def numeric(self, sql: str) -> str:
         """``sql`` as a number, or NULL when it is not one.
 
         Postgres has no try_cast: casting 'abc' to numeric aborts the whole statement, and
-        a metadata property holds whatever the LLM extracted. The regex guard turns a
+        a field holds whatever the LLM extracted. The regex guard turns a
         non-numeric value into NULL, which every aggregate already ignores.
         """
         return f"CASE WHEN ({sql})::text ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({sql})::numeric END"
@@ -209,11 +209,11 @@ class _Compiler:
             return f"count(DISTINCT {inner})"
         if operator in ("min", "max"):
             # On a real column min/max keep the column's type — they are as useful on a
-            # timestamp as on a number. On a metadata property the value is JSONB text, so
+            # timestamp as on a number. On a field the value is JSONB text, so
             # without the cast max() would answer "7500" for a bank whose biggest total is
             # 20000. A non-numeric property aggregates to NULL, as sum and avg already do;
             # wrap it in lower()/upper() to get the text extreme instead.
-            if inner in self.metadata_expressions:
+            if inner in self.field_expressions:
                 return f"{operator}({self.numeric(inner)})"
             return f"{operator}({inner})"
         return f"{operator}({self.numeric(inner)})"
@@ -337,7 +337,7 @@ class _Compiler:
             # A select alias wins over a column of the same name: ordering by the thing
             # just computed is what a caller means, and it is also what SQL does.
             sql = self.aliases.get(name) or self.field(name)
-            keys = [f"{self.numeric(sql)} {direction.upper()} NULLS LAST"] if sql in self.metadata_expressions else []
+            keys = [f"{self.numeric(sql)} {direction.upper()} NULLS LAST"] if sql in self.field_expressions else []
             keys.append(f"{sql} {direction.upper()} NULLS LAST")
             parts.extend(keys)
         return parts
@@ -346,9 +346,9 @@ class _Compiler:
 def compile_query(body: dict[str, Any], bank_id: str, *, limits: Limits | None = None) -> CompiledQuery:
     """Compile one DSL query for one bank. Raises ``FilterError`` on anything malformed."""
     limits = limits or Limits()
-    source = body.get("from", "chunks")
-    if source not in ("documents", "chunks"):
-        raise FilterError("from must be 'documents' or 'chunks'")
+    source = body.get("from", "passages")
+    if source not in ("documents", "passages"):
+        raise FilterError("from must be 'documents' or 'passages'")
 
     compiler = _Compiler(source=source, limits=limits)
     # $1 is always the bank: no query this endpoint builds can read another bank's rows.
@@ -384,7 +384,7 @@ def compile_query(body: dict[str, Any], bank_id: str, *, limits: Limits | None =
         raise FilterError(f"limit {limit} exceeds {limits.max_limit}")
 
     if compiler.has_aggregate and not group_parts:
-        # One row for the whole bank is a legitimate query ("how many chunks?"), so an
+        # One row for the whole bank is a legitimate query ("how many passages?"), so an
         # aggregate with no group_by is allowed — but then nothing else may be selected
         # raw, exactly as SQL requires. Postgres would say it in its own words; this says
         # which column is the problem.
@@ -392,11 +392,11 @@ def compile_query(body: dict[str, Any], bank_id: str, *, limits: Limits | None =
         if raw:
             raise FilterError("select mixes plain fields with aggregates but group_by is empty")
 
-    # Documents are the left table in both shapes: a chunk query joins its document so a
-    # document-level property filters and groups the same way a chunk-level one does.
-    if source == "chunks":
+    # Documents are the left table in both shapes: a passage query joins its document so a
+    # document-level property filters and groups the same way a passage-level one does.
+    if source == "passages":
         from_clause = (
-            f"FROM {_fq('kb_chunks')} c JOIN {_fq('kb_documents')} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id"
+            f"FROM {_fq('kb_passages')} c JOIN {_fq('kb_documents')} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id"
         )
         bank_predicate = "c.bank_id = $1"
     else:

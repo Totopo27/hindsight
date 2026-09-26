@@ -433,7 +433,7 @@
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "One document with its chunks",
+        "summary": "One document with its passages",
         "operationId": "get_document_v1_default_knowledge_banks__kb__documents__doc_id__get",
         "parameters": [
           {
@@ -496,7 +496,7 @@
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "Delete a document and its chunks",
+        "summary": "Delete a document and its passages",
         "operationId": "delete_document_v1_default_knowledge_banks__kb__documents__doc_id__delete",
         "parameters": [
           {
@@ -718,13 +718,13 @@
         }
       }
     },
-    "/v1/default/knowledge-banks/{kb}/metadata-schema": {
+    "/v1/default/knowledge-banks/{kb}/schemas": {
       "get": {
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "What this bank extracts, and how much is extracted",
-        "operationId": "get_metadata_schema_v1_default_knowledge_banks__kb__metadata_schema_get",
+        "summary": "The schemas of this bank",
+        "operationId": "list_schemas_v1_default_knowledge_banks__kb__schemas_get",
         "parameters": [
           {
             "name": "kb",
@@ -773,12 +773,12 @@
           }
         }
       },
-      "put": {
+      "post": {
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "Define what the LLM extracts per document and per chunk",
-        "operationId": "put_metadata_schema_v1_default_knowledge_banks__kb__metadata_schema_put",
+        "summary": "Define a schema and its fields",
+        "operationId": "create_schema_v1_default_knowledge_banks__kb__schemas_post",
         "parameters": [
           {
             "name": "kb",
@@ -787,6 +787,156 @@
             "schema": {
               "type": "string",
               "title": "Kb"
+            }
+          },
+          {
+            "name": "schema_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Id for this schema",
+              "default": "default",
+              "title": "Schema Id"
+            },
+            "description": "Id for this schema"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchemaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/schemas/{schema_id}": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "One schema, and how much it has filled",
+        "operationId": "get_schema_v1_default_knowledge_banks__kb__schemas__schema_id__get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "schema_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Schema Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Define or redefine a schema",
+        "operationId": "put_schema_v1_default_knowledge_banks__kb__schemas__schema_id__put",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "schema_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Schema Id"
             }
           },
           {
@@ -811,7 +961,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MetadataSchemaRequest"
+                "$ref": "#/components/schemas/SchemaRequest"
               }
             }
           }
@@ -836,15 +986,13 @@
             }
           }
         }
-      }
-    },
-    "/v1/default/knowledge-banks/{kb}/metadata-values/{property_name}": {
-      "get": {
+      },
+      "delete": {
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "How the corpus splits per value",
-        "operationId": "metadata_values_v1_default_knowledge_banks__kb__metadata_values__property_name__get",
+        "summary": "Delete a schema",
+        "operationId": "delete_schema_v1_default_knowledge_banks__kb__schemas__schema_id__delete",
         "parameters": [
           {
             "name": "kb",
@@ -856,12 +1004,77 @@
             }
           },
           {
-            "name": "property_name",
+            "name": "schema_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
-              "title": "Property Name"
+              "title": "Schema Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/field-values/{field_name}": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "How the corpus splits per value of a field",
+        "operationId": "field_values_v1_default_knowledge_banks__kb__field_values__field_name__get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "field_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Field Name"
             }
           },
           {
@@ -871,7 +1084,7 @@
             "schema": {
               "enum": [
                 "document",
-                "chunks"
+                "passages"
               ],
               "type": "string",
               "default": "document",
@@ -917,13 +1130,13 @@
         }
       }
     },
-    "/v1/default/knowledge-banks/{kb}/metadata/extract": {
+    "/v1/default/knowledge-banks/{kb}/fields/extract": {
       "post": {
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "Re-extract metadata for stored documents",
-        "operationId": "extract_metadata_v1_default_knowledge_banks__kb__metadata_extract_post",
+        "summary": "Fill fields for documents already stored",
+        "operationId": "extract_fields_v1_default_knowledge_banks__kb__fields_extract_post",
         "parameters": [
           {
             "name": "kb",
@@ -963,6 +1176,72 @@
         },
         "responses": {
           "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/query": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Aggregate and filter over documents and passages",
+        "operationId": "query_v1_default_knowledge_banks__kb__query_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -13163,8 +13442,20 @@
           "only_missing": {
             "type": "boolean",
             "title": "Only Missing",
-            "description": "Skip documents that already have extracted values",
+            "description": "Skip documents whose fields are already filled",
             "default": true
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id",
+            "description": "Which schema to extract with"
           }
         },
         "type": "object",
@@ -16852,24 +17143,6 @@
         "title": "MentalModelTrigger",
         "description": "Trigger settings for a mental model.\n\nInherits the reflect options an operator can also default per bank\n(``reflect_default_options``): set here they apply to this model's refreshes\nonly, and win over the bank default."
       },
-      "MetadataSchemaRequest": {
-        "properties": {
-          "document": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Document",
-            "description": "Property name -> {type, description, values, items}"
-          },
-          "chunks": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Chunks",
-            "description": "Same shape, extracted per chunk"
-          }
-        },
-        "type": "object",
-        "title": "MetadataSchemaRequest"
-      },
       "MinScores": {
         "properties": {
           "semantic": {
@@ -17664,6 +17937,95 @@
         "type": "object",
         "title": "PromptPreviewResponse",
         "description": "The messages one call of the requested operation would send.\n\n`messages` is in send order, system first. Both are always present because a\nmission is not necessarily in the system prompt: retain and consolidation keep\ntheir system prompt bank-agnostic (so one provider-side cache serves every bank)\nand carry the mission in the user message instead.\n\nWhen `skipped_reason` is set the configuration means no prompt is sent at all \u2014\n`chunks` extraction mode stores each chunk verbatim and never calls an LLM \u2014 and\n`messages` is empty."
+      },
+      "QueryRequest": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "enum": [
+              "documents",
+              "passages"
+            ],
+            "title": "From",
+            "default": "passages"
+          },
+          "select": {
+            "items": {},
+            "type": "array",
+            "minItems": 1,
+            "title": "Select",
+            "description": "Fields, aggregates and expressions over them"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where",
+            "description": "The same metadata filter search takes"
+          },
+          "group_by": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group By"
+          },
+          "having": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Having",
+            "description": "Conditions on select's aggregate columns"
+          },
+          "order_by": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order By"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "select"
+        ],
+        "title": "QueryRequest",
+        "description": "A query in the knowledge-bank DSL. See hindsight_api/knowledge/query.py."
       },
       "RecallRequest": {
         "properties": {
@@ -19232,6 +19594,49 @@
         "title": "RunSettingModel",
         "description": "A setting that shapes the operation without appearing in its prompt.\n\nChunk sizes decide how the input is cut before extraction runs, so they change\nwhat comes back while contributing no prompt text \u2014 they cannot be blocks, which\npartition the message, and these are in none of it."
       },
+      "SchemaRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Human name, e.g. 'Supplier contract'"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "What this kind of document is"
+          },
+          "document_fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Document Fields",
+            "description": "Field name -> {type, description, values, items, source}"
+          },
+          "passage_fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Passage Fields",
+            "description": "The same, filled per passage"
+          }
+        },
+        "type": "object",
+        "title": "SchemaRequest",
+        "description": "A schema: the fields a kind of document has, and the fields its passages have."
+      },
       "SearchRequest": {
         "properties": {
           "query": {
@@ -19270,7 +19675,7 @@
             ],
             "title": "Tags"
           },
-          "metadata": {
+          "fields": {
             "anyOf": [
               {
                 "additionalProperties": true,
@@ -19280,8 +19685,8 @@
                 "type": "null"
               }
             ],
-            "title": "Metadata",
-            "description": "Metadata filter: {property: value} or {property: {$gte: 1, $in: [...], $contains: x, $exists: true}}. Matches chunk-level values, then document-level extracted values, then metadata written with the document."
+            "title": "Fields",
+            "description": "Field filter: {field: value} or {field: {$gte: 1, $in: [...], $contains: x, $exists: true}}. Matches passage-level values, then document-level values, then metadata written with the document."
           },
           "rerank": {
             "anyOf": [
@@ -19298,7 +19703,7 @@
           "collapse_documents": {
             "type": "boolean",
             "title": "Collapse Documents",
-            "description": "Best chunk per document, so top_k means k distinct documents",
+            "description": "Best passage per document, so top_k means k distinct documents",
             "default": false
           }
         },
@@ -20656,7 +21061,35 @@
           "metadata": {
             "additionalProperties": true,
             "type": "object",
-            "title": "Metadata"
+            "title": "Metadata",
+            "description": "Free-form metadata, stored as given"
+          },
+          "fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Fields",
+            "description": "Values for the schema's document fields, supplied instead of extracted. They land in the same object extraction fills, and a field supplied here is not sent to the LLM for this document."
+          },
+          "passage_fields": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Passage Fields",
+            "description": "The same, per passage index, for the schema's passage fields"
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id",
+            "description": "Which schema fills this document's fields; a bank with one schema uses it"
           }
         },
         "type": "object",

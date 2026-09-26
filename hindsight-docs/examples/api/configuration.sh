@@ -68,16 +68,16 @@ curl -sf "$HINDSIGHT_API_URL/v1/default/banks/config-demo-bank/config" \
 # =============================================================================
 
 curl -s -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks" \
-  -H "Content-Type: application/json" -d '{"id": "metadata-demo-kb"}' > /dev/null
+  -H "Content-Type: application/json" -d '{"id": "fields-demo-kb"}' > /dev/null
 
-# [docs:kb-metadata-schema]
+# [docs:kb-schema]
 # What the LLM extracts from every document, and from every chunk. A property is
 # {type, description?, values?, items?}; `values` is a fixed set, which is how
 # classification is expressed - the model picks one of them or leaves it out.
-curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/metadata-schema" \
+curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/schemas/contract" \
   -H "Content-Type: application/json" \
   -d '{
-    "document": {
+    "document_fields": {
       "doc_type":  {"type": "string", "values": ["invoice", "contract", "memo"]},
       "vendor":    {"type": "string", "description": "The counterparty"},
       "total":     {"type": "number"},
@@ -85,68 +85,68 @@ curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/meta
       "parties":   {"type": "array", "items": "string"},
       "terms":     {"type": "object"}
     },
-    "chunks": {
+    "passage_fields": {
       "clause": {"type": "string", "values": ["payment", "termination", "liability"]}
     }
   }'
-# [/docs:kb-metadata-schema]
+# [/docs:kb-schema]
 echo
 
-curl -sf "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/metadata-schema" \
+curl -sf "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/schemas/contract" \
   | jq -e '.document.doc_type.values | length == 3' > /dev/null
 
-# [docs:kb-metadata-search]
+# [docs:kb-field-search]
 # Filter a search on the extracted values (or on metadata written with the document)
-curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/search" \
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/search" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "late payment penalty",
-    "metadata": {"doc_type": "contract", "total": {"$gte": 10000}, "clause": "payment"}
+    "fields": {"doc_type": "contract", "total": {"$gte": 10000}, "clause": "payment"}
   }'
-# [/docs:kb-metadata-search]
+# [/docs:kb-field-search]
 echo
 
-# [docs:kb-metadata-extract]
+# [docs:kb-fields-extract]
 # Re-extract documents already in the bank after changing the schema
-curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/metadata/extract" \
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/fields/extract" \
   -H "Content-Type: application/json" -d '{"only_missing": true}'
-# [/docs:kb-metadata-extract]
+# [/docs:kb-fields-extract]
 echo
 
-# [docs:kb-metadata-supplied]
+# [docs:kb-fields-supplied]
 # A property whose source is "request" is never sent to the LLM: the write supplies it.
 # A write may also supply a value for an "extract" property, which skips the call for that
 # document - so a corpus whose properties are all known costs no LLM call at all.
-curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/documents" \
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/documents" \
   -H "Content-Type: application/json" \
   -d '{
     "documents": [{
       "id": "inv-1",
       "text": "Acme invoice for 1200 EUR, payable in 30 days.",
-      "properties": {"doc_type": "invoice", "vendor": "Acme", "total": 1200},
-      "chunk_properties": {"0": {"clause": "payment"}}
+      "fields": {"doc_type": "invoice", "vendor": "Acme", "total": 1200},
+      "passage_fields": {"0": {"clause": "payment"}}
     }]
   }'
-# [/docs:kb-metadata-supplied]
+# [/docs:kb-fields-supplied]
 echo
 
 # [docs:kb-query]
 # Aggregate over the corpus: the same filter DSL in `where`, aggregates and arithmetic over
 # them in `select`, and `having` over the columns select names.
-curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/query" \
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/query" \
   -H "Content-Type: application/json" \
   -d '{
     "from": "chunks",
     "select": [
-      {"field": "metadata.doc_type", "as": "doc_type"},
+      {"field": "fields.doc_type", "as": "doc_type"},
       {"count": "*", "as": "chunks"},
       {"count_distinct": "doc_id", "as": "documents"},
       {"sum": "metadata.total", "as": "total"},
-      {"round": [{"divide": [{"sum": "metadata.total"}, {"count_distinct": "doc_id"}]}, 2],
+      {"round": [{"divide": [{"sum": "fields.total"}, {"count_distinct": "doc_id"}]}, 2],
        "as": "per_document"}
     ],
     "where": {"clause": "payment"},
-    "group_by": ["metadata.doc_type"],
+    "group_by": ["fields.doc_type"],
     "having": {"documents": {"$gte": 1}},
     "order_by": [{"field": "total", "direction": "desc"}],
     "limit": 50
@@ -154,7 +154,7 @@ curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb/que
 # [/docs:kb-query]
 echo
 
-curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/metadata-demo-kb" > /dev/null
+curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb" > /dev/null
 
 # =============================================================================
 # Cleanup (not shown in docs)

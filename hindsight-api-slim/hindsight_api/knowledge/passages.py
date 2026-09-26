@@ -3,7 +3,7 @@
 The same shape as LangChain's RecursiveCharacterTextSplitter — try to split on the
 biggest natural boundary that fits (paragraphs, then lines, then sentences, then
 words, then characters) — but the budget is counted in *tokens* with the engine's
-tokenizer, so `chunk_size = 512` means 512 tokens, the unit every other budget in
+tokenizer, so `passage_size = 512` means 512 tokens, the unit every other budget in
 Hindsight uses and the unit the baselines we compare against use.
 
 No new dependency: the separators are a handful of strings and the counting is
@@ -60,19 +60,19 @@ def _split_recursive(text: str, max_tokens: int, separators: tuple[str, ...]) ->
 
 
 def _merge(pieces: list[str], max_tokens: int, overlap_tokens: int) -> list[str]:
-    """Greedily fill chunks up to the budget, then carry ``overlap_tokens`` into the next.
+    """Greedily fill passages up to the budget, then carry ``overlap_tokens`` into the next.
 
     The budget is measured on the joined text, not as a sum of the pieces' counts: a
     tokenizer merges across a join, so summing parts underfills badly on text without
-    natural boundaries (5000 unbroken characters became 8-token chunks).
+    natural boundaries (5000 unbroken characters became 8-token passages).
     """
-    chunks: list[str] = []
+    passages: list[str] = []
     current: list[str] = []
     current_text = ""
     for piece in pieces:
         candidate = current_text + piece
         if current and count_tokens(candidate) > max_tokens:
-            chunks.append(current_text)
+            passages.append(current_text)
             carried: list[str] = []
             if overlap_tokens > 0:
                 for previous in reversed(current):
@@ -85,28 +85,28 @@ def _merge(pieces: list[str], max_tokens: int, overlap_tokens: int) -> list[str]
         current.append(piece)
         current_text = candidate
     if current_text:
-        chunks.append(current_text)
-    return chunks
+        passages.append(current_text)
+    return passages
 
 
-def chunk_document(text: str, *, chunk_size: int, chunk_overlap: int = 0) -> list[Chunk]:
-    """Split a document into chunks of at most ``chunk_size`` tokens.
+def split_into_passages(text: str, *, passage_size: int, passage_overlap: int = 0) -> list[Chunk]:
+    """Split a document into passages of at most ``passage_size`` tokens.
 
-    ``chunk_overlap`` repeats the tail of a chunk at the head of the next, which keeps
+    ``passage_overlap`` repeats the tail of a passage at the head of the next, which keeps
     a fact that straddles a boundary retrievable from both sides.
     """
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    if not 0 <= chunk_overlap < chunk_size:
-        raise ValueError("chunk_overlap must be >= 0 and smaller than chunk_size")
+    if passage_size <= 0:
+        raise ValueError("passage_size must be positive")
+    if not 0 <= passage_overlap < passage_size:
+        raise ValueError("passage_overlap must be >= 0 and smaller than passage_size")
     cleaned = text.strip()
     if not cleaned:
         return []
-    pieces = _split_recursive(cleaned, chunk_size, SEPARATORS)
-    merged = _merge(pieces, chunk_size, chunk_overlap)
-    chunks: list[Chunk] = []
+    pieces = _split_recursive(cleaned, passage_size, SEPARATORS)
+    merged = _merge(pieces, passage_size, passage_overlap)
+    passages: list[Chunk] = []
     for raw in merged:
         stripped = re.sub(r"\s+\Z", "", raw).lstrip()
         if stripped:
-            chunks.append(Chunk(index=len(chunks), text=stripped, token_count=count_tokens(stripped)))
-    return chunks
+            passages.append(Chunk(index=len(passages), text=stripped, token_count=count_tokens(stripped)))
+    return passages

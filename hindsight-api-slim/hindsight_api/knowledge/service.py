@@ -2,11 +2,11 @@
 
 Writes never happen in the request. A write submits one ``knowledge_write_batch``
 operation — the same ``async_operations`` row, worker claim, retry and status API the
-memory banks use — and returns its id. The worker chunks, embeds and stores.
+memory banks use — and returns its id. The worker passages, embeds and stores.
 
-Search is two arms fused with RRF: vector over the chunk embeddings and keyword over the
+Search is two arms fused with RRF: vector over the passage embeddings and keyword over the
 generated tsvector, then the configured cross-encoder reranks the fused candidates.
-Everything (chunk size, overlap, candidate count, rerank on/off) is per-bank config,
+Everything (passage size, overlap, candidate count, rerank on/off) is per-bank config,
 resolved the same way memory-bank settings are.
 """
 
@@ -23,10 +23,10 @@ from typing import Any
 from ..engine.db_utils import acquire_with_retry
 from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
 from . import store
-from .chunking import chunk_document
-from .extraction import extract_chunks, extract_document
+from .extraction import extract_document, extract_passages
+from .fields import SchemaError, extract_only, validate_field_schema, validate_values
 from .filters import FilterError
-from .metadata import MetadataSchemaError, extract_only, validate_schema, validate_values
+from .passages import split_into_passages
 from .query import CompiledQuery, Limits, compile_query, json_safe
 
 logger = logging.getLogger(__name__)
@@ -52,25 +52,28 @@ class DocumentInput:
     title: str | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
-    #: Values for schema properties, supplied instead of extracted. They land in the same
-    #: object the LLM would have filled, and a property supplied here is not read by it.
-    properties: dict[str, Any] | None = None
-    #: Values for schema chunk properties, by chunk index, same rule.
-    chunk_properties: dict[int, dict[str, Any]] | None = None
+    #: Values for the schema's document fields, supplied instead of extracted. They land in
+    #: the same object the LLM would have filled, and a field supplied here is not read by it.
+    fields: dict[str, Any] | None = None
+    #: The same for the schema's passage fields, by passage index.
+    passage_fields: dict[int, dict[str, Any]] | None = None
+    #: Which schema fills this document's fields. Omitted, a bank with exactly one schema
+    #: uses it; a bank with several extracts nothing rather than guessing.
+    schema_id: str | None = None
 
 
 @dataclass(frozen=True)
-class ExtractedMetadata:
-    """What one document's extraction produced: its own values, and its chunks' by index."""
+class ExtractedFields:
+    """What one document's fields came to: its own values, and its passages' by index."""
 
     document: dict[str, Any]
-    chunks: dict[int, dict[str, Any]]
+    passages: dict[int, dict[str, Any]]
 
 
 @dataclass(frozen=True)
 class SearchHit:
     doc_id: str
-    chunk_index: int
+    passage_index: int
     text: str
     score: float
     ranks: dict[str, int]
@@ -81,13 +84,13 @@ def query_terms(query: str) -> list[str]:
     return [t for t in re.findall(r"\w+", query.lower()) if len(t) > 1][:32]
 
 
-def embedding_text(title: str | None, chunk_text: str) -> str:
-    """What gets embedded for a chunk: the title, then the chunk — unless it is already there."""
+def embedding_text(title: str | None, passage_text: str) -> str:
+    """What gets embedded for a passage: the title, then the passage — unless it is already there."""
     if not title:
-        return chunk_text
-    if chunk_text.lstrip().lower().startswith(title.strip().lower()):
-        return chunk_text
-    return f"{title}\n\n{chunk_text}"
+        return passage_text
+    if passage_text.lstrip().lower().startswith(title.strip().lower()):
+        return passage_text
+    return f"{title}\n\n{passage_text}"
 
 
 class KnowledgeService:
@@ -128,7 +131,7 @@ class KnowledgeService:
     async def delete_bank(self, bank_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            # The bank row owns everything by FK cascade: documents, chunks, operations.
+            # The bank row owns everything by FK cascade: documents, passages, operations.
             await conn.execute(f"DELETE FROM {store.fq_table('banks')} WHERE bank_id = $1", bank_id)
         return {"bank_id": bank_id, "deleted": True}
 
@@ -140,61 +143,114 @@ class KnowledgeService:
         if kind != store.KNOWLEDGE_KIND:
             raise KnowledgeBankError(409, f"bank {bank_id!r} is a {kind} bank")
 
-    # ---- metadata schema
+    # ---- schemas
 
-    async def get_metadata_schema(self, bank_id: str) -> dict[str, Any]:
+    DEFAULT_SCHEMA_ID = "default"
+
+    async def list_schemas(self, bank_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            schema = await store.get_metadata_schema(conn, bank_id)
-            counts = {
-                "documents_extracted": await conn.fetchval(
-                    f"SELECT count(*) FROM {store.fq_table('kb_documents')} "
-                    "WHERE bank_id = $1 AND extracted_metadata <> '{}'::jsonb",
-                    bank_id,
-                ),
-                "chunks_extracted": await conn.fetchval(
-                    f"SELECT count(*) FROM {store.fq_table('kb_chunks')} "
-                    "WHERE bank_id = $1 AND metadata <> '{}'::jsonb",
-                    bank_id,
-                ),
-            }
-        return {"bank_id": bank_id, **schema, **counts}
+            schemas = await store.list_schemas(conn, bank_id)
+            for schema in schemas:
+                schema.update(await store.schema_usage(conn, bank_id, schema["schema_id"]))
+        return {"items": schemas, "total": len(schemas)}
 
-    async def put_metadata_schema(self, bank_id: str, document: Any, chunks: Any) -> dict[str, Any]:
+    async def get_schema(self, bank_id: str, schema_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            schema = await store.get_schema(conn, bank_id, schema_id)
+            if schema is None:
+                raise KnowledgeBankError(404, f"schema {schema_id!r} not found")
+            schema.update(await store.schema_usage(conn, bank_id, schema_id))
+        return schema
+
+    async def put_schema(
+        self,
+        bank_id: str,
+        schema_id: str,
+        *,
+        name: str | None,
+        description: str | None,
+        document_fields: Any,
+        passage_fields: Any,
+    ) -> dict[str, Any]:
+        """Define (or redefine) one schema: the fields for a document and for its passages."""
+        await self._require_bank(bank_id)
+        if not schema_id or not schema_id.replace("_", "").replace("-", "").isalnum():
+            raise KnowledgeBankError(400, "schema id must be alphanumeric with _ or -")
         try:
-            document_schema = validate_schema(document, level="document")
-            chunk_schema = validate_schema(chunks, level="chunk")
-        except MetadataSchemaError as e:
+            document_definition = validate_field_schema(document_fields, level="document")
+            passage_definition = validate_field_schema(passage_fields, level="passage")
+        except SchemaError as e:
             raise KnowledgeBankError(400, str(e)) from e
         async with acquire_with_retry(await self._pool()) as conn:
-            await store.put_metadata_schema(conn, bank_id, document_schema, chunk_schema)
-        return await self.get_metadata_schema(bank_id)
+            await store.put_schema(
+                conn,
+                bank_id,
+                schema_id,
+                name=name,
+                description=description,
+                document_fields=document_definition,
+                passage_fields=passage_definition,
+            )
+        return await self.get_schema(bank_id, schema_id)
 
-    async def metadata_values(self, bank_id: str, property_name: str, level: str) -> dict[str, Any]:
-        """How the corpus splits per value of one property."""
+    async def delete_schema(self, bank_id: str, schema_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            values = await store.value_counts(conn, bank_id, property_name, level=level)
-        return {"property": property_name, "level": level, "values": values}
+            if not await store.delete_schema(conn, bank_id, schema_id):
+                raise KnowledgeBankError(404, f"schema {schema_id!r} not found")
+        # The fields already extracted stay: they are the documents' data, not the schema's.
+        return {"schema_id": schema_id, "deleted": True}
 
-    async def submit_extract(self, bank_id: str, doc_ids: list[str] | None, only_missing: bool) -> dict[str, Any]:
-        """Queue re-extraction for documents already in the bank (after a schema change)."""
+    async def _schema_for_write(self, bank_id: str, schema_id: str | None) -> dict[str, Any] | None:
+        """Which schema fills a document's fields.
+
+        Named explicitly, or — when the bank has exactly one — that one, because a bank
+        with a single schema should not make every write repeat its name. A bank with
+        several and no name on the write extracts nothing rather than guessing.
+        """
+        async with acquire_with_retry(await self._pool()) as conn:
+            if schema_id is not None:
+                schema = await store.get_schema(conn, bank_id, schema_id)
+                if schema is None:
+                    raise KnowledgeBankError(400, f"schema {schema_id!r} not found in this bank")
+                return schema
+            schemas = await store.list_schemas(conn, bank_id)
+        return schemas[0] if len(schemas) == 1 else None
+
+    async def field_values(self, bank_id: str, field_name: str, level: str) -> dict[str, Any]:
+        """How the corpus splits per value of one field."""
         await self._require_bank(bank_id)
-        schema = await self.get_metadata_schema(bank_id)
-        if not schema["document"] and not schema["chunks"]:
-            raise KnowledgeBankError(400, "this bank has no metadata schema to extract with")
+        async with acquire_with_retry(await self._pool()) as conn:
+            values = await store.value_counts(conn, bank_id, field_name, level=level)
+        return {"field": field_name, "level": level, "values": values}
+
+    async def submit_extract(
+        self, bank_id: str, doc_ids: list[str] | None, only_missing: bool, schema_id: str | None
+    ) -> dict[str, Any]:
+        """Queue field extraction for documents already in the bank (after a schema change)."""
+        await self._require_bank(bank_id)
+        schema = await self._schema_for_write(bank_id, schema_id)
+        if schema is None:
+            raise KnowledgeBankError(400, "name the schema to extract with: this bank has none, or several")
+        if not schema["document_fields"] and not schema["passage_fields"]:
+            raise KnowledgeBankError(400, f"schema {schema['schema_id']!r} defines no fields")
         result = await self.memory._submit_async_operation(
             bank_id=bank_id,
-            operation_type="knowledge_extract_metadata",
-            task_type="knowledge_extract_metadata",
-            task_payload={"doc_ids": doc_ids or [], "only_missing": only_missing},
+            operation_type="knowledge_extract_fields",
+            task_type="knowledge_extract_fields",
+            task_payload={
+                "doc_ids": doc_ids or [],
+                "only_missing": only_missing,
+                "schema_id": schema["schema_id"],
+            },
         )
-        return {"operation_id": result["operation_id"], "status": "pending"}
+        return {"operation_id": result["operation_id"], "schema_id": schema["schema_id"], "status": "pending"}
 
-    def _metadata_llm(self, bank_id: str, config: Any) -> Any:
+    def _field_extraction_llm(self, bank_id: str, config: Any) -> Any:
         """The bank's LLM for extraction — the same resolved config retain would use."""
-        return self.memory._llm_config.with_config(config, bank_id=bank_id, operation="knowledge_metadata")
+        return self.memory._llm_config.with_config(config, bank_id=bank_id, operation="knowledge_fields")
 
     async def _extract_for_document(
         self,
@@ -205,57 +261,59 @@ class KnowledgeService:
         doc_id: str,
         title: str | None,
         text: str,
-        chunk_texts: list[tuple[int, str]],
-    ) -> ExtractedMetadata:
-        llm = self._metadata_llm(bank_id, config)
-        char_limit = int(config.kb_metadata_max_chars)
+        passage_texts: list[tuple[int, str]],
+    ) -> ExtractedFields:
+        llm = self._field_extraction_llm(bank_id, config)
+        char_limit = int(config.kb_field_extraction_max_chars)
         document_values = await extract_document(
-            llm, schema["document"], doc_id=doc_id, title=title, text=text, char_limit=char_limit
+            llm, schema["document_fields"], doc_id=doc_id, title=title, text=text, char_limit=char_limit
         )
-        chunk_values = await extract_chunks(
+        passage_values = await extract_passages(
             llm,
-            schema["chunks"],
+            schema["passage_fields"],
             doc_id=doc_id,
             title=title,
-            chunks=chunk_texts,
+            passages=passage_texts,
             char_limit=char_limit,
-            concurrency=int(config.kb_metadata_concurrency),
+            concurrency=int(config.kb_field_extraction_concurrency),
         )
-        return ExtractedMetadata(document=document_values, chunks=chunk_values)
+        return ExtractedFields(document=document_values, passages=passage_values)
 
-    async def _metadata_for_document(
+    async def _fields_for_document(
         self,
         *,
         bank_id: str,
         config: Any,
         schema: dict[str, Any] | None,
         document: DocumentInput,
-        chunk_texts: list[tuple[int, str]],
-    ) -> ExtractedMetadata:
+        passage_texts: list[tuple[int, str]],
+    ) -> ExtractedFields:
         """One document's metadata: what the write supplied, plus what is left to extract.
 
         Both halves land in the same object. Supplying every property of the schema means
         no LLM call for that document, which is how a corpus can be loaded with full
         metadata and no model spend at all.
         """
-        document_schema = (schema or {}).get("document", {})
-        chunk_schema = (schema or {}).get("chunks", {})
-        supplied = self._validated_properties(schema or {"document": {}, "chunks": {}}, document)
-        supplied_document, supplied_chunks = supplied.document, supplied.chunks
+        document_definition = (schema or {}).get("document_fields", {})
+        passage_definition = (schema or {}).get("passage_fields", {})
+        supplied = self._validated_fields(schema, document)
+        supplied_document, supplied_passages = supplied.document, supplied.passages
 
         if schema is None:
-            return ExtractedMetadata(document=supplied_document, chunks=supplied_chunks)
+            return ExtractedFields(document=supplied_document, passages=supplied_passages)
 
-        pending_document = extract_only(document_schema, document.properties)
-        pending_chunks = extract_only(chunk_schema, None)
-        chunks_to_read = [
-            (index, text) for index, text in chunk_texts if not set(chunk_schema) <= set(supplied_chunks.get(index, {}))
+        pending_document = extract_only(document_definition, document.fields)
+        pending_passages = extract_only(passage_definition, None)
+        passages_to_read = [
+            (index, text)
+            for index, text in passage_texts
+            if not set(passage_definition) <= set(supplied_passages.get(index, {}))
         ]
-        if not pending_document and not pending_chunks:
-            return ExtractedMetadata(document=supplied_document, chunks=supplied_chunks)
+        if not pending_document and not pending_passages:
+            return ExtractedFields(document=supplied_document, passages=supplied_passages)
 
-        llm = self._metadata_llm(bank_id, config)
-        char_limit = int(config.kb_metadata_max_chars)
+        llm = self._field_extraction_llm(bank_id, config)
+        char_limit = int(config.kb_field_extraction_max_chars)
         document_values = await extract_document(
             llm,
             pending_document,
@@ -264,30 +322,30 @@ class KnowledgeService:
             text=document.text,
             char_limit=char_limit,
         )
-        chunk_values = await extract_chunks(
+        passage_values = await extract_passages(
             llm,
-            pending_chunks,
+            pending_passages,
             doc_id=document.doc_id,
             title=document.title,
-            chunks=chunks_to_read,
+            passages=passages_to_read,
             char_limit=char_limit,
-            concurrency=int(config.kb_metadata_concurrency),
+            concurrency=int(config.kb_field_extraction_concurrency),
         )
         # The supplied value wins: the caller knew it, the model only guessed at it.
-        merged_chunks = {
-            index: {**chunk_values.get(index, {}), **supplied_chunks.get(index, {})}
-            for index in set(chunk_values) | set(supplied_chunks)
+        merged_passages = {
+            index: {**passage_values.get(index, {}), **supplied_passages.get(index, {})}
+            for index in set(passage_values) | set(supplied_passages)
         }
-        return ExtractedMetadata(
+        return ExtractedFields(
             document={**document_values, **supplied_document},
-            chunks={index: values for index, values in merged_chunks.items() if values},
+            passages={index: values for index, values in merged_passages.items() if values},
         )
 
-    async def run_extract_metadata(self, task: dict[str, Any]) -> dict[str, Any]:
+    async def run_extract_fields(self, task: dict[str, Any]) -> dict[str, Any]:
         """Worker side of a re-extraction: read stored documents, fill the schema again."""
         bank_id = task["bank_id"]
         config = await self._config(bank_id, None)
-        schema = await self.get_metadata_schema(bank_id)
+        schema = await self._schema_for_write(bank_id, task.get("schema_id"))
         pool = await self._pool()
         doc_ids: list[str] = task.get("doc_ids") or []
         only_missing = bool(task.get("only_missing"))
@@ -298,19 +356,19 @@ class KnowledgeService:
             params.append(doc_ids)
             where += f" AND doc_id = ANY(${len(params)}::text[])"
         if only_missing:
-            where += " AND extracted_metadata = '{}'::jsonb"
+            where += " AND fields = '{}'::jsonb"
         async with acquire_with_retry(pool) as conn:
             rows = await conn.fetch(
                 f"SELECT doc_id, title, text FROM {store.fq_table('kb_documents')} WHERE {where} ORDER BY doc_id",
                 *params,
             )
 
-        documents = updated_chunks = 0
+        documents = updated_passages = 0
         for row in rows:
             async with acquire_with_retry(pool) as conn:
-                chunk_rows = await conn.fetch(
-                    f"SELECT chunk_index, text FROM {store.fq_table('kb_chunks')} "
-                    "WHERE bank_id = $1 AND doc_id = $2 ORDER BY chunk_index",
+                passage_rows = await conn.fetch(
+                    f"SELECT passage_index, text FROM {store.fq_table('kb_passages')} "
+                    "WHERE bank_id = $1 AND doc_id = $2 ORDER BY passage_index",
                     bank_id,
                     row["doc_id"],
                 )
@@ -321,15 +379,23 @@ class KnowledgeService:
                 doc_id=row["doc_id"],
                 title=row["title"],
                 text=row["text"],
-                chunk_texts=[(c["chunk_index"], c["text"]) for c in chunk_rows],
+                passage_texts=[(c["passage_index"], c["text"]) for c in passage_rows],
             )
             async with acquire_with_retry(pool) as conn:
-                await store.set_document_extracted(conn, bank_id, row["doc_id"], extracted.document)
-                await store.set_chunk_metadata(conn, bank_id, row["doc_id"], extracted.chunks)
+                await store.set_document_fields(conn, bank_id, row["doc_id"], extracted.document)
+                await store.set_passage_fields(conn, bank_id, row["doc_id"], extracted.passages)
+                if schema is not None:
+                    await conn.execute(
+                        f"UPDATE {store.fq_table('kb_documents')} SET schema_id = $3 "
+                        "WHERE bank_id = $1 AND doc_id = $2",
+                        bank_id,
+                        row["doc_id"],
+                        schema["schema_id"],
+                    )
             documents += 1
-            updated_chunks += len(extracted.chunks)
+            updated_passages += len(extracted.passages)
 
-        counts = {"documents_extracted": documents, "chunks_extracted": updated_chunks}
+        counts = {"documents_extracted": documents, "passages_extracted": updated_passages}
         operation_id = task.get("operation_id")
         if operation_id:
             async with acquire_with_retry(pool) as conn:
@@ -340,7 +406,7 @@ class KnowledgeService:
                     json.dumps(counts),
                     uuid.UUID(str(operation_id)),
                 )
-        logger.info("knowledge metadata extraction bank=%s %s", bank_id, counts)
+        logger.info("knowledge field extraction bank=%s %s", bank_id, counts)
         return counts
 
     # ---- query
@@ -376,9 +442,9 @@ class KnowledgeService:
         # Supplied property values are validated here, not in the worker: the write is
         # async, so a value that does not fit the schema has to fail the request the caller
         # is holding rather than an operation they would have to go and read.
-        schema = await self.get_metadata_schema(bank_id)
         for document in documents:
-            self._validated_properties(schema, document)
+            schema = await self._schema_for_write(bank_id, document.schema_id)
+            self._validated_fields(schema, document)
         if not documents:
             raise KnowledgeBankError(400, "documents must not be empty")
         if len(documents) > MAX_BATCH_DOCUMENTS:
@@ -398,8 +464,9 @@ class KnowledgeService:
                     "title": document.title,
                     "tags": document.tags or [],
                     "metadata": document.metadata or {},
-                    "properties": document.properties or {},
-                    "chunk_properties": {str(k): v for k, v in (document.chunk_properties or {}).items()},
+                    "fields": document.fields or {},
+                    "schema_id": document.schema_id,
+                    "passage_fields": {str(k): v for k, v in (document.passage_fields or {}).items()},
                 }
             )
         result = await self.memory._submit_async_operation(
@@ -411,46 +478,55 @@ class KnowledgeService:
         )
         return {"operation_id": result["operation_id"], "documents": len(payload_docs), "status": "pending"}
 
-    def _validated_properties(self, schema: dict[str, Any], document: DocumentInput) -> ExtractedMetadata:
-        """The document's supplied property values, coerced against the schema."""
+    def _validated_fields(self, schema: dict[str, Any] | None, document: DocumentInput) -> ExtractedFields:
+        """The field values this write supplied, coerced against the schema."""
+        definition = schema or {"document_fields": {}, "passage_fields": {}}
         try:
-            return ExtractedMetadata(
-                document=validate_values(schema.get("document", {}), document.properties or {}, level="document"),
-                chunks={
-                    index: validate_values(schema.get("chunks", {}), values, level=f"chunk {index}")
-                    for index, values in (document.chunk_properties or {}).items()
+            return ExtractedFields(
+                document=validate_values(definition["document_fields"], document.fields or {}, level="document"),
+                passages={
+                    index: validate_values(definition["passage_fields"], values, level=f"passage {index}")
+                    for index, values in (document.passage_fields or {}).items()
                 },
             )
-        except MetadataSchemaError as e:
+        except SchemaError as e:
             raise KnowledgeBankError(400, str(e)) from e
 
     async def run_write_batch(self, task: dict[str, Any]) -> dict[str, Any]:
-        """Worker side of a write batch: chunk, embed and store each document."""
+        """Worker side of a write batch: passage, embed and store each document."""
         bank_id = task["bank_id"]
         documents = [
             DocumentInput(
-                **{k: d.get(k) for k in ("doc_id", "text", "title", "tags", "metadata", "properties")},
-                chunk_properties={int(k): v for k, v in (d.get("chunk_properties") or {}).items()},
+                **{k: d.get(k) for k in ("doc_id", "text", "title", "tags", "metadata", "fields", "schema_id")},
+                passage_fields={int(k): v for k, v in (d.get("passage_fields") or {}).items()},
             )
             for d in task["documents"]
         ]
         config = await self._config(bank_id, None)
-        chunk_size = int(config.kb_chunk_size)
-        overlap = min(int(config.kb_chunk_overlap), max(chunk_size - 1, 0))
+        passage_size = int(config.kb_passage_size)
+        overlap = min(int(config.kb_passage_overlap), max(passage_size - 1, 0))
         pool = await self._pool()
         # The schema is read once for the batch: extraction is per document, but what to
         # extract is a property of the bank.
-        schema = await self.get_metadata_schema(bank_id) if config.kb_metadata_extraction else None
-        extracting = bool(schema and (schema["document"] or schema["chunks"]))
+        # Each document may name its own schema, so the resolution is per document; the
+        # lookups are cached for the batch because a batch is usually one kind of document.
+        schemas: dict[str | None, dict[str, Any] | None] = {}
 
-        written = skipped = chunk_total = 0
+        async def schema_for(document: DocumentInput) -> dict[str, Any] | None:
+            if not config.kb_field_extraction:
+                return None
+            if document.schema_id not in schemas:
+                schemas[document.schema_id] = await self._schema_for_write(bank_id, document.schema_id)
+            return schemas[document.schema_id]
+
+        written = skipped = passage_total = 0
         for start in range(0, len(documents), _EMBED_BATCH_DOCUMENTS):
             window = documents[start : start + _EMBED_BATCH_DOCUMENTS]
             async with acquire_with_retry(pool) as conn:
                 hashes = await store.existing_hashes(conn, bank_id, [d.doc_id for d in window])
             pending = []
             for document in window:
-                content_hash = hashlib.sha256(f"{document.text}\x00{chunk_size}\x00{overlap}".encode()).hexdigest()
+                content_hash = hashlib.sha256(f"{document.text}\x00{passage_size}\x00{overlap}".encode()).hexdigest()
                 if hashes.get(document.doc_id) == content_hash:
                     skipped += 1
                     continue
@@ -458,45 +534,49 @@ class KnowledgeService:
                     (
                         document,
                         content_hash,
-                        chunk_document(document.text, chunk_size=chunk_size, chunk_overlap=overlap),
+                        split_into_passages(document.text, passage_size=passage_size, passage_overlap=overlap),
                     )
                 )
             if not pending:
                 continue
-            # Embed the title with the chunk. A paragraph usually names its subject once,
-            # in the title, and a chunk without it is unfindable by that name — unless the
-            # chunk already opens with it, in which case repeating it only dilutes the
+            # Embed the title with the passage. A paragraph usually names its subject once,
+            # in the title, and a passage without it is unfindable by that name — unless the
+            # passage already opens with it, in which case repeating it only dilutes the
             # embedding (worth 12 nDCG@10 points on BEIR ArguAna, whose bodies restate
             # their title).
-            texts = [embedding_text(document.title, chunk.text) for document, _, chunks in pending for chunk in chunks]
+            texts = [
+                embedding_text(document.title, passage.text)
+                for document, _, passages in pending
+                for passage in passages
+            ]
             vectors = await self.memory.embeddings.encode_documents(texts) if texts else []
-            extracted: dict[str, ExtractedMetadata] = {}
-            for document, _, chunks in pending:
-                extracted[document.doc_id] = await self._metadata_for_document(
+            extracted: dict[str, ExtractedFields] = {}
+            for document, _, passages in pending:
+                extracted[document.doc_id] = await self._fields_for_document(
                     bank_id=bank_id,
                     config=config,
-                    schema=schema if extracting else None,
+                    schema=await schema_for(document),
                     document=document,
-                    chunk_texts=[(chunk.index, chunk.text) for chunk in chunks],
+                    passage_texts=[(passage.index, passage.text) for passage in passages],
                 )
             offset = 0
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
-                    for document, content_hash, chunks in pending:
+                    for document, content_hash, passages in pending:
                         rows = [
                             (
                                 bank_id,
                                 document.doc_id,
-                                chunk.index,
-                                chunk.text,
+                                passage.index,
+                                passage.text,
                                 document.title,
-                                chunk.token_count,
+                                passage.token_count,
                                 store.vector_literal(vectors[offset + i]),
                                 None,
                             )
-                            for i, chunk in enumerate(chunks)
+                            for i, passage in enumerate(passages)
                         ]
-                        offset += len(chunks)
+                        offset += len(passages)
                         await store.upsert_document(
                             conn,
                             bank_id,
@@ -506,24 +586,27 @@ class KnowledgeService:
                             tags=document.tags or [],
                             metadata=document.metadata or {},
                             content_hash=content_hash,
-                            chunk_count=len(chunks),
-                            extracted_metadata=(
-                                extracted[document.doc_id].document if document.doc_id in extracted else {}
-                            ),
+                            passage_count=len(passages),
+                            fields=(extracted[document.doc_id].document if document.doc_id in extracted else {}),
+                            schema_id=document.schema_id or (await schema_for(document) or {}).get("schema_id"),
                         )
-                        await store.replace_chunks(conn, bank_id, document.doc_id, rows)
-                        await store.set_chunk_metadata(
+                        await store.replace_passages(conn, bank_id, document.doc_id, rows)
+                        await store.set_passage_fields(
                             conn,
                             bank_id,
                             document.doc_id,
-                            extracted[document.doc_id].chunks if document.doc_id in extracted else {},
+                            extracted[document.doc_id].passages if document.doc_id in extracted else {},
                         )
                         written += 1
-                        chunk_total += len(chunks)
+                        passage_total += len(passages)
         logger.info(
-            "knowledge write batch bank=%s written=%d unchanged=%d chunks=%d", bank_id, written, skipped, chunk_total
+            "knowledge write batch bank=%s written=%d unchanged=%d passages=%d",
+            bank_id,
+            written,
+            skipped,
+            passage_total,
         )
-        counts = {"documents_written": written, "documents_unchanged": skipped, "chunks": chunk_total}
+        counts = {"documents_written": written, "documents_unchanged": skipped, "passages": passage_total}
         operation_id = task.get("operation_id")
         if operation_id:
             # Merge the counts into the operation row, as the retain handlers do, so the
@@ -568,7 +651,7 @@ class KnowledgeService:
         top_k: int,
         mode: str = "hybrid",
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        fields: dict[str, Any] | None = None,
         rerank: bool | None = None,
         collapse_documents: bool = False,
         request_context: Any = None,
@@ -581,13 +664,13 @@ class KnowledgeService:
         pool = await self._pool()
         try:
             async with acquire_with_retry(pool) as conn:
-                arms: dict[str, list[store.ChunkHit]] = {}
+                arms: dict[str, list[store.PassageHit]] = {}
                 if mode in ("hybrid", "vector"):
                     [vector] = await self.memory.embeddings.encode_query([query])
-                    arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, tags, metadata)
+                    arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, tags, fields)
                 if mode in ("hybrid", "keyword"):
                     arms["keyword"] = await store.search_keyword(
-                        conn, bank_id, query_terms(query), candidates, tags, metadata
+                        conn, bank_id, query_terms(query), candidates, tags, fields
                     )
         except FilterError as e:
             # A filter the caller cannot have meant is a 400, not a 500.
@@ -605,7 +688,7 @@ class KnowledgeService:
             # A single-arm search must not be scaled down by a weight meant for the mix.
             weight = weights[arm] if len(arms) > 1 else 1.0
             for hit in hits:
-                key = (hit.doc_id, hit.chunk_index)
+                key = (hit.doc_id, hit.passage_index)
                 scores[key] = scores.get(key, 0.0) + weight / (60 + hit.rank)
                 ranks.setdefault(key, {})[arm] = hit.rank
                 texts[key] = hit.text
@@ -620,8 +703,8 @@ class KnowledgeService:
                 final_scores = dict(reranked)
 
         if collapse_documents:
-            # One chunk per document: the caller asked for k documents, not k passages.
-            # Without this, a document with two good chunks costs a slot another document
+            # One passage per document: the caller asked for k documents, not k passages.
+            # Without this, a document with two good passages costs a slot another document
             # could have filled.
             seen: set[str] = set()
             collapsed: list[tuple[str, int]] = []
@@ -641,7 +724,7 @@ class KnowledgeService:
 
         Calls the model directly rather than through ``CrossEncoderReranker``: that wrapper
         also applies recency and temporal scoring, which are memory-fact notions a document
-        chunk does not have.
+        passage does not have.
         """
         reranker = getattr(self.memory, "_cross_encoder_reranker", None)
         model = getattr(reranker, "cross_encoder", None) if reranker is not None else None
@@ -665,9 +748,9 @@ async def run_write_batch_task(memory: Any, task: dict[str, Any]) -> dict[str, A
     return await KnowledgeService(memory).run_write_batch(task)
 
 
-async def run_extract_metadata_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
-    """Entry point the engine's task dispatch calls for ``knowledge_extract_metadata``."""
-    return await KnowledgeService(memory).run_extract_metadata(task)
+async def run_extract_fields_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Entry point the engine's task dispatch calls for ``knowledge_extract_fields``."""
+    return await KnowledgeService(memory).run_extract_fields(task)
 
 
 __all__ = [
@@ -675,6 +758,6 @@ __all__ = [
     "KnowledgeBankError",
     "KnowledgeService",
     "SearchHit",
-    "run_extract_metadata_task",
+    "run_extract_fields_task",
     "run_write_batch_task",
 ]

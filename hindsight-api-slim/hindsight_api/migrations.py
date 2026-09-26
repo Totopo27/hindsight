@@ -841,19 +841,19 @@ def ensure_embedding_dimension(
         # memory_units the same case raises, because that path is not optional.)
         kb_indexed = not (vector_ext == "pgvector" and required_dimension > PGVECTOR_HNSW_MAX_DIMENSION)
         _migrate_table_embedding_dimension(
-            conn, schema_name, "kb_chunks", required_dimension, vector_ext, indexed=kb_indexed
+            conn, schema_name, "kb_passages", required_dimension, vector_ext, indexed=kb_indexed
         )
         if (
             kb_indexed
-            and _table_has_embedding_column(conn, schema_name, "kb_chunks")
-            and not _has_embedding_vector_index(conn, schema_name, "kb_chunks")
+            and _table_has_embedding_column(conn, schema_name, "kb_passages")
+            and not _has_embedding_vector_index(conn, schema_name, "kb_passages")
         ):
             # Column already at the model's dimension (so the resize path above did
             # nothing) but never indexed — a bank written before this ran.
             row_count = conn.execute(
-                text(f"SELECT COUNT(*) FROM {schema_name}.kb_chunks WHERE embedding IS NOT NULL")
+                text(f"SELECT COUNT(*) FROM {schema_name}.kb_passages WHERE embedding IS NOT NULL")
             ).scalar()
-            _create_embedding_vector_index(conn, schema_name, "kb_chunks", required_dimension, vector_ext, row_count)
+            _create_embedding_vector_index(conn, schema_name, "kb_passages", required_dimension, vector_ext, row_count)
         if not store_owned_memories and not _has_embedding_vector_index(conn, schema_name, "mental_models"):
             # A deployment that ran with a custom store and moved back to Postgres has the column at
             # the right dimension but no index (the store-owned branch above dropped it). Without

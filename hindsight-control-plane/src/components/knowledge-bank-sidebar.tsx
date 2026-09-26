@@ -12,7 +12,7 @@ export type KbSection =
   | "overview"
   | "documents"
   | "search"
-  | "metadata"
+  | "schemas"
   | "operations"
   | "configuration";
 
@@ -20,7 +20,7 @@ const ITEMS: { id: KbSection; label: string; icon: typeof LayoutGrid }[] = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "documents", label: "Documents", icon: FileText },
   { id: "search", label: "Search", icon: Search },
-  { id: "metadata", label: "Metadata", icon: Tags },
+  { id: "schemas", label: "Schemas", icon: Tags },
   { id: "operations", label: "Operations", icon: ListChecks },
   { id: "configuration", label: "Configuration", icon: Settings },
 ];

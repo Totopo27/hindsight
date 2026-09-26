@@ -3343,13 +3343,13 @@ class HindsightConfig:
     bank_stats_cache_max_entries: int
 
     # Knowledge bank settings
-    kb_chunk_size: int
-    kb_chunk_overlap: int
+    kb_passage_size: int
+    kb_passage_overlap: int
     kb_search_candidates: int
     kb_search_vector_weight: float
-    kb_metadata_extraction: bool
-    kb_metadata_max_chars: int
-    kb_metadata_concurrency: int
+    kb_field_extraction: bool
+    kb_field_extraction_max_chars: int
+    kb_field_extraction_concurrency: int
     kb_search_rerank: bool
 
     # Retain settings
@@ -3745,13 +3745,13 @@ class HindsightConfig:
         "store_document_text",
         # Retention settings (behavioral)
         # Knowledge banks: how documents are chunked and how search is run, per bank.
-        "kb_chunk_size",
-        "kb_chunk_overlap",
+        "kb_passage_size",
+        "kb_passage_overlap",
         "kb_search_candidates",
         "kb_search_vector_weight",
-        "kb_metadata_extraction",
-        "kb_metadata_max_chars",
-        "kb_metadata_concurrency",
+        "kb_field_extraction",
+        "kb_field_extraction_max_chars",
+        "kb_field_extraction_concurrency",
         "kb_search_rerank",
         "retain_chunk_size",
         "retain_structured_chunk_size",
@@ -4900,14 +4900,16 @@ class HindsightConfig:
             retain_max_completion_tokens=int(
                 os.getenv(ENV_RETAIN_MAX_COMPLETION_TOKENS, str(DEFAULT_RETAIN_MAX_COMPLETION_TOKENS))
             ),
-            kb_chunk_size=int(os.getenv(ENV_KB_CHUNK_SIZE, str(DEFAULT_KB_CHUNK_SIZE))),
-            kb_chunk_overlap=int(os.getenv(ENV_KB_CHUNK_OVERLAP, str(DEFAULT_KB_CHUNK_OVERLAP))),
+            kb_passage_size=int(os.getenv(ENV_KB_CHUNK_SIZE, str(DEFAULT_KB_CHUNK_SIZE))),
+            kb_passage_overlap=int(os.getenv(ENV_KB_CHUNK_OVERLAP, str(DEFAULT_KB_CHUNK_OVERLAP))),
             kb_search_candidates=int(os.getenv(ENV_KB_SEARCH_CANDIDATES, str(DEFAULT_KB_SEARCH_CANDIDATES))),
             kb_search_vector_weight=float(os.getenv(ENV_KB_SEARCH_VECTOR_WEIGHT, str(DEFAULT_KB_SEARCH_VECTOR_WEIGHT))),
-            kb_metadata_extraction=os.getenv(ENV_KB_METADATA_EXTRACTION, str(DEFAULT_KB_METADATA_EXTRACTION)).lower()
+            kb_field_extraction=os.getenv(ENV_KB_METADATA_EXTRACTION, str(DEFAULT_KB_METADATA_EXTRACTION)).lower()
             in ("true", "1", "yes"),
-            kb_metadata_max_chars=int(os.getenv(ENV_KB_METADATA_MAX_CHARS, str(DEFAULT_KB_METADATA_MAX_CHARS))),
-            kb_metadata_concurrency=int(os.getenv(ENV_KB_METADATA_CONCURRENCY, str(DEFAULT_KB_METADATA_CONCURRENCY))),
+            kb_field_extraction_max_chars=int(os.getenv(ENV_KB_METADATA_MAX_CHARS, str(DEFAULT_KB_METADATA_MAX_CHARS))),
+            kb_field_extraction_concurrency=int(
+                os.getenv(ENV_KB_METADATA_CONCURRENCY, str(DEFAULT_KB_METADATA_CONCURRENCY))
+            ),
             kb_search_rerank=os.getenv(ENV_KB_SEARCH_RERANK, str(DEFAULT_KB_SEARCH_RERANK)).lower()
             in ("true", "1", "yes"),
             retain_chunk_size=int(os.getenv(ENV_RETAIN_CHUNK_SIZE, str(DEFAULT_RETAIN_CHUNK_SIZE))),

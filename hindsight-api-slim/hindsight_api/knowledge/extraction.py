@@ -1,7 +1,7 @@
 """Filling a bank's metadata schema with the LLM.
 
 Two calls per document at most: one that reads the document and fills the document-level
-properties, and one per chunk for the chunk-level ones. The LLM is the bank's own — the
+properties, and one per passage for the passage-level ones. The LLM is the bank's own — the
 same resolved config (provider, model, key) retain uses — so a knowledge bank inherits
 whatever the deployment or the bank configured, and a bank can run extraction on a cheaper
 model than the rest of the server.
@@ -16,14 +16,14 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .metadata import extraction_model, jsonable
+from .fields import extraction_model, jsonable
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ChunkValues:
-    """One chunk's extracted values, carrying the index they belong to."""
+class PassageValues:
+    """One passage's extracted values, carrying the index they belong to."""
 
     index: int
     values: dict[str, Any]
@@ -79,30 +79,30 @@ async def extract_document(
         return {}
 
 
-async def extract_chunks(
+async def extract_passages(
     llm: Any,
     schema: dict[str, dict[str, Any]],
     *,
     doc_id: str,
     title: str | None,
-    chunks: list[tuple[int, str]],
+    passages: list[tuple[int, str]],
     char_limit: int,
     concurrency: int,
 ) -> dict[int, dict[str, Any]]:
-    """Chunk-level properties, one LLM call per chunk, at most ``concurrency`` in flight."""
+    """Passage-level fields, one LLM call per passage, at most ``concurrency`` in flight."""
     model = extraction_model(schema, name="ChunkMetadata")
-    if model is None or not chunks:
+    if model is None or not passages:
         return {}
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
-    async def one(index: int, text: str) -> ChunkValues:
+    async def one(index: int, text: str) -> PassageValues:
         async with semaphore:
             try:
                 values = await _call(llm, model, _prompt(title=title, text=text, scope="passage", limit=char_limit))
             except Exception as e:
                 logger.warning("knowledge metadata extraction failed for %s#%s: %s", doc_id, index, e)
                 values = {}
-        return ChunkValues(index=index, values=values)
+        return PassageValues(index=index, values=values)
 
-    results = await asyncio.gather(*(one(index, text) for index, text in chunks))
+    results = await asyncio.gather(*(one(index, text) for index, text in passages))
     return {result.index: result.values for result in results if result.values}

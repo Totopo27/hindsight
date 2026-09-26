@@ -34,7 +34,7 @@ import {
   type KnowledgeBank,
   type KnowledgeDocument,
   type KnowledgeOperation,
-  type MetadataSchema,
+  type KnowledgeSchema,
   type SearchResult,
 } from "@/components/knowledge-bank-api";
 import { withBasePath } from "@/lib/base-path";
@@ -43,7 +43,7 @@ const SECTIONS: KbSection[] = [
   "overview",
   "documents",
   "search",
-  "metadata",
+  "schemas",
   "operations",
   "configuration",
 ];
@@ -136,7 +136,7 @@ export default function KnowledgeBankPage() {
                   {section === "overview" && <Overview bank={bank} onGo={go} />}
                   {section === "documents" && <Documents kbId={kbId} onChanged={loadBank} />}
                   {section === "search" && <SearchPanel kbId={kbId} />}
-                  {section === "metadata" && <MetadataPanel kbId={kbId} />}
+                  {section === "schemas" && <SchemaPanel kbId={kbId} />}
                   {section === "operations" && <Operations kbId={kbId} />}
                   {section === "configuration" && <Configuration kbId={kbId} />}
                 </div>
@@ -284,7 +284,7 @@ function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void })
                 <TableCell className="text-xs text-muted-foreground">
                   {doc.tags.join(", ")}
                 </TableCell>
-                <TableCell className="text-right">{doc.chunk_count}</TableCell>
+                <TableCell className="text-right">{doc.passage_count}</TableCell>
                 <TableCell className="text-right">{doc.chars.toLocaleString()}</TableCell>
                 <TableCell className="text-right">
                   <Button
@@ -356,12 +356,12 @@ function SearchPanel({ kbId }: { kbId: string }) {
 
   const run = async () => {
     if (!query.trim()) return;
-    let metadata: unknown = undefined;
+    let filterValue: unknown = undefined;
     if (filter.trim()) {
       try {
-        metadata = JSON.parse(filter);
+        filterValue = JSON.parse(filter);
       } catch {
-        toast.error("The metadata filter is not valid JSON");
+        toast.error("The field filter is not valid JSON");
         return;
       }
     }
@@ -371,7 +371,7 @@ function SearchPanel({ kbId }: { kbId: string }) {
         `/${encodeURIComponent(kbId)}/search`,
         {
           method: "POST",
-          body: { query, mode, top_k: 10, metadata },
+          body: { query, mode, top_k: 10, fields: filterValue },
         }
       );
       setResults(response.results);
@@ -418,7 +418,7 @@ function SearchPanel({ kbId }: { kbId: string }) {
         className="mt-2 font-mono text-xs"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
-        placeholder={'Metadata filter, e.g. {"doc_type": "invoice", "total": {"$gte": 1000}}'}
+        placeholder={'Field filter, e.g. {"doc_type": "invoice", "total": {"$gte": 1000}}'}
       />
 
       {results && (
@@ -426,13 +426,13 @@ function SearchPanel({ kbId }: { kbId: string }) {
           {results.length === 0 && <p className="text-sm text-muted-foreground">Nothing found.</p>}
           {results.map((hit, i) => (
             <div
-              key={`${hit.document_id}#${hit.chunk_index}`}
+              key={`${hit.document_id}#${hit.passage_index}`}
               className="rounded-lg border border-border p-3"
             >
               <div className="flex items-center gap-2 text-sm mb-1">
                 <span className="text-muted-foreground">#{i + 1}</span>
                 <span className="font-mono">{hit.document_id}</span>
-                <span className="text-muted-foreground">chunk {hit.chunk_index}</span>
+                <span className="text-muted-foreground">chunk {hit.passage_index}</span>
                 {hit.ranks.vector && (
                   <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[11px]">
                     vector #{hit.ranks.vector}
@@ -456,15 +456,21 @@ function SearchPanel({ kbId }: { kbId: string }) {
   );
 }
 
-function MetadataPanel({ kbId }: { kbId: string }) {
-  const [schema, setSchema] = useState<MetadataSchema | null>(null);
+function SchemaPanel({ kbId }: { kbId: string }) {
+  const [schema, setSchema] = useState<KnowledgeSchema | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
-    const response = await kbFetch<MetadataSchema>(`/${encodeURIComponent(kbId)}/metadata-schema`);
+    const response = await kbFetch<KnowledgeSchema>(`/${encodeURIComponent(kbId)}/schemas/default`);
     setSchema(response);
-    setDraft(JSON.stringify({ document: response.document, chunks: response.chunks }, null, 2));
+    setDraft(
+      JSON.stringify(
+        { document_fields: response.document_fields, passage_fields: response.passage_fields },
+        null,
+        2
+      )
+    );
   }, [kbId]);
 
   useEffect(() => {
@@ -481,7 +487,7 @@ function MetadataPanel({ kbId }: { kbId: string }) {
     }
     setSaving(true);
     try {
-      await kbFetch(`/${encodeURIComponent(kbId)}/metadata-schema`, { method: "PUT", body });
+      await kbFetch(`/${encodeURIComponent(kbId)}/schemas/default`, { method: "PUT", body });
       toast.success("Saved. It applies to the next write.");
       await load();
     } catch (e) {
@@ -493,7 +499,7 @@ function MetadataPanel({ kbId }: { kbId: string }) {
 
   const extract = async () => {
     try {
-      await kbFetch(`/${encodeURIComponent(kbId)}/metadata/extract`, {
+      await kbFetch(`/${encodeURIComponent(kbId)}/fields/extract`, {
         method: "POST",
         body: { only_missing: true },
       });
@@ -506,12 +512,12 @@ function MetadataPanel({ kbId }: { kbId: string }) {
   if (!schema) return <Spinner />;
   return (
     <Card
-      title="Metadata"
-      description="What the LLM extracts from every document and chunk. Search filters on these values."
+      title="Schemas"
+      description="The fields this bank defines for documents and passages. Search and query filter on them."
     >
       <p className="text-sm text-muted-foreground mb-2">
-        {schema.documents_extracted} document(s) and {schema.chunks_extracted} chunk(s) carry
-        extracted values.
+        {schema.documents_with_fields} document(s) and {schema.passages_with_fields} chunk(s) carry
+        filled fields.
       </p>
       <Textarea
         rows={18}

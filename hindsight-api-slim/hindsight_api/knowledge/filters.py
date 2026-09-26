@@ -1,4 +1,4 @@
-"""Metadata filters: a small JSON DSL compiled to SQL over the chunk and document JSONB.
+"""Metadata filters: a small JSON DSL compiled to SQL over the passage and document JSONB.
 
     {"doc_type": "invoice",                  # equality, the common case
      "total": {"$gte": 1000, "$lt": 5000},   # numeric range
@@ -6,9 +6,9 @@
      "tags_list": {"$contains": "urgent"},   # array holds this value
      "signed_on": {"$exists": true}}
 
-A name is looked up in the chunk's extracted values first, then the document's extracted
+A name is looked up in the passage's extracted values first, then the document's extracted
 values, then the metadata the caller wrote — so a filter works the same whether the
-property was extracted per chunk, per document, or supplied at write time.
+property was extracted per passage, per document, or supplied at write time.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _field(name: str, params: list[Any]) -> str:
     """The JSONB value for this property, wherever it lives."""
     params.append(name)
     placeholder = f"${len(params)}"
-    return f"COALESCE(c.metadata -> {placeholder}, d.extracted_metadata -> {placeholder}, d.metadata -> {placeholder})"
+    return f"COALESCE(c.fields -> {placeholder}, d.fields -> {placeholder}, d.metadata -> {placeholder})"
 
 
 def _numeric(value: Any) -> bool:
@@ -95,7 +95,7 @@ def _condition(name: str, spec: Any, params: list[Any]) -> str:
 def compile_filters(metadata: dict[str, Any] | None, params: list[Any]) -> str:
     """Return a SQL fragment starting with AND, appending its parameters to ``params``.
 
-    The caller must have joined ``kb_documents d`` to ``kb_chunks c`` when this returns
+    The caller must have joined ``kb_documents d`` to ``kb_passages c`` when this returns
     anything but the empty string.
     """
     if not metadata:

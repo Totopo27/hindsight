@@ -1,4 +1,4 @@
-"""SQL for knowledge banks: banks, documents, chunks and the two search arms.
+"""SQL for knowledge banks: banks, documents, passages and the two search arms.
 
 Every statement is scoped by ``bank_id`` and schema-qualified with ``fq_table`` so it
 lands in the caller's tenant schema, exactly like the memory tables.
@@ -23,7 +23,7 @@ class DocumentRow:
     title: str | None
     tags: list[str]
     metadata: dict[str, Any]
-    chunk_count: int
+    passage_count: int
     chars: int
     created_at: datetime
     updated_at: datetime
@@ -38,9 +38,9 @@ class SearchScope:
 
 
 @dataclass(frozen=True)
-class ChunkHit:
+class PassageHit:
     doc_id: str
-    chunk_index: int
+    passage_index: int
     text: str
     rank: int
 
@@ -96,7 +96,7 @@ async def list_banks(conn: Any, limit: int, offset: int, query: str | None) -> d
         f"""
         SELECT b.bank_id, b.name, b.created_at, b.updated_at,
                (SELECT count(*) FROM {fq_table("kb_documents")} d WHERE d.bank_id = b.bank_id) AS documents,
-               (SELECT count(*) FROM {fq_table("kb_chunks")} c WHERE c.bank_id = b.bank_id) AS chunks
+               (SELECT count(*) FROM {fq_table("kb_passages")} c WHERE c.bank_id = b.bank_id) AS passages
         FROM {fq_table("banks")} b
         WHERE {where}
         ORDER BY b.bank_id
@@ -114,7 +114,7 @@ async def bank_stats(conn: Any, bank_id: str) -> dict[str, Any] | None:
         f"""
         SELECT b.bank_id, b.name, b.created_at, b.updated_at,
                (SELECT count(*) FROM {fq_table("kb_documents")} d WHERE d.bank_id = b.bank_id) AS documents,
-               (SELECT count(*) FROM {fq_table("kb_chunks")} c WHERE c.bank_id = b.bank_id) AS chunks,
+               (SELECT count(*) FROM {fq_table("kb_passages")} c WHERE c.bank_id = b.bank_id) AS passages,
                (SELECT max(d.updated_at) FROM {fq_table("kb_documents")} d WHERE d.bank_id = b.bank_id)
                    AS last_write_at,
                (SELECT count(*) FROM {fq_table("async_operations")} o
@@ -127,38 +127,86 @@ async def bank_stats(conn: Any, bank_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-async def get_metadata_schema(conn: Any, bank_id: str) -> dict[str, Any]:
+async def get_schema(conn: Any, bank_id: str, schema_id: str) -> dict[str, Any] | None:
+    """One schema of a bank: the fields it defines for documents and for passages."""
     row = await conn.fetchrow(
-        f"SELECT document_schema, chunk_schema, updated_at FROM {fq_table('kb_metadata_schemas')} WHERE bank_id = $1",
+        f"""
+        SELECT schema_id, name, description, document_fields, passage_fields, created_at, updated_at
+        FROM {fq_table("kb_schemas")} WHERE bank_id = $1 AND schema_id = $2
+        """,
+        bank_id,
+        schema_id,
+    )
+    return _loaded(row, "document_fields", "passage_fields") if row else None
+
+
+async def list_schemas(conn: Any, bank_id: str) -> list[dict[str, Any]]:
+    rows = await conn.fetch(
+        f"""
+        SELECT schema_id, name, description, document_fields, passage_fields, created_at, updated_at
+        FROM {fq_table("kb_schemas")} WHERE bank_id = $1 ORDER BY schema_id
+        """,
         bank_id,
     )
-    if row is None:
-        return {"document": {}, "chunks": {}, "updated_at": None}
-    return {
-        "document": json.loads(row["document_schema"])
-        if isinstance(row["document_schema"], str)
-        else row["document_schema"],  # fmt: skip
-        "chunks": json.loads(row["chunk_schema"]) if isinstance(row["chunk_schema"], str) else row["chunk_schema"],
-        "updated_at": row["updated_at"],
-    }
+    return [_loaded(row, "document_fields", "passage_fields") for row in rows]
 
 
-async def put_metadata_schema(
-    conn: Any, bank_id: str, document_schema: dict[str, Any], chunk_schema: dict[str, Any]
+async def put_schema(
+    conn: Any,
+    bank_id: str,
+    schema_id: str,
+    *,
+    name: str | None,
+    description: str | None,
+    document_fields: dict[str, Any],
+    passage_fields: dict[str, Any],
 ) -> None:
     await conn.execute(
         f"""
-        INSERT INTO {fq_table("kb_metadata_schemas")} (bank_id, document_schema, chunk_schema)
-        VALUES ($1, $2::jsonb, $3::jsonb)
-        ON CONFLICT (bank_id) DO UPDATE SET
-            document_schema = EXCLUDED.document_schema,
-            chunk_schema = EXCLUDED.chunk_schema,
+        INSERT INTO {fq_table("kb_schemas")}
+            (bank_id, schema_id, name, description, document_fields, passage_fields)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+        ON CONFLICT (bank_id, schema_id) DO UPDATE SET
+            name = EXCLUDED.name, description = EXCLUDED.description,
+            document_fields = EXCLUDED.document_fields, passage_fields = EXCLUDED.passage_fields,
             updated_at = now()
         """,
         bank_id,
-        json.dumps(document_schema),
-        json.dumps(chunk_schema),
+        schema_id,
+        name,
+        description,
+        json.dumps(document_fields),
+        json.dumps(passage_fields),
     )
+
+
+async def delete_schema(conn: Any, bank_id: str, schema_id: str) -> bool:
+    deleted = await conn.fetchval(
+        f"DELETE FROM {fq_table('kb_schemas')} WHERE bank_id = $1 AND schema_id = $2 RETURNING schema_id",
+        bank_id,
+        schema_id,
+    )
+    return deleted is not None
+
+
+async def schema_usage(conn: Any, bank_id: str, schema_id: str) -> dict[str, Any]:
+    """How much of the bank this schema has actually filled."""
+    documents = await conn.fetchval(
+        f"SELECT count(*) FROM {fq_table('kb_documents')} "
+        "WHERE bank_id = $1 AND schema_id = $2 AND fields <> '{}'::jsonb",
+        bank_id,
+        schema_id,
+    )
+    passages = await conn.fetchval(
+        f"""
+        SELECT count(*) FROM {fq_table("kb_passages")} p
+        JOIN {fq_table("kb_documents")} d ON d.bank_id = p.bank_id AND d.doc_id = p.doc_id
+        WHERE p.bank_id = $1 AND d.schema_id = $2 AND p.fields <> '{{}}'::jsonb
+        """,
+        bank_id,
+        schema_id,
+    )
+    return {"documents_with_fields": documents, "passages_with_fields": passages}
 
 
 async def value_counts(conn: Any, bank_id: str, property_name: str, *, level: str) -> list[dict[str, Any]]:
@@ -168,9 +216,7 @@ async def value_counts(conn: Any, bank_id: str, property_name: str, *, level: st
     buckets; a scalar counts once. The two cases are separate legs because a set-returning
     function cannot live inside a CASE.
     """
-    table, column = (
-        (fq_table("kb_chunks"), "metadata") if level == "chunks" else (fq_table("kb_documents"), "extracted_metadata")
-    )
+    table, column = (fq_table("kb_passages"), "fields") if level == "passages" else (fq_table("kb_documents"), "fields")
     rows = await conn.fetch(
         f"""
         SELECT value, count(*) AS count FROM (
@@ -211,19 +257,20 @@ async def upsert_document(
     tags: list[str],
     metadata: dict[str, Any],
     content_hash: str,
-    chunk_count: int,
-    extracted_metadata: dict[str, Any] | None = None,
+    passage_count: int,
+    fields: dict[str, Any] | None = None,
+    schema_id: str | None = None,
 ) -> None:
     await conn.execute(
         f"""
         INSERT INTO {fq_table("kb_documents")}
-            (bank_id, doc_id, text, title, tags, metadata, content_hash, chunk_count, extracted_metadata)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9::jsonb)
+            (bank_id, doc_id, text, title, tags, metadata, content_hash, passage_count, fields, schema_id)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9::jsonb, $10)
         ON CONFLICT (bank_id, doc_id) DO UPDATE SET
             text = EXCLUDED.text, title = EXCLUDED.title, tags = EXCLUDED.tags,
             metadata = EXCLUDED.metadata, content_hash = EXCLUDED.content_hash,
-            chunk_count = EXCLUDED.chunk_count, extracted_metadata = EXCLUDED.extracted_metadata,
-            updated_at = now()
+            passage_count = EXCLUDED.passage_count, fields = EXCLUDED.fields,
+            schema_id = EXCLUDED.schema_id, updated_at = now()
         """,
         bank_id,
         doc_id,
@@ -232,14 +279,15 @@ async def upsert_document(
         tags,
         json.dumps(metadata),
         content_hash,
-        chunk_count,
-        json.dumps(extracted_metadata or {}),
+        passage_count,
+        json.dumps(fields or {}),
+        schema_id,
     )
 
 
-async def set_document_extracted(conn: Any, bank_id: str, doc_id: str, values: dict[str, Any]) -> None:
+async def set_document_fields(conn: Any, bank_id: str, doc_id: str, values: dict[str, Any]) -> None:
     await conn.execute(
-        f"UPDATE {fq_table('kb_documents')} SET extracted_metadata = $3::jsonb, updated_at = now() "
+        f"UPDATE {fq_table('kb_documents')} SET fields = $3::jsonb, updated_at = now() "
         "WHERE bank_id = $1 AND doc_id = $2",
         bank_id,
         doc_id,
@@ -247,22 +295,22 @@ async def set_document_extracted(conn: Any, bank_id: str, doc_id: str, values: d
     )
 
 
-async def set_chunk_metadata(conn: Any, bank_id: str, doc_id: str, values: dict[int, dict[str, Any]]) -> None:
+async def set_passage_fields(conn: Any, bank_id: str, doc_id: str, values: dict[int, dict[str, Any]]) -> None:
     if not values:
         return
     await conn.executemany(
-        f"UPDATE {fq_table('kb_chunks')} SET metadata = $4::jsonb "
-        "WHERE bank_id = $1 AND doc_id = $2 AND chunk_index = $3",
+        f"UPDATE {fq_table('kb_passages')} SET fields = $4::jsonb "
+        "WHERE bank_id = $1 AND doc_id = $2 AND passage_index = $3",
         [(bank_id, doc_id, index, json.dumps(v)) for index, v in values.items()],
     )
 
 
-async def replace_chunks(conn: Any, bank_id: str, doc_id: str, rows: list[tuple[Any, ...]]) -> None:
-    await conn.execute(f"DELETE FROM {fq_table('kb_chunks')} WHERE bank_id = $1 AND doc_id = $2", bank_id, doc_id)
+async def replace_passages(conn: Any, bank_id: str, doc_id: str, rows: list[tuple[Any, ...]]) -> None:
+    await conn.execute(f"DELETE FROM {fq_table('kb_passages')} WHERE bank_id = $1 AND doc_id = $2", bank_id, doc_id)
     if rows:
         await conn.executemany(
-            f"INSERT INTO {fq_table('kb_chunks')} "
-            "(bank_id, doc_id, chunk_index, text, heading, token_count, embedding, metadata) "
+            f"INSERT INTO {fq_table('kb_passages')} "
+            "(bank_id, doc_id, passage_index, text, heading, token_count, embedding, fields) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7::vector, COALESCE($8::jsonb, '{}'::jsonb))",
             rows,
         )
@@ -277,7 +325,7 @@ async def list_documents(conn: Any, bank_id: str, limit: int, offset: int, query
     total = await conn.fetchval(f"SELECT count(*) FROM {fq_table('kb_documents')} WHERE {where}", *params)
     rows = await conn.fetch(
         f"""
-        SELECT doc_id, title, tags, metadata, extracted_metadata, chunk_count,
+        SELECT doc_id, title, tags, metadata, fields, schema_id, passage_count,
                length(text) AS chars, created_at, updated_at
         FROM {fq_table("kb_documents")}
         WHERE {where}
@@ -289,7 +337,7 @@ async def list_documents(conn: Any, bank_id: str, limit: int, offset: int, query
         offset,
     )
     return {
-        "items": [_loaded(r, "metadata", "extracted_metadata") for r in rows],
+        "items": [_loaded(r, "metadata", "fields") for r in rows],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -299,7 +347,7 @@ async def list_documents(conn: Any, bank_id: str, limit: int, offset: int, query
 async def get_document(conn: Any, bank_id: str, doc_id: str) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         f"""
-        SELECT doc_id, title, tags, metadata, extracted_metadata, text, chunk_count, created_at, updated_at
+        SELECT doc_id, title, tags, metadata, fields, schema_id, text, passage_count, created_at, updated_at
         FROM {fq_table("kb_documents")} WHERE bank_id = $1 AND doc_id = $2
         """,
         bank_id,
@@ -307,15 +355,15 @@ async def get_document(conn: Any, bank_id: str, doc_id: str) -> dict[str, Any] |
     )
     if row is None:
         return None
-    chunks = await conn.fetch(
-        f"SELECT chunk_index, text, token_count, metadata FROM {fq_table('kb_chunks')} "
-        "WHERE bank_id = $1 AND doc_id = $2 ORDER BY chunk_index",
+    passages = await conn.fetch(
+        f"SELECT passage_index, text, token_count, fields FROM {fq_table('kb_passages')} "
+        "WHERE bank_id = $1 AND doc_id = $2 ORDER BY passage_index",
         bank_id,
         doc_id,
     )
     return {
-        **_loaded(row, "metadata", "extracted_metadata"),
-        "chunks": [_loaded(c, "metadata") for c in chunks],
+        **_loaded(row, "metadata", "fields"),
+        "passages": [_loaded(c, "fields") for c in passages],
     }
 
 
@@ -328,20 +376,20 @@ async def delete_document(conn: Any, bank_id: str, doc_id: str) -> bool:
     return deleted is not None
 
 
-def _scope(tags: list[str] | None, metadata: dict[str, Any] | None, params: list[Any]) -> SearchScope:
+def _scope(tags: list[str] | None, fields: dict[str, Any] | None, params: list[Any]) -> SearchScope:
     """The JOIN and the WHERE additions for tag and metadata filters.
 
     Metadata filters read the document row, so they need it joined rather than probed with
     EXISTS; tags then come off the same join instead of a second subquery.
     """
-    if not tags and not metadata:
+    if not tags and not fields:
         return SearchScope(join="", where="")
     join = f" JOIN {fq_table('kb_documents')} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id"
     where = ""
     if tags:
         params.append(tags)
         where += f" AND d.tags && ${len(params)}::text[]"
-    where += compile_filters(metadata, params)
+    where += compile_filters(fields, params)
     return SearchScope(join=join, where=where)
 
 
@@ -351,22 +399,22 @@ async def search_semantic(
     query_vector: list[float],
     limit: int,
     tags: list[str] | None,
-    metadata: dict[str, Any] | None = None,
-) -> list[ChunkHit]:
+    fields: dict[str, Any] | None = None,
+) -> list[PassageHit]:
     params: list[Any] = [bank_id]
-    scope = _scope(tags, metadata, params)
+    scope = _scope(tags, fields, params)
     params.append(vector_literal(query_vector))
     rows = await conn.fetch(
         f"""
-        SELECT c.doc_id, c.chunk_index, c.text
-        FROM {fq_table("kb_chunks")} c{scope.join}
+        SELECT c.doc_id, c.passage_index, c.text
+        FROM {fq_table("kb_passages")} c{scope.join}
         WHERE c.bank_id = $1{scope.where}
         ORDER BY c.embedding <=> ${len(params)}::vector
         LIMIT {int(limit)}
         """,
         *params,
     )
-    return [ChunkHit(r["doc_id"], r["chunk_index"], r["text"], i + 1) for i, r in enumerate(rows)]
+    return [PassageHit(r["doc_id"], r["passage_index"], r["text"], i + 1) for i, r in enumerate(rows)]
 
 
 async def search_keyword(
@@ -375,22 +423,22 @@ async def search_keyword(
     terms: list[str],
     limit: int,
     tags: list[str] | None,
-    metadata: dict[str, Any] | None = None,
-) -> list[ChunkHit]:
-    """Keyword arm. Terms are OR-ed: a question rarely has every word in one chunk."""
+    fields: dict[str, Any] | None = None,
+) -> list[PassageHit]:
+    """Keyword arm. Terms are OR-ed: a question rarely has every word in one passage."""
     if not terms:
         return []
     params: list[Any] = [bank_id]
-    scope = _scope(tags, metadata, params)
+    scope = _scope(tags, fields, params)
     params.append(" | ".join(terms))
     rows = await conn.fetch(
         f"""
-        SELECT c.doc_id, c.chunk_index, c.text, ts_rank_cd(c.search_vector, q) AS rank
-        FROM {fq_table("kb_chunks")} c{scope.join}, to_tsquery('english', ${len(params)}) q
+        SELECT c.doc_id, c.passage_index, c.text, ts_rank_cd(c.search_vector, q) AS rank
+        FROM {fq_table("kb_passages")} c{scope.join}, to_tsquery('english', ${len(params)}) q
         WHERE c.bank_id = $1 AND c.search_vector @@ q{scope.where}
         ORDER BY rank DESC
         LIMIT {int(limit)}
         """,
         *params,
     )
-    return [ChunkHit(r["doc_id"], r["chunk_index"], r["text"], i + 1) for i, r in enumerate(rows)]
+    return [PassageHit(r["doc_id"], r["passage_index"], r["text"], i + 1) for i, r in enumerate(rows)]

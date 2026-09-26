@@ -22,21 +22,24 @@ class CreateKnowledgeBank(BaseModel):
 
 class WriteDocument(BaseModel):
     id: str = Field(min_length=1, max_length=512, description="Caller's document id; writing it again replaces it")
-    # Empty text is accepted and stored with zero chunks: real corpora carry records
+    # Empty text is accepted and stored with zero passages: real corpora carry records
     # whose body extracted to nothing, and one of them must not fail the whole batch.
     text: str
     title: str | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict, description="Free-form metadata, stored as given")
-    properties: dict[str, Any] = Field(
+    fields: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Values for the bank's metadata-schema properties, supplied instead of extracted. They land in the "
-            "same object extraction fills, and a property supplied here is not sent to the LLM for this document."
+            "Values for the schema's document fields, supplied instead of extracted. They land in the same "
+            "object extraction fills, and a field supplied here is not sent to the LLM for this document."
         ),
     )
-    chunk_properties: dict[int, dict[str, Any]] = Field(
-        default_factory=dict, description="The same, per chunk index, for the schema's chunk properties"
+    passage_fields: dict[int, dict[str, Any]] = Field(
+        default_factory=dict, description="The same, per passage index, for the schema's passage fields"
+    )
+    schema_id: str | None = Field(
+        default=None, description="Which schema fills this document's fields; a bank with one schema uses it"
     )
 
 
@@ -44,22 +47,27 @@ class WriteRequest(BaseModel):
     documents: list[WriteDocument] = Field(min_length=1, max_length=MAX_BATCH_DOCUMENTS)
 
 
-class MetadataSchemaRequest(BaseModel):
-    document: dict[str, Any] = Field(
-        default_factory=dict, description="Property name -> {type, description, values, items}"
+class SchemaRequest(BaseModel):
+    """A schema: the fields a kind of document has, and the fields its passages have."""
+
+    name: str | None = Field(default=None, description="Human name, e.g. 'Supplier contract'")
+    description: str | None = Field(default=None, description="What this kind of document is")
+    document_fields: dict[str, Any] = Field(
+        default_factory=dict, description="Field name -> {type, description, values, items, source}"
     )
-    chunks: dict[str, Any] = Field(default_factory=dict, description="Same shape, extracted per chunk")
+    passage_fields: dict[str, Any] = Field(default_factory=dict, description="The same, filled per passage")
 
 
 class ExtractRequest(BaseModel):
     doc_ids: list[str] = Field(default_factory=list, description="Only these documents; empty means all")
-    only_missing: bool = Field(default=True, description="Skip documents that already have extracted values")
+    only_missing: bool = Field(default=True, description="Skip documents whose fields are already filled")
+    schema_id: str | None = Field(default=None, description="Which schema to extract with")
 
 
 class QueryRequest(BaseModel):
     """A query in the knowledge-bank DSL. See hindsight_api/knowledge/query.py."""
 
-    from_: Literal["documents", "chunks"] = Field(default="chunks", alias="from")
+    from_: Literal["documents", "passages"] = Field(default="passages", alias="from")
     select: list[Any] = Field(min_length=1, description="Fields, aggregates and expressions over them")
     where: dict[str, Any] | None = Field(default=None, description="The same metadata filter search takes")
     group_by: list[Any] | None = None
@@ -76,16 +84,16 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=10, ge=1, le=200)
     mode: Literal["hybrid", "vector", "keyword"] = "hybrid"
     tags: list[str] | None = None
-    metadata: dict[str, Any] | None = Field(
+    fields: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Metadata filter: {property: value} or {property: {$gte: 1, $in: [...], $contains: x, $exists: true}}. "
-            "Matches chunk-level values, then document-level extracted values, then metadata written with the document."
+            "Field filter: {field: value} or {field: {$gte: 1, $in: [...], $contains: x, $exists: true}}. "
+            "Matches passage-level values, then document-level values, then metadata written with the document."
         ),
     )
     rerank: bool | None = Field(default=None, description="Override the bank's rerank setting")
     collapse_documents: bool = Field(
-        default=False, description="Best chunk per document, so top_k means k distinct documents"
+        default=False, description="Best passage per document, so top_k means k distinct documents"
     )
 
 
@@ -144,8 +152,9 @@ def build_router(get_request_context: Any) -> APIRouter:
                 title=d.title,
                 tags=d.tags,
                 metadata=d.metadata,
-                properties=d.properties,
-                chunk_properties=d.chunk_properties,
+                fields=d.fields,
+                passage_fields=d.passage_fields,
+                schema_id=d.schema_id,
             )
             for d in body.documents
         ]
@@ -161,11 +170,11 @@ def build_router(get_request_context: Any) -> APIRouter:
     ):
         return await run(svc.list_documents(kb, limit, offset, q))
 
-    @router.get("/{kb}/documents/{doc_id:path}", summary="One document with its chunks")
+    @router.get("/{kb}/documents/{doc_id:path}", summary="One document with its passages")
     async def get_document(kb: str, doc_id: str, svc: KnowledgeService = Depends(service)):
         return await run(svc.get_document(kb, doc_id))
 
-    @router.delete("/{kb}/documents/{doc_id:path}", summary="Delete a document and its chunks")
+    @router.delete("/{kb}/documents/{doc_id:path}", summary="Delete a document and its passages")
     async def delete_document(kb: str, doc_id: str, svc: KnowledgeService = Depends(service)):
         return await run(svc.delete_document(kb, doc_id))
 
@@ -196,45 +205,92 @@ def build_router(get_request_context: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail="operation not found")
         return result
 
-    @router.get("/{kb}/metadata-schema", summary="What this bank extracts, and how much is extracted")
-    async def get_metadata_schema(
+    @router.get("/{kb}/schemas", summary="The schemas of this bank")
+    async def list_schemas(
         kb: str,
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
-        return await run(svc.get_metadata_schema(kb))
+        return await run(svc.list_schemas(kb))
 
-    @router.put("/{kb}/metadata-schema", summary="Define what the LLM extracts per document and per chunk")
-    async def put_metadata_schema(
+    @router.post("/{kb}/schemas", status_code=201, summary="Define a schema and its fields")
+    async def create_schema(
         kb: str,
-        body: MetadataSchemaRequest,
+        body: SchemaRequest,
+        schema_id: str = Query(default=KnowledgeService.DEFAULT_SCHEMA_ID, description="Id for this schema"),
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
-        # Takes effect on the next write; existing documents are re-extracted on request
-        # (POST metadata/extract), because re-reading a corpus costs LLM calls.
-        return await run(svc.put_metadata_schema(kb, body.document, body.chunks))
+        return await run(
+            svc.put_schema(
+                kb,
+                schema_id,
+                name=body.name,
+                description=body.description,
+                document_fields=body.document_fields,
+                passage_fields=body.passage_fields,
+            )
+        )
 
-    @router.get("/{kb}/metadata-values/{property_name}", summary="How the corpus splits per value")
-    async def metadata_values(
+    @router.get("/{kb}/schemas/{schema_id}", summary="One schema, and how much it has filled")
+    async def get_schema(
         kb: str,
-        property_name: str,
-        level: Literal["document", "chunks"] = Query(default="document"),
+        schema_id: str,
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
-        return await run(svc.metadata_values(kb, property_name, level))
+        return await run(svc.get_schema(kb, schema_id))
 
-    @router.post("/{kb}/metadata/extract", status_code=202, summary="Re-extract metadata for stored documents")
-    async def extract_metadata(
+    @router.put("/{kb}/schemas/{schema_id}", summary="Define or redefine a schema")
+    async def put_schema(
+        kb: str,
+        schema_id: str,
+        body: SchemaRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        # Takes effect on the next write; documents already written are re-extracted on
+        # request (POST fields/extract), because re-reading a corpus costs LLM calls.
+        return await run(
+            svc.put_schema(
+                kb,
+                schema_id,
+                name=body.name,
+                description=body.description,
+                document_fields=body.document_fields,
+                passage_fields=body.passage_fields,
+            )
+        )
+
+    @router.delete("/{kb}/schemas/{schema_id}", summary="Delete a schema")
+    async def delete_schema(
+        kb: str,
+        schema_id: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.delete_schema(kb, schema_id))
+
+    @router.get("/{kb}/field-values/{field_name}", summary="How the corpus splits per value of a field")
+    async def field_values(
+        kb: str,
+        field_name: str,
+        level: Literal["document", "passages"] = Query(default="document"),
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.field_values(kb, field_name, level))
+
+    @router.post("/{kb}/fields/extract", status_code=202, summary="Fill fields for documents already stored")
+    async def extract_fields(
         kb: str,
         body: ExtractRequest,
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
-        return await run(svc.submit_extract(kb, body.doc_ids, body.only_missing))
+        return await run(svc.submit_extract(kb, body.doc_ids, body.only_missing, body.schema_id))
 
-    @router.post("/{kb}/query", summary="Aggregate and filter over documents and chunks")
+    @router.post("/{kb}/query", summary="Aggregate and filter over documents and passages")
     async def query(
         kb: str,
         body: QueryRequest,
@@ -260,7 +316,7 @@ def build_router(get_request_context: Any) -> APIRouter:
                 top_k=body.top_k,
                 mode=body.mode,
                 tags=body.tags,
-                metadata=body.metadata,
+                fields=body.fields,
                 rerank=body.rerank,
                 collapse_documents=body.collapse_documents,
                 request_context=ctx,
@@ -270,7 +326,7 @@ def build_router(get_request_context: Any) -> APIRouter:
             "results": [
                 {
                     "document_id": hit.doc_id,
-                    "chunk_index": hit.chunk_index,
+                    "passage_index": hit.passage_index,
                     "text": hit.text,
                     "score": hit.score,
                     "ranks": hit.ranks,

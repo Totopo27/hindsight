@@ -1,6 +1,6 @@
 """The metadata schema a knowledge bank extracts, and the model the LLM fills in.
 
-A schema is a flat map of property name -> spec, one for documents and one for chunks:
+A schema is a flat map of property name -> spec, one for documents and one for passages:
 
     {"doc_type": {"type": "string", "values": ["invoice", "contract"],
                   "description": "What kind of document this is"},
@@ -55,58 +55,58 @@ _SCALARS: dict[str, Any] = {
 }
 
 
-class MetadataSchemaError(ValueError):
+class SchemaError(ValueError):
     """A schema a caller cannot have meant: unknown type, empty name, too many values."""
 
 
-def validate_schema(raw: Any, *, level: str) -> dict[str, dict[str, Any]]:
-    """Check one level (document or chunk) of a schema and return it normalised."""
+def validate_field_schema(raw: Any, *, level: str) -> dict[str, dict[str, Any]]:
+    """Check one level (document or passage) of a schema and return it normalised."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise MetadataSchemaError(f"{level} schema must be an object of property name -> spec")
+        raise SchemaError(f"{level} schema must be an object of property name -> spec")
     if len(raw) > MAX_PROPERTIES:
-        raise MetadataSchemaError(f"{level} schema has {len(raw)} properties; at most {MAX_PROPERTIES}")
+        raise SchemaError(f"{level} schema has {len(raw)} properties; at most {MAX_PROPERTIES}")
 
     out: dict[str, dict[str, Any]] = {}
     for name, spec in raw.items():
         if not isinstance(name, str) or not name.strip():
-            raise MetadataSchemaError(f"{level} schema has a property with an empty name")
+            raise SchemaError(f"{level} schema has a property with an empty name")
         if not name.replace("_", "").replace("-", "").isalnum():
-            raise MetadataSchemaError(f"property {name!r} must be alphanumeric with _ or -")
+            raise SchemaError(f"property {name!r} must be alphanumeric with _ or -")
         if not isinstance(spec, dict):
-            raise MetadataSchemaError(f"property {name!r} must be an object, e.g. {{'type': 'string'}}")
+            raise SchemaError(f"property {name!r} must be an object, e.g. {{'type': 'string'}}")
 
         property_type = spec.get("type", "string")
         if property_type not in PROPERTY_TYPES:
-            raise MetadataSchemaError(f"property {name!r} has unknown type {property_type!r}; one of {PROPERTY_TYPES}")
+            raise SchemaError(f"property {name!r} has unknown type {property_type!r}; one of {PROPERTY_TYPES}")
 
         source = spec.get("source", "extract")
         if source not in SOURCES:
-            raise MetadataSchemaError(f"property {name!r}: source must be one of {SOURCES}")
+            raise SchemaError(f"property {name!r}: source must be one of {SOURCES}")
         normalised: dict[str, Any] = {"type": property_type, "source": source}
         description = spec.get("description")
         if description is not None:
             if not isinstance(description, str):
-                raise MetadataSchemaError(f"property {name!r}: description must be a string")
+                raise SchemaError(f"property {name!r}: description must be a string")
             normalised["description"] = description
 
         if property_type == "array":
             item_type = spec.get("items", "string")
             if item_type not in ITEM_TYPES:
-                raise MetadataSchemaError(f"property {name!r}: items must be one of {ITEM_TYPES}")
+                raise SchemaError(f"property {name!r}: items must be one of {ITEM_TYPES}")
             normalised["items"] = item_type
 
         values = spec.get("values")
         if values is not None:
             if property_type in ("object",):
-                raise MetadataSchemaError(f"property {name!r}: an object property cannot have fixed values")
+                raise SchemaError(f"property {name!r}: an object property cannot have fixed values")
             if not isinstance(values, list) or not values:
-                raise MetadataSchemaError(f"property {name!r}: values must be a non-empty list")
+                raise SchemaError(f"property {name!r}: values must be a non-empty list")
             if len(values) > MAX_VALUES:
-                raise MetadataSchemaError(f"property {name!r}: at most {MAX_VALUES} values")
+                raise SchemaError(f"property {name!r}: at most {MAX_VALUES} values")
             if len({str(v) for v in values}) != len(values):
-                raise MetadataSchemaError(f"property {name!r}: values must be unique")
+                raise SchemaError(f"property {name!r}: values must be unique")
             normalised["values"] = values
 
         out[name] = normalised
@@ -187,12 +187,12 @@ def validate_values(schema: dict[str, dict[str, Any]], values: dict[str, Any], *
         return {}
     unknown = sorted(set(values) - set(schema))
     if unknown:
-        raise MetadataSchemaError(f"{level} properties not in the schema: {unknown}")
+        raise SchemaError(f"{level} properties not in the schema: {unknown}")
     model = extraction_model({name: schema[name] for name in values}, name="SuppliedMetadata")
     if model is None:
         return {}
     try:
         validated = model.model_validate(values)
     except Exception as e:
-        raise MetadataSchemaError(f"{level} properties do not match the schema: {e}") from e
+        raise SchemaError(f"{level} properties do not match the schema: {e}") from e
     return jsonable(validated.model_dump())

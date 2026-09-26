@@ -1530,7 +1530,7 @@ For advanced authentication (JWT, OAuth, multi-tenant schemas), implement a cust
 | `HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS` | Diagnostic: log event-loop lag percentiles (`[loop-lag]`) every N seconds (minimum 1), to tell a slow await from an oversubscribed loop. `0` disables the probe. | `0` |
 | `HINDSIGHT_API_LOOP_LAG_METRIC` | Record every event-loop lag sample in the `hindsight_event_loop_lag_seconds` histogram (sampled every 50 ms), independent of the log reports above. A loop that is busy but never blocked shows up here and nowhere else: the recall phase timers stay fast while requests wait for the loop. | `false` |
 | `HINDSIGHT_API_METRICS_WORKER_LABEL` | With `--workers N` every worker is its own process with its own metrics, but they share one port, so a scrape of `/metrics` reaches one worker at random: counters jump between processes (a rate over them reads every switch as a reset) and a saturated worker is invisible. When on, each worker publishes a snapshot of its metrics every 5 s and `/metrics` returns every live worker's series, each labelled `api_worker="<slot>"` (slot `0..N-1`). One port and one scrape target; the extra label is the only visible change. | `false` |
-| `HINDSIGHT_API_TOKENIZER_ENCODING` | Vocabulary used for every token count and chunk boundary (recall budgets, chunk sizes, prompt fitting, embedding truncation). `o200k_base` matches current OpenAI models and counts non-Latin text far closer to what they actually charge; `cl100k_base` reproduces the counts Hindsight produced before this default changed. Server-level: token budgets are only comparable between banks if they are all counted the same way. Other bundled vocabulary: `o200k_harmony`. | `o200k_base` |
+| `HINDSIGHT_API_TOKENIZER_ENCODING` | Vocabulary used for every token count and chunk boundary (recall budgets, passage sizes, prompt fitting, embedding truncation). `o200k_base` matches current OpenAI models and counts non-Latin text far closer to what they actually charge; `cl100k_base` reproduces the counts Hindsight produced before this default changed. Server-level: token budgets are only comparable between banks if they are all counted the same way. Other bundled vocabulary: `o200k_harmony`. | `o200k_base` |
 | `HINDSIGHT_API_MODEL_INIT_TIMEOUT` | Wall-clock cap (seconds) on startup model/connection initialization. If embeddings, the cross-encoder, or LLM verification block (e.g. an offline model download or an unreachable provider), the server fails fast with a clear error instead of hanging forever. Increase if a legitimate first-time model download needs more time. | `300` |
 | `HINDSIGHT_API_STARTUP_WAIT_SECONDS` | **Docker image only.** How long the container waits for the API to answer `/health` before it stops and restarts. Raising `HINDSIGHT_API_MODEL_INIT_TIMEOUT` above the default raises this wait too, so a slow first-time model download is not cut short; set this to override the wait on its own. | `300`, or `HINDSIGHT_API_MODEL_INIT_TIMEOUT` + 30s when that is longer |
 
@@ -1691,13 +1691,13 @@ so two banks on one server can chunk differently.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HINDSIGHT_API_KB_CHUNK_SIZE` | Chunk size in tokens. Chunks are cut on paragraph, then sentence, then word boundaries, so a chunk is at most this many tokens and usually close to it. | `512` |
-| `HINDSIGHT_API_KB_CHUNK_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
+| `HINDSIGHT_API_KB_PASSAGE_SIZE` | Passage size in tokens. Chunks are cut on paragraph, then sentence, then word boundaries, so a chunk is at most this many tokens and usually close to it. | `512` |
+| `HINDSIGHT_API_KB_PASSAGE_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
 | `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
 | `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
-| `HINDSIGHT_API_KB_METADATA_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
-| `HINDSIGHT_API_KB_METADATA_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
-| `HINDSIGHT_API_KB_METADATA_CONCURRENCY` | Chunk-level extraction is one LLM call per chunk; this many run at once per document. | `4` |
+| `HINDSIGHT_API_KB_FIELD_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
+| `HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
+| `HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY` | Chunk-level extraction is one LLM call per chunk; this many run at once per document. | `4` |
 | `HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT` | Weight of the vector arm in the fusion; the keyword arm gets the rest (`1 - weight`). `0.5` is an even split. The keyword arm ORs every word of the query, so paragraph-length queries do better with more weight on the vector arm. Ignored for single-arm searches (`mode: vector` / `keyword`). | `0.5` |
 
 #### Metadata extraction {#knowledge-bank-metadata}
@@ -1705,12 +1705,12 @@ so two banks on one server can chunk differently.
 A knowledge bank can carry a *metadata schema*: the properties an LLM should fill in for
 every document, and for every chunk. Writes extract them, and search filters on them.
 
-<CodeSnippet code={configurationSh} section="kb-metadata-schema" language="bash" />
+<CodeSnippet code={configurationSh} section="kb-schema" language="bash" />
 
 Property types: `string`, `integer`, `number`, `boolean`, `date`, `datetime`, `array` (of
 any of those, via `items`) and `object` for anything the flat types cannot say.
 
-<CodeSnippet code={configurationSh} section="kb-metadata-search" language="bash" />
+<CodeSnippet code={configurationSh} section="kb-field-search" language="bash" />
 
 Filter operators: a bare value for equality, `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`,
 `$in`, `$nin`, `$contains` (an array holds the value, or a string contains it) and
@@ -1721,7 +1721,7 @@ whether a value was extracted per chunk, per document, or written by the caller.
 The schema takes effect on the next write. Documents already in the bank are re-extracted
 on request, as a background operation, because re-reading a corpus costs LLM calls:
 
-<CodeSnippet code={configurationSh} section="kb-metadata-extract" language="bash" />
+<CodeSnippet code={configurationSh} section="kb-fields-extract" language="bash" />
 
 `GET /v1/default/knowledge-banks/{kb}/metadata-values/{property}` returns the counts per
 value (`?level=chunks` for a chunk property). Extraction uses the bank's own LLM, so a bank
@@ -1734,7 +1734,7 @@ default) or `request` (the caller sends it on write). Either way it lands in the
 object, so a filter and a query cannot tell them apart. A write may also supply a value for
 an `extract` property, which overrides it for that document:
 
-<CodeSnippet code={configurationSh} section="kb-metadata-supplied" language="bash" />
+<CodeSnippet code={configurationSh} section="kb-fields-supplied" language="bash" />
 
 A document whose supplied values cover the schema costs no LLM call, which is how a corpus
 with known metadata is loaded without model spend.
