@@ -101,9 +101,7 @@ def _condition(name: str, spec: Any, params: list[Any], aliases: tuple[str, str]
     return " AND ".join(clauses) if clauses else "TRUE"
 
 
-def compile_filters(
-    metadata: dict[str, Any] | None, params: list[Any], aliases: tuple[str, str] = ("c", "d")
-) -> str:
+def compile_filters(metadata: dict[str, Any] | None, params: list[Any], aliases: tuple[str, str] = ("c", "d")) -> str:
     """Return a SQL fragment starting with AND, appending its parameters to ``params``.
 
     The caller must have joined ``kb_documents d`` to ``kb_passages c`` when this returns

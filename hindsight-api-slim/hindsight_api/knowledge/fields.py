@@ -14,7 +14,7 @@ A schema is a flat map of property name -> spec, one for documents and one for p
 leaves the property out. Every property is optional in the extraction model — "not in this
 document" has to be expressible, or the model invents values to fill the shape.
 
-A property's ``source`` says who fills it: ``extract`` (the LLM reads the document, the
+A field's ``source`` says who fills it: ``extract`` (the LLM reads the document, the
 default) or ``request`` (the caller supplies it on write, and the LLM never sees it). Either
 way the value lands in the same object, so a query and a filter cannot tell them apart —
 and a write may also supply a value for an ``extract`` property, which skips the call for
@@ -83,8 +83,25 @@ def validate_field_schema(raw: Any, *, level: str) -> dict[str, dict[str, Any]]:
 
         source = spec.get("source", "extract")
         if source not in SOURCES:
-            raise SchemaError(f"property {name!r}: source must be one of {SOURCES}")
-        normalised: dict[str, Any] = {"type": property_type, "source": source}
+            raise SchemaError(f"field {name!r}: source must be one of {SOURCES}")
+        # filterable: search may filter on it (the default — a field nobody can filter on
+        # is rarely worth extracting). indexed: its value joins the text that gets
+        # embedded, so a passage becomes findable by a value its own words never say.
+        # That one is off by default: every indexed field dilutes the passage's own
+        # meaning in the vector, so it is a decision, not a freebie.
+        filterable = spec.get("filterable", True)
+        indexed = spec.get("indexed", False)
+        for flag_name, flag in (("filterable", filterable), ("indexed", indexed)):
+            if not isinstance(flag, bool):
+                raise SchemaError(f"field {name!r}: {flag_name} must be true or false")
+        if indexed and property_type == "object":
+            raise SchemaError(f"field {name!r}: an object field cannot be indexed into the passage text")
+        normalised: dict[str, Any] = {
+            "type": property_type,
+            "source": source,
+            "filterable": filterable,
+            "indexed": indexed,
+        }
         description = spec.get("description")
         if description is not None:
             if not isinstance(description, str):
@@ -196,3 +213,17 @@ def validate_values(schema: dict[str, dict[str, Any]], values: dict[str, Any], *
     except Exception as e:
         raise SchemaError(f"{level} properties do not match the schema: {e}") from e
     return jsonable(validated.model_dump())
+
+
+def filterable_names(schema: dict[str, Any] | None) -> set[str] | None:
+    """Every field a search may filter on, or None when the bank has no schema.
+
+    None means "no schema, no opinion": a bank without one still filters on whatever the
+    caller wrote in a document's own metadata.
+    """
+    if not schema:
+        return None
+    names: set[str] = set()
+    for level in ("document_fields", "passage_fields"):
+        names |= {name for name, spec in (schema.get(level) or {}).items() if spec.get("filterable", True)}
+    return names

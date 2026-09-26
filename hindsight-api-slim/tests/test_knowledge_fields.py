@@ -57,7 +57,13 @@ def _mock(memory, values: dict):
 def test_schema_validation_accepts_the_documented_shapes():
     document = validate_field_schema(SCHEMA["document_fields"], level="document")
     assert document["doc_type"]["values"] == ["invoice", "contract", "memo"]
-    assert document["parties"] == {"type": "array", "source": "extract", "items": "string"}
+    assert document["parties"] == {
+        "type": "array",
+        "source": "extract",
+        "filterable": True,
+        "indexed": False,
+        "items": "string",
+    }
     assert document["doc_type"]["source"] == "extract", "extraction is the default source"
     assert validate_field_schema(None, level="passage") == {}
 

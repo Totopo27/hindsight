@@ -774,13 +774,14 @@ ENV_LLM_PROMPT_CACHE_ENABLED = "HINDSIGHT_API_LLM_PROMPT_CACHE_ENABLED"
 ENV_LLM_DEBUG_DUMP_4XX = "HINDSIGHT_API_LLM_DEBUG_DUMP_4XX"
 
 # Knowledge bank settings (document retrieval; see hindsight_api/knowledge/)
-ENV_KB_CHUNK_SIZE = "HINDSIGHT_API_KB_CHUNK_SIZE"
-ENV_KB_CHUNK_OVERLAP = "HINDSIGHT_API_KB_CHUNK_OVERLAP"
+ENV_KB_PASSAGE_SIZE = "HINDSIGHT_API_KB_PASSAGE_SIZE"
+ENV_KB_PASSAGE_OVERLAP = "HINDSIGHT_API_KB_PASSAGE_OVERLAP"
 ENV_KB_SEARCH_CANDIDATES = "HINDSIGHT_API_KB_SEARCH_CANDIDATES"
 ENV_KB_SEARCH_VECTOR_WEIGHT = "HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT"
-ENV_KB_METADATA_EXTRACTION = "HINDSIGHT_API_KB_METADATA_EXTRACTION"
-ENV_KB_METADATA_MAX_CHARS = "HINDSIGHT_API_KB_METADATA_MAX_CHARS"
-ENV_KB_METADATA_CONCURRENCY = "HINDSIGHT_API_KB_METADATA_CONCURRENCY"
+ENV_KB_FIELD_EXTRACTION = "HINDSIGHT_API_KB_FIELD_EXTRACTION"
+ENV_KB_SCHEMA_CLASSIFICATION = "HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION"
+ENV_KB_FIELD_EXTRACTION_MAX_CHARS = "HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS"
+ENV_KB_FIELD_EXTRACTION_CONCURRENCY = "HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY"
 ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
 
 # Retain settings
@@ -1624,8 +1625,8 @@ DEFAULT_BANK_STATS_CACHE_TTL_SECONDS = 60.0  # TTL for get_bank_stats result cac
 DEFAULT_BANK_STATS_CACHE_MAX_ENTRIES = 1024  # LRU bound across (schema, bank) keys
 
 # Knowledge bank settings
-DEFAULT_KB_CHUNK_SIZE = 512  # Tokens per chunk (the size the RAG baselines use)
-DEFAULT_KB_CHUNK_OVERLAP = 64  # Tokens repeated between neighbouring chunks
+DEFAULT_KB_PASSAGE_SIZE = 512  # Tokens per passage (the size the RAG baselines use)
+DEFAULT_KB_PASSAGE_OVERLAP = 64  # Tokens repeated between neighbouring passages
 DEFAULT_KB_SEARCH_CANDIDATES = 50  # Candidates each search arm contributes before fusion
 # Weight of the vector arm in the hybrid fusion; the keyword arm gets the rest. 0.5 is an
 # even split (plain RRF). A long query makes the keyword arm noisy — every one of its words
@@ -1635,12 +1636,16 @@ DEFAULT_KB_SEARCH_VECTOR_WEIGHT = 0.5
 # Metadata extraction runs only where a bank has a metadata schema, so this on-by-default
 # switch costs nothing until someone defines one. Turn it off to stop extracting without
 # throwing the schema away.
-DEFAULT_KB_METADATA_EXTRACTION = True
+DEFAULT_KB_FIELD_EXTRACTION = True
+# When a bank holds several schemas and a write does not name one, ask the LLM which it is.
+# Off means the write simply gets no fields, which is the safe answer when the caller is
+# expected to know — and the cheaper one, since classification is a call per document.
+DEFAULT_KB_SCHEMA_CLASSIFICATION = True
 # How much of a document (and of a chunk) the extraction LLM reads. A metadata property is
 # almost always stated early, and the whole point of the feature is that it is cheap.
-DEFAULT_KB_METADATA_MAX_CHARS = 12000
+DEFAULT_KB_FIELD_EXTRACTION_MAX_CHARS = 12000
 # Chunk-level extraction is one call per chunk; this is how many run at once per document.
-DEFAULT_KB_METADATA_CONCURRENCY = 4
+DEFAULT_KB_FIELD_EXTRACTION_CONCURRENCY = 4
 DEFAULT_KB_SEARCH_RERANK = True  # Rerank the fused candidates with the configured cross-encoder
 
 # Retain settings
@@ -3348,6 +3353,7 @@ class HindsightConfig:
     kb_search_candidates: int
     kb_search_vector_weight: float
     kb_field_extraction: bool
+    kb_schema_classification: bool
     kb_field_extraction_max_chars: int
     kb_field_extraction_concurrency: int
     kb_search_rerank: bool
@@ -3750,6 +3756,7 @@ class HindsightConfig:
         "kb_search_candidates",
         "kb_search_vector_weight",
         "kb_field_extraction",
+        "kb_schema_classification",
         "kb_field_extraction_max_chars",
         "kb_field_extraction_concurrency",
         "kb_search_rerank",
@@ -4900,15 +4907,21 @@ class HindsightConfig:
             retain_max_completion_tokens=int(
                 os.getenv(ENV_RETAIN_MAX_COMPLETION_TOKENS, str(DEFAULT_RETAIN_MAX_COMPLETION_TOKENS))
             ),
-            kb_passage_size=int(os.getenv(ENV_KB_CHUNK_SIZE, str(DEFAULT_KB_CHUNK_SIZE))),
-            kb_passage_overlap=int(os.getenv(ENV_KB_CHUNK_OVERLAP, str(DEFAULT_KB_CHUNK_OVERLAP))),
+            kb_passage_size=int(os.getenv(ENV_KB_PASSAGE_SIZE, str(DEFAULT_KB_PASSAGE_SIZE))),
+            kb_passage_overlap=int(os.getenv(ENV_KB_PASSAGE_OVERLAP, str(DEFAULT_KB_PASSAGE_OVERLAP))),
             kb_search_candidates=int(os.getenv(ENV_KB_SEARCH_CANDIDATES, str(DEFAULT_KB_SEARCH_CANDIDATES))),
             kb_search_vector_weight=float(os.getenv(ENV_KB_SEARCH_VECTOR_WEIGHT, str(DEFAULT_KB_SEARCH_VECTOR_WEIGHT))),
-            kb_field_extraction=os.getenv(ENV_KB_METADATA_EXTRACTION, str(DEFAULT_KB_METADATA_EXTRACTION)).lower()
+            kb_field_extraction=os.getenv(ENV_KB_FIELD_EXTRACTION, str(DEFAULT_KB_FIELD_EXTRACTION)).lower()
             in ("true", "1", "yes"),
-            kb_field_extraction_max_chars=int(os.getenv(ENV_KB_METADATA_MAX_CHARS, str(DEFAULT_KB_METADATA_MAX_CHARS))),
+            kb_schema_classification=os.getenv(
+                ENV_KB_SCHEMA_CLASSIFICATION, str(DEFAULT_KB_SCHEMA_CLASSIFICATION)
+            ).lower()
+            in ("true", "1", "yes"),
+            kb_field_extraction_max_chars=int(
+                os.getenv(ENV_KB_FIELD_EXTRACTION_MAX_CHARS, str(DEFAULT_KB_FIELD_EXTRACTION_MAX_CHARS))
+            ),
             kb_field_extraction_concurrency=int(
-                os.getenv(ENV_KB_METADATA_CONCURRENCY, str(DEFAULT_KB_METADATA_CONCURRENCY))
+                os.getenv(ENV_KB_FIELD_EXTRACTION_CONCURRENCY, str(DEFAULT_KB_FIELD_EXTRACTION_CONCURRENCY))
             ),
             kb_search_rerank=os.getenv(ENV_KB_SEARCH_RERANK, str(DEFAULT_KB_SEARCH_RERANK)).lower()
             in ("true", "1", "yes"),

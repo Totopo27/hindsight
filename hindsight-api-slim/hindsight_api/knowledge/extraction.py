@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, create_model
 
 from .fields import extraction_model, jsonable
 
@@ -106,3 +106,61 @@ async def extract_passages(
 
     results = await asyncio.gather(*(one(index, text) for index, text in passages))
     return {result.index: result.values for result in results if result.values}
+
+
+_CLASSIFY_SYSTEM = (
+    "You decide which schema a document belongs to. Answer with one of the offered schema "
+    "ids, or 'none' when the document is not any of them. Never invent an id."
+)
+
+
+async def classify_schema(
+    llm: Any,
+    schemas: list[dict[str, Any]],
+    *,
+    doc_id: str,
+    title: str | None,
+    text: str,
+    char_limit: int,
+) -> str | None:
+    """Which of these schemas describes this document, if any.
+
+    The model is shown each schema's id, name, description and field names — the same
+    things a person would read to decide — and answers with an id from a fixed set, so a
+    hallucinated name cannot get through. 'none' is a real answer: a bank that holds
+    contracts and invoices should not force a memo into one of them.
+    """
+    if not schemas:
+        return None
+    choices = [schema["schema_id"] for schema in schemas]
+    catalogue = "\n".join(
+        f"- {schema['schema_id']}: {schema.get('name') or schema['schema_id']}"
+        + (f" — {schema['description']}" if schema.get("description") else "")
+        + (
+            f" (fields: {', '.join(sorted(schema.get('document_fields') or {}))})"
+            if schema.get("document_fields")
+            else ""
+        )
+        for schema in schemas
+    )
+    model = create_model(
+        "SchemaChoice",
+        schema_id=(Literal[tuple([*choices, "none"])], Field(description="The schema this document is")),  # type: ignore[valid-type]
+    )
+    messages = [
+        {"role": "system", "content": _CLASSIFY_SYSTEM},
+        {
+            "role": "user",
+            "content": f"Schemas:\n{catalogue}\n\nDocument{f' titled {title}' if title else ''}:\n{text[:char_limit]}",
+        },
+    ]
+    try:
+        result = await llm.call(messages=messages, response_format=model, scope="knowledge_classify")
+        content = result.content
+        chosen = content.schema_id if isinstance(content, BaseModel) else (content or {}).get("schema_id")
+    except Exception as e:
+        # A document that could not be classified is still worth storing; it simply has
+        # no fields until someone says which schema it is.
+        logger.warning("knowledge schema classification failed for %s: %s", doc_id, e)
+        return None
+    return None if chosen in (None, "none") else str(chosen)

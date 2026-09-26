@@ -23,8 +23,8 @@ from typing import Any
 from ..engine.db_utils import acquire_with_retry
 from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
 from . import store
-from .extraction import extract_document, extract_passages
-from .fields import SchemaError, extract_only, validate_field_schema, validate_values
+from .extraction import classify_schema, extract_document, extract_passages
+from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
 from .passages import split_into_passages
 from .query import CompiledQuery, Limits, compile_query, json_safe
@@ -84,13 +84,39 @@ def query_terms(query: str) -> list[str]:
     return [t for t in re.findall(r"\w+", query.lower()) if len(t) > 1][:32]
 
 
-def embedding_text(title: str | None, passage_text: str) -> str:
-    """What gets embedded for a passage: the title, then the passage — unless it is already there."""
-    if not title:
-        return passage_text
-    if passage_text.lstrip().lower().startswith(title.strip().lower()):
-        return passage_text
-    return f"{title}\n\n{passage_text}"
+def embedding_text(title: str | None, passage_text: str, indexed: dict[str, Any] | None = None) -> str:
+    """What gets embedded for a passage: indexed field values, the title, then the passage.
+
+    A field marked ``indexed`` is prepended as ``name: value`` so the passage can be found
+    by something its own words never say — a region, a document type, a counterparty. The
+    title is skipped when the passage already opens with it, because repeating it only
+    dilutes the embedding.
+    """
+    parts = []
+    if indexed:
+        parts.append(", ".join(f"{name}: {_as_text(value)}" for name, value in sorted(indexed.items())))
+    if title and not passage_text.lstrip().lower().startswith(title.strip().lower()):
+        parts.append(title)
+    parts.append(passage_text)
+    return "\n\n".join(parts)
+
+
+def _as_text(value: Any) -> str:
+    return ", ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+
+
+def indexed_values(
+    schema: dict[str, Any] | None, document_values: dict[str, Any], passage_values: dict[str, Any]
+) -> dict[str, Any]:
+    """The field values this schema marks ``indexed``, document-level and passage-level."""
+    if not schema:
+        return {}
+    indexed: dict[str, Any] = {}
+    for level, values in (("document_fields", document_values), ("passage_fields", passage_values)):
+        for name, spec in (schema.get(level) or {}).items():
+            if spec.get("indexed") and values.get(name) not in (None, [], {}):
+                indexed[name] = values[name]
+    return indexed
 
 
 class KnowledgeService:
@@ -142,6 +168,26 @@ class KnowledgeService:
             raise KnowledgeBankError(404, f"knowledge bank {bank_id!r} not found")
         if kind != store.KNOWLEDGE_KIND:
             raise KnowledgeBankError(409, f"bank {bank_id!r} is a {kind} bank")
+
+    async def _check_filterable(self, bank_id: str, fields: dict[str, Any]) -> None:
+        """A search may filter on a schema field only when the schema says it may.
+
+        Names the schema does not define are left alone: they are the caller's own
+        document metadata, which was filterable before any schema existed.
+        """
+        async with acquire_with_retry(await self._pool()) as conn:
+            schemas = await store.list_schemas(conn, bank_id)
+        if not schemas:
+            return
+        defined: set[str] = set()
+        allowed: set[str] = set()
+        for schema in schemas:
+            for level in ("document_fields", "passage_fields"):
+                defined |= set(schema.get(level) or {})
+            allowed |= filterable_names(schema) or set()
+        refused = sorted(name for name in fields if name in defined and name not in allowed)
+        if refused:
+            raise KnowledgeBankError(400, f"fields not filterable in this bank's schemas: {refused}")
 
     # ---- schemas
 
@@ -203,12 +249,20 @@ class KnowledgeService:
         # The fields already extracted stay: they are the documents' data, not the schema's.
         return {"schema_id": schema_id, "deleted": True}
 
-    async def _schema_for_write(self, bank_id: str, schema_id: str | None) -> dict[str, Any] | None:
+    async def _schema_for_write(
+        self,
+        bank_id: str,
+        schema_id: str | None,
+        *,
+        document: DocumentInput | None = None,
+        config: Any = None,
+    ) -> dict[str, Any] | None:
         """Which schema fills a document's fields.
 
         Named explicitly, or — when the bank has exactly one — that one, because a bank
-        with a single schema should not make every write repeat its name. A bank with
-        several and no name on the write extracts nothing rather than guessing.
+        with a single schema should not make every write repeat its name. With several and
+        no name, the LLM classifies the document; with classification off it gets no
+        fields, which is better than the wrong ones.
         """
         async with acquire_with_retry(await self._pool()) as conn:
             if schema_id is not None:
@@ -217,7 +271,19 @@ class KnowledgeService:
                     raise KnowledgeBankError(400, f"schema {schema_id!r} not found in this bank")
                 return schema
             schemas = await store.list_schemas(conn, bank_id)
-        return schemas[0] if len(schemas) == 1 else None
+        if len(schemas) == 1:
+            return schemas[0]
+        if not schemas or document is None or config is None or not config.kb_schema_classification:
+            return None
+        chosen = await classify_schema(
+            self._field_extraction_llm(bank_id, config),
+            schemas,
+            doc_id=document.doc_id,
+            title=document.title,
+            text=document.text,
+            char_limit=int(config.kb_field_extraction_max_chars),
+        )
+        return next((schema for schema in schemas if schema["schema_id"] == chosen), None)
 
     async def field_values(self, bank_id: str, field_name: str, level: str) -> dict[str, Any]:
         """How the corpus splits per value of one field."""
@@ -515,9 +581,13 @@ class KnowledgeService:
         async def schema_for(document: DocumentInput) -> dict[str, Any] | None:
             if not config.kb_field_extraction:
                 return None
-            if document.schema_id not in schemas:
-                schemas[document.schema_id] = await self._schema_for_write(bank_id, document.schema_id)
-            return schemas[document.schema_id]
+            if document.schema_id is not None:
+                if document.schema_id not in schemas:
+                    schemas[document.schema_id] = await self._schema_for_write(bank_id, document.schema_id)
+                return schemas[document.schema_id]
+            # Unnamed: classification reads the document, so the answer is per document
+            # rather than per id and cannot come from the cache.
+            return await self._schema_for_write(bank_id, None, document=document, config=config)
 
         written = skipped = passage_total = 0
         for start in range(0, len(documents), _EMBED_BATCH_DOCUMENTS):
@@ -539,26 +609,41 @@ class KnowledgeService:
                 )
             if not pending:
                 continue
+            # Fields are resolved *before* the embedding, not after: a field marked
+            # ``indexed`` becomes part of the text that gets embedded, so the passage is
+            # findable by a value that its own words never say ("region: emea").
+            extracted: dict[str, ExtractedFields] = {}
+            document_schemas: dict[str, dict[str, Any] | None] = {}
+            for document, _, passages in pending:
+                schema = await schema_for(document)
+                document_schemas[document.doc_id] = schema
+                extracted[document.doc_id] = await self._fields_for_document(
+                    bank_id=bank_id,
+                    config=config,
+                    schema=schema,
+                    document=document,
+                    passage_texts=[(passage.index, passage.text) for passage in passages],
+                )
+
             # Embed the title with the passage. A paragraph usually names its subject once,
             # in the title, and a passage without it is unfindable by that name — unless the
             # passage already opens with it, in which case repeating it only dilutes the
             # embedding (worth 12 nDCG@10 points on BEIR ArguAna, whose bodies restate
             # their title).
             texts = [
-                embedding_text(document.title, passage.text)
+                embedding_text(
+                    document.title,
+                    passage.text,
+                    indexed_values(
+                        document_schemas.get(document.doc_id),
+                        extracted[document.doc_id].document,
+                        extracted[document.doc_id].passages.get(passage.index, {}),
+                    ),
+                )
                 for document, _, passages in pending
                 for passage in passages
             ]
             vectors = await self.memory.embeddings.encode_documents(texts) if texts else []
-            extracted: dict[str, ExtractedFields] = {}
-            for document, _, passages in pending:
-                extracted[document.doc_id] = await self._fields_for_document(
-                    bank_id=bank_id,
-                    config=config,
-                    schema=await schema_for(document),
-                    document=document,
-                    passage_texts=[(passage.index, passage.text) for passage in passages],
-                )
             offset = 0
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
@@ -588,7 +673,8 @@ class KnowledgeService:
                             content_hash=content_hash,
                             passage_count=len(passages),
                             fields=(extracted[document.doc_id].document if document.doc_id in extracted else {}),
-                            schema_id=document.schema_id or (await schema_for(document) or {}).get("schema_id"),
+                            schema_id=document.schema_id
+                            or (document_schemas.get(document.doc_id) or {}).get("schema_id"),
                         )
                         await store.replace_passages(conn, bank_id, document.doc_id, rows)
                         await store.set_passage_fields(
@@ -661,6 +747,8 @@ class KnowledgeService:
         candidates = max(int(config.kb_search_candidates), top_k)
         use_rerank = config.kb_search_rerank if rerank is None else rerank
 
+        if fields:
+            await self._check_filterable(bank_id, fields)
         pool = await self._pool()
         try:
             async with acquire_with_retry(pool) as conn:

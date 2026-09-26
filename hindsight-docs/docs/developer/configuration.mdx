@@ -1695,6 +1695,7 @@ so two banks on one server can chunk differently.
 | `HINDSIGHT_API_KB_PASSAGE_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
 | `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
 | `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
+| `HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION` | With several schemas in a bank and no `schema_id` on the write, ask the LLM which schema the document is. Off means no fields rather than the wrong ones. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY` | Chunk-level extraction is one LLM call per chunk; this many run at once per document. | `4` |
@@ -1707,8 +1708,21 @@ every document, and for every chunk. Writes extract them, and search filters on 
 
 <CodeSnippet code={configurationSh} section="kb-schema" language="bash" />
 
-Property types: `string`, `integer`, `number`, `boolean`, `date`, `datetime`, `array` (of
-any of those, via `items`) and `object` for anything the flat types cannot say.
+Field types: `string`, `integer`, `number`, `boolean`, `date`, `datetime`, `array` (of any
+of those, via `items`) and `object` for anything the flat types cannot say. Two flags say
+what a field is *for*:
+
+- **`filterable`** (default `true`) — search may filter on it. A field the schema defines
+  but does not expose is refused with a 400 rather than silently matching nothing.
+- **`indexed`** (default `false`) — the value joins the text that gets embedded, as
+  `name: value`, so a passage becomes findable by something its own words never say (its
+  region, its counterparty). Off by default because every indexed field dilutes the
+  passage's own meaning in the vector.
+
+A bank may hold **several schemas**, one per kind of document (`PUT …/schemas/{id}`). A
+write names its schema with `schema_id`; with exactly one schema in the bank that is
+implied, and with several and no name the LLM classifies the document — or, with
+classification off, the document is stored with no fields.
 
 <CodeSnippet code={configurationSh} section="kb-field-search" language="bash" />
 
