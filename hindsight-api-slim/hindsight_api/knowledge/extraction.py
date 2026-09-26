@@ -200,12 +200,12 @@ async def derive_records(
         values=(value_model, Field(description="The record's fields")),
         evidence=(dict[str, str], Field(default_factory=dict, description="field name -> the sentence it came from")),
     )
+    # list[record_model] is a type built at runtime, which the checker cannot follow: the
+    # element type only exists once the collection's fields are known.
+    record_list: Any = list[record_model]  # type: ignore[valid-type]
     batch_model = create_model(
         "Records",
-        records=(
-            list[record_model],
-            Field(default_factory=list, description=f"Every {collection_name} this text describes"),
-        ),  # type: ignore[valid-type]
+        records=(record_list, Field(default_factory=list, description=f"Every {collection_name} this text describes")),
     )
     messages = [
         {"role": "system", "content": _RECORDS_SYSTEM},
