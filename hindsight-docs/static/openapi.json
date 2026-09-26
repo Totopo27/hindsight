@@ -1279,6 +1279,18 @@
             "description": "Id for this collection, e.g. 'vendors'"
           },
           {
+            "name": "reprocess",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Re-derive the records after the change",
+              "default": false,
+              "title": "Reprocess"
+            },
+            "description": "Re-derive the records after the change"
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -1415,6 +1427,18 @@
               "type": "string",
               "title": "Collection Id"
             }
+          },
+          {
+            "name": "reprocess",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Re-derive the records from the documents after the change",
+              "default": false,
+              "title": "Reprocess"
+            },
+            "description": "Re-derive the records from the documents after the change"
           },
           {
             "name": "authorization",
@@ -1760,6 +1784,78 @@
         ],
         "summary": "One record, with its evidence",
         "operationId": "get_record_v1_default_knowledge_banks__kb__collections__collection_id__records__record_id__get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Delete one record",
+        "operationId": "delete_record_v1_default_knowledge_banks__kb__collections__collection_id__records__record_id__delete",
         "parameters": [
           {
             "name": "kb",
@@ -12105,6 +12201,12 @@
             ],
             "title": "Identity",
             "description": "The field that identifies one record, so the same thing found twice is one row"
+          },
+          "derive_on_write": {
+            "type": "boolean",
+            "title": "Derive On Write",
+            "description": "Re-derive this collection's records whenever a document is written",
+            "default": false
           }
         },
         "type": "object",
@@ -13092,6 +13194,12 @@
             "type": "array",
             "title": "Doc Ids",
             "description": "Only these documents; empty means all"
+          },
+          "replace": {
+            "type": "boolean",
+            "title": "Replace",
+            "description": "Drop what those documents contributed before re-reading them",
+            "default": true
           }
         },
         "type": "object",

@@ -240,7 +240,11 @@ async def test_a_query_cannot_join_something_that_is_not_a_relationship(kb_clien
 
 
 def test_the_record_compiler_binds_everything_and_scopes_to_one_collection():
-    collection = {"collection_id": "contracts", "fields": {"vendor": {"type": "string", "collection": "vendors"}}}
+    collection = {
+        "collection_id": "contracts",
+        "fields": {"vendor": {"type": "string", "collection": "vendors"}, "status": {"type": "string"}},
+    }
+    joined_fields = {"vendors": frozenset({"name", "country"}), "contracts": frozenset(collection["fields"])}
     compiled = compile_record_query(
         {
             "join": [{"on": "vendor", "as": "v"}],
@@ -250,6 +254,7 @@ def test_the_record_compiler_binds_everything_and_scopes_to_one_collection():
         },
         "bank-1",
         collection,
+        joined_fields=joined_fields,
     )
     assert "DROP TABLE" not in compiled.sql
     assert compiled.params[0] == "bank-1" and compiled.params[1] == "contracts"

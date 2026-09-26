@@ -25,6 +25,10 @@ from ..engine.schema import fq_table
 from .fields import PROPERTY_TYPES, SchemaError
 
 MAX_FIELDS = 50
+#: Quotes kept per field on the materialised record. A vendor mentioned in ten thousand
+#: documents would otherwise carry ten thousand quotes in every response that returns it.
+#: The contributions keep them all — this is the summary, not the archive.
+MAX_EVIDENCE_PER_FIELD = 20
 
 
 def validate_collection_fields(raw: Any, *, known_collections: set[str]) -> dict[str, dict[str, Any]]:
@@ -87,14 +91,17 @@ async def put_collection(
     description: str | None,
     fields: dict[str, Any],
     identity: str | None,
+    derive_on_write: bool = False,
 ) -> None:
     await conn.execute(
         f"""
-        INSERT INTO {fq_table("kb_collections")} (bank_id, collection_id, name, description, fields, identity)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+        INSERT INTO {fq_table("kb_collections")}
+            (bank_id, collection_id, name, description, fields, identity, derive_on_write)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
         ON CONFLICT (bank_id, collection_id) DO UPDATE SET
             name = EXCLUDED.name, description = EXCLUDED.description,
-            fields = EXCLUDED.fields, identity = EXCLUDED.identity, updated_at = now()
+            fields = EXCLUDED.fields, identity = EXCLUDED.identity,
+            derive_on_write = EXCLUDED.derive_on_write, updated_at = now()
         """,
         bank_id,
         collection_id,
@@ -102,6 +109,7 @@ async def put_collection(
         description,
         json.dumps(fields),
         identity,
+        derive_on_write,
     )
 
 
@@ -116,7 +124,7 @@ def _loaded(row: Any, *columns: str) -> dict[str, Any]:
 async def get_collection(conn: Any, bank_id: str, collection_id: str) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         f"""
-        SELECT collection_id, name, description, fields, identity, created_at, updated_at
+        SELECT collection_id, name, description, fields, identity, derive_on_write, created_at, updated_at
         FROM {fq_table("kb_collections")} WHERE bank_id = $1 AND collection_id = $2
         """,
         bank_id,
@@ -128,7 +136,8 @@ async def get_collection(conn: Any, bank_id: str, collection_id: str) -> dict[st
 async def list_collections(conn: Any, bank_id: str) -> list[dict[str, Any]]:
     rows = await conn.fetch(
         f"""
-        SELECT c.collection_id, c.name, c.description, c.fields, c.identity, c.created_at, c.updated_at,
+        SELECT c.collection_id, c.name, c.description, c.fields, c.identity, c.derive_on_write,
+               c.created_at, c.updated_at,
                (SELECT count(*) FROM {fq_table("kb_records")} r
                 WHERE r.bank_id = c.bank_id AND r.collection_id = c.collection_id) AS records
         FROM {fq_table("kb_collections")} c WHERE c.bank_id = $1 ORDER BY c.collection_id
@@ -147,41 +156,188 @@ async def delete_collection(conn: Any, bank_id: str, collection_id: str) -> bool
     return deleted is not None
 
 
-async def upsert_record(
+async def contribute(
     conn: Any,
     bank_id: str,
     collection_id: str,
     record_id: str,
     *,
+    doc_id: str,
     values: dict[str, Any],
     evidence: dict[str, Any],
-    doc_ids: list[str],
 ) -> None:
-    """Merge one record's values into whatever is already there.
+    """Record what one document says about one record, replacing what it said before.
 
-    Two documents about the same vendor each fill part of the row, so a later write adds
-    to the record rather than replacing it — except where a value is pinned, which a
-    human set deliberately and no document may overwrite.
+    Re-deriving a document must not double its values, and deleting it must take them
+    away again, so a document's contribution is a row of its own rather than something
+    merged into the record and forgotten.
     """
+    await conn.execute(
+        f"""
+        INSERT INTO {fq_table("kb_record_contributions")}
+            (bank_id, collection_id, record_id, doc_id, values, evidence)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+        ON CONFLICT (bank_id, collection_id, record_id, doc_id) DO UPDATE SET
+            values = EXCLUDED.values, evidence = EXCLUDED.evidence, updated_at = now()
+        """,
+        bank_id,
+        collection_id,
+        record_id,
+        doc_id,
+        json.dumps(values),
+        json.dumps(evidence),
+    )
+
+
+async def materialize(conn: Any, bank_id: str, collection_id: str, record_id: str) -> bool:
+    """Fold a record's contributions into the record. Returns False if nothing is left.
+
+    Later contributions win a disagreement, and a pinned value wins everything: that is
+    the whole precedence rule, in one statement, so a record can always be rebuilt from
+    its parts rather than depending on the order writes happened to arrive.
+    """
+    pinned = await conn.fetchval(
+        f"SELECT pinned FROM {fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        record_id,
+    )
+    pinned_values = json.loads(pinned) if isinstance(pinned, str) else (pinned or {})
+    rows = await conn.fetch(
+        f"""
+        SELECT doc_id, values, evidence FROM {fq_table("kb_record_contributions")}
+        WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3
+        ORDER BY updated_at, doc_id
+        """,
+        bank_id,
+        collection_id,
+        record_id,
+    )
+    if not rows and not pinned_values:
+        await conn.execute(
+            f"DELETE FROM {fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+            bank_id,
+            collection_id,
+            record_id,
+        )
+        return False
+
+    values: dict[str, Any] = {}
+    evidence: dict[str, list[dict[str, Any]]] = {}
+    doc_ids: list[str] = []
+    for row in rows:
+        row_values = json.loads(row["values"]) if isinstance(row["values"], str) else row["values"]
+        row_evidence = json.loads(row["evidence"]) if isinstance(row["evidence"], str) else row["evidence"]
+        values.update({k: v for k, v in (row_values or {}).items() if v is not None})
+        for name, quote in (row_evidence or {}).items():
+            evidence.setdefault(name, []).append({"doc_id": row["doc_id"], "quote": quote})
+        if row["doc_id"]:
+            doc_ids.append(row["doc_id"])
+    values.update(pinned_values)
+    # Keep the most recent quotes per field: contributions are folded oldest first, so
+    # the tail is the newest, and the newest is what a reader wants to see first.
+    evidence = {name: quotes[-MAX_EVIDENCE_PER_FIELD:] for name, quotes in evidence.items()}
+
     await conn.execute(
         f"""
         INSERT INTO {fq_table("kb_records")} (bank_id, collection_id, record_id, values, evidence, doc_ids)
         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::text[])
         ON CONFLICT (bank_id, collection_id, record_id) DO UPDATE SET
-            values = {fq_table("kb_records")}.values || EXCLUDED.values || {fq_table("kb_records")}.pinned,
-            evidence = {fq_table("kb_records")}.evidence || EXCLUDED.evidence,
-            doc_ids = ARRAY(
-                SELECT DISTINCT unnest({fq_table("kb_records")}.doc_ids || EXCLUDED.doc_ids)
-            ),
-            updated_at = now()
+            values = EXCLUDED.values, evidence = EXCLUDED.evidence,
+            doc_ids = EXCLUDED.doc_ids, updated_at = now()
         """,
         bank_id,
         collection_id,
         record_id,
         json.dumps(values),
         json.dumps(evidence),
-        doc_ids,
+        sorted(set(doc_ids)),
     )
+    return True
+
+
+async def records_touched_by(conn: Any, bank_id: str, doc_id: str) -> list[tuple[str, str]]:
+    rows = await conn.fetch(
+        f"SELECT collection_id, record_id FROM {fq_table('kb_record_contributions')} "
+        "WHERE bank_id = $1 AND doc_id = $2",
+        bank_id,
+        doc_id,
+    )
+    return [(row["collection_id"], row["record_id"]) for row in rows]
+
+
+async def drop_contributions_of(conn: Any, bank_id: str, doc_id: str, collection_id: str | None = None) -> None:
+    where = "bank_id = $1 AND doc_id = $2"
+    params: list[Any] = [bank_id, doc_id]
+    if collection_id is not None:
+        params.append(collection_id)
+        where += f" AND collection_id = ${len(params)}"
+    await conn.execute(f"DELETE FROM {fq_table('kb_record_contributions')} WHERE {where}", *params)
+
+
+async def prune_fields(conn: Any, bank_id: str, collection_id: str, keep: set[str]) -> int:
+    """Forget values of fields the collection no longer defines.
+
+    A field dropped from a collection has to leave the rows too, or a query would keep
+    returning a column the schema says does not exist.
+    """
+    rows = await conn.fetch(
+        f"SELECT record_id, doc_id, values, evidence FROM {fq_table('kb_record_contributions')} "
+        "WHERE bank_id = $1 AND collection_id = $2",
+        bank_id,
+        collection_id,
+    )
+    touched: set[str] = set()
+    for row in rows:
+        values = json.loads(row["values"]) if isinstance(row["values"], str) else row["values"]
+        evidence = json.loads(row["evidence"]) if isinstance(row["evidence"], str) else row["evidence"]
+        kept = {k: v for k, v in (values or {}).items() if k in keep}
+        kept_evidence = {k: v for k, v in (evidence or {}).items() if k in keep}
+        if kept != values or kept_evidence != evidence:
+            await conn.execute(
+                f"UPDATE {fq_table('kb_record_contributions')} SET values = $4::jsonb, evidence = $5::jsonb "
+                "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3 AND doc_id = $6",
+                bank_id,
+                collection_id,
+                row["record_id"],
+                json.dumps(kept),
+                json.dumps(kept_evidence),
+                row["doc_id"],
+            )
+            touched.add(row["record_id"])
+    await conn.execute(
+        f"""
+        UPDATE {fq_table("kb_records")}
+        SET pinned = (SELECT COALESCE(jsonb_object_agg(key, value), '{{}}'::jsonb)
+                      FROM jsonb_each(pinned) WHERE key = ANY($3::text[])),
+            updated_at = now()
+        WHERE bank_id = $1 AND collection_id = $2
+        """,
+        bank_id,
+        collection_id,
+        sorted(keep),
+    )
+    for record_id in touched:
+        await materialize(conn, bank_id, collection_id, record_id)
+    return len(touched)
+
+
+async def delete_record(conn: Any, bank_id: str, collection_id: str, record_id: str) -> bool:
+    deleted = await conn.fetchval(
+        f"DELETE FROM {fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3 "
+        "RETURNING record_id",
+        bank_id,
+        collection_id,
+        record_id,
+    )
+    await conn.execute(
+        f"DELETE FROM {fq_table('kb_record_contributions')} "
+        "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        record_id,
+    )
+    return deleted is not None
 
 
 async def pin_values(conn: Any, bank_id: str, collection_id: str, record_id: str, pinned: dict[str, Any]) -> bool:

@@ -507,12 +507,22 @@ class KnowledgeService:
         description: str | None,
         fields: Any,
         identity: str | None,
+        derive_on_write: bool = False,
+        reprocess: bool = False,
     ) -> dict[str, Any]:
+        """Define or redefine a collection, and say what the change did to its records.
+
+        Changing the definition is a migration, not an edit: a dropped field has to leave
+        the rows, and a new one is empty everywhere until something fills it. Both are
+        reported, and ``reprocess`` queues the re-derivation that fills the new one from
+        the documents already in the bank.
+        """
         await self._require_bank(bank_id)
         if not collection_id or not collection_id.replace("_", "").replace("-", "").isalnum():
             raise KnowledgeBankError(400, "collection id must be alphanumeric with _ or -")
         async with acquire_with_retry(await self._pool()) as conn:
             existing = {c["collection_id"] for c in await collections_store.list_collections(conn, bank_id)}
+            before = await collections_store.get_collection(conn, bank_id, collection_id)
         try:
             # A relationship may point at this collection itself (a contract that
             # supersedes another), so its own id counts as known.
@@ -523,6 +533,24 @@ class KnowledgeService:
             raise KnowledgeBankError(400, str(e)) from e
         if identity is not None and identity not in definition:
             raise KnowledgeBankError(400, f"identity {identity!r} is not one of this collection's fields")
+
+        previous = (before or {}).get("fields") or {}
+        changes = {
+            "added": sorted(set(definition) - set(previous)),
+            "removed": sorted(set(previous) - set(definition)),
+            "retyped": sorted(
+                name
+                for name in set(previous) & set(definition)
+                if previous[name].get("type") != definition[name].get("type")
+                or previous[name].get("collection") != definition[name].get("collection")
+            ),
+        }
+        if before and identity != before.get("identity") and before.get("identity") is not None:
+            # The identity decides a record's id, so changing it re-groups every row:
+            # nothing short of re-deriving can do that, and silently keeping the old ids
+            # would leave rows whose id no longer matches their own identity value.
+            changes["identity_changed"] = True
+
         async with acquire_with_retry(await self._pool()) as conn:
             await collections_store.put_collection(
                 conn,
@@ -532,8 +560,21 @@ class KnowledgeService:
                 description=description,
                 fields=definition,
                 identity=identity,
+                derive_on_write=derive_on_write,
             )
-        return await self.get_collection(bank_id, collection_id)
+            pruned = 0
+            if changes["removed"] or changes["retyped"]:
+                # A retyped field's old values are the old type; they go with the dropped
+                # ones rather than being coerced into something the caller did not write.
+                keep = set(definition) - set(changes["retyped"])
+                pruned = await collections_store.prune_fields(conn, bank_id, collection_id, keep)
+
+        result = await self.get_collection(bank_id, collection_id)
+        result["changes"] = {**changes, "records_pruned": pruned}
+        if reprocess:
+            queued = await self.submit_derive_records(bank_id, collection_id, None, replace=True)
+            result["reprocess"] = queued
+        return result
 
     async def delete_collection(self, bank_id: str, collection_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
@@ -543,23 +584,39 @@ class KnowledgeService:
         return {"collection_id": collection_id, "deleted": True}
 
     async def put_records(self, bank_id: str, collection_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
-        """Write records directly — the deterministic path, no LLM involved."""
+        """Write records directly — the deterministic path, no LLM involved.
+
+        A write is a contribution like any other, attributed to the documents it names
+        (or to nothing), so writing the same record twice updates it instead of stacking.
+        """
         collection = await self.get_collection(bank_id, collection_id)
         written = 0
         async with acquire_with_retry(await self._pool()) as conn:
             for record in records:
-                record_id = self._record_id(collection, record.get("record_id"), record.get("values") or {})
-                await collections_store.upsert_record(
-                    conn,
-                    bank_id,
-                    collection_id,
-                    record_id,
-                    values=record.get("values") or {},
-                    evidence=record.get("evidence") or {},
-                    doc_ids=record.get("doc_ids") or [],
-                )
+                values = record.get("values") or {}
+                record_id = self._record_id(collection, record.get("record_id"), values)
+                doc_ids = record.get("doc_ids") or [""]
+                for doc_id in doc_ids:
+                    await collections_store.contribute(
+                        conn,
+                        bank_id,
+                        collection_id,
+                        record_id,
+                        doc_id=doc_id,
+                        values=values,
+                        evidence=record.get("evidence") or {},
+                    )
+                await collections_store.materialize(conn, bank_id, collection_id, record_id)
                 written += 1
         return {"collection_id": collection_id, "records_written": written}
+
+    async def delete_record(self, bank_id: str, collection_id: str, record_id: str) -> dict[str, Any]:
+        """Delete a record and everything that fed it."""
+        await self.get_collection(bank_id, collection_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            if not await collections_store.delete_record(conn, bank_id, collection_id, record_id):
+                raise KnowledgeBankError(404, f"record {record_id!r} not found")
+        return {"record_id": record_id, "deleted": True}
 
     async def get_record(self, bank_id: str, collection_id: str, record_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
@@ -576,6 +633,9 @@ class KnowledgeService:
         async with acquire_with_retry(await self._pool()) as conn:
             if not await collections_store.pin_values(conn, bank_id, collection_id, record_id, pinned):
                 raise KnowledgeBankError(404, f"record {record_id!r} not found")
+            # Rebuild from the parts so the pin wins by the same rule every other
+            # precedence question is answered by, not because it was written last.
+            await collections_store.materialize(conn, bank_id, collection_id, record_id)
         return await self.get_record(bank_id, collection_id, record_id)
 
     def _record_id(self, collection: dict[str, Any], given: str | None, values: dict[str, Any]) -> str:
@@ -593,26 +653,32 @@ class KnowledgeService:
         return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:24]
 
     async def submit_derive_records(
-        self, bank_id: str, collection_id: str, doc_ids: list[str] | None
+        self, bank_id: str, collection_id: str, doc_ids: list[str] | None, *, replace: bool = False
     ) -> dict[str, Any]:
-        """Queue LLM derivation of this collection's records from the bank's documents."""
+        """Queue LLM derivation of this collection's records from the bank's documents.
+
+        ``replace`` drops what those documents contributed before re-reading them, which
+        is what a definition change needs: without it the old values would fold back in
+        beside the new ones.
+        """
         await self.get_collection(bank_id, collection_id)
         result = await self.memory._submit_async_operation(
             bank_id=bank_id,
             operation_type="knowledge_derive_records",
             task_type="knowledge_derive_records",
-            task_payload={"collection_id": collection_id, "doc_ids": doc_ids or []},
+            task_payload={"collection_id": collection_id, "doc_ids": doc_ids or [], "replace": replace},
         )
         return {"operation_id": result["operation_id"], "collection_id": collection_id, "status": "pending"}
 
     async def run_derive_records(self, task: dict[str, Any]) -> dict[str, Any]:
-        """Worker side: read the documents, ask for records, merge them by identity."""
+        """Worker side: read the documents, ask for records, fold them in by identity."""
         bank_id = task["bank_id"]
         collection_id = task["collection_id"]
         collection = await self.get_collection(bank_id, collection_id)
         config = await self._config(bank_id, None)
         pool = await self._pool()
         llm = self._field_extraction_llm(bank_id, config)
+        replace = bool(task.get("replace"))
 
         where = "bank_id = $1"
         params: list[Any] = [bank_id]
@@ -642,24 +708,39 @@ class KnowledgeService:
                 char_limit=int(config.kb_field_extraction_max_chars),
             )
             async with acquire_with_retry(pool) as conn:
+                stale = (
+                    {
+                        r
+                        for c, r in await collections_store.records_touched_by(conn, bank_id, row["doc_id"])
+                        if c == collection_id
+                    }  # fmt: skip
+                    if replace
+                    else set()
+                )
+                if replace:
+                    await collections_store.drop_contributions_of(conn, bank_id, row["doc_id"], collection_id)
                 for record in derived:
                     values = dict(record["values"])
                     for name in relationship_fields:
                         if values.get(name) is not None:
                             values[name] = str(values[name]).strip().lower()
-                    await collections_store.upsert_record(
+                    record_id = self._record_id(collection, None, values)
+                    await collections_store.contribute(
                         conn,
                         bank_id,
                         collection_id,
-                        self._record_id(collection, None, values),
+                        record_id,
+                        doc_id=row["doc_id"],
                         values=values,
-                        evidence={
-                            name: [{"doc_id": row["doc_id"], "quote": quote}]
-                            for name, quote in (record["evidence"] or {}).items()
-                        },
-                        doc_ids=[row["doc_id"]],
+                        evidence=record["evidence"] or {},
                     )
+                    await collections_store.materialize(conn, bank_id, collection_id, record_id)
+                    stale.discard(record_id)
                     records_written += 1
+                # A record this document used to feed and no longer mentions: rebuild it,
+                # which removes it entirely when nothing else was ever behind it.
+                for record_id in stale:
+                    await collections_store.materialize(conn, bank_id, collection_id, record_id)
 
         counts = {"documents_read": len(documents), "records_written": records_written}
         operation_id = task.get("operation_id")
@@ -680,8 +761,13 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         """Run one record query, joins included."""
         collection = await self.get_collection(bank_id, collection_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            joined_fields = {
+                other["collection_id"]: frozenset(other.get("fields") or {})
+                for other in await collections_store.list_collections(conn, bank_id)
+            }
         try:
-            compiled = compile_record_query(body, bank_id, collection, limits=Limits())
+            compiled = compile_record_query(body, bank_id, collection, limits=Limits(), joined_fields=joined_fields)
         except FilterError as e:
             raise KnowledgeBankError(400, str(e)) from e
         async with acquire_with_retry(await self._pool()) as conn:
@@ -812,6 +898,7 @@ class KnowledgeService:
             return await self._schema_for_write(bank_id, None, document=document, config=config)
 
         written = skipped = passage_total = 0
+        pending_documents: list[tuple[DocumentInput, str, list[Any]]] = []
         for start in range(0, len(documents), _EMBED_BATCH_DOCUMENTS):
             window = documents[start : start + _EMBED_BATCH_DOCUMENTS]
             async with acquire_with_retry(pool) as conn:
@@ -831,6 +918,7 @@ class KnowledgeService:
                 )
             if not pending:
                 continue
+            pending_documents.extend(pending)
             # Fields are resolved *before* the embedding, not after: a field marked
             # ``indexed`` becomes part of the text that gets embedded, so the passage is
             # findable by a value that its own words never say ("region: emea").
@@ -914,6 +1002,26 @@ class KnowledgeService:
             skipped,
             passage_total,
         )
+        # Collections that derive on write see the documents this batch just stored, so a
+        # record is up to date with the corpus without anyone running a job. `replace`,
+        # because a rewritten document must not contribute twice.
+        if written:
+            async with acquire_with_retry(pool) as conn:
+                auto = [
+                    collection
+                    for collection in await collections_store.list_collections(conn, bank_id)
+                    if collection.get("derive_on_write")
+                ]
+            for collection in auto:
+                await self.run_derive_records(
+                    {
+                        "bank_id": bank_id,
+                        "collection_id": collection["collection_id"],
+                        "doc_ids": [d.doc_id for d, _, _ in pending_documents],
+                        "replace": True,
+                    }
+                )
+
         counts = {"documents_written": written, "documents_unchanged": skipped, "passages": passage_total}
         operation_id = task.get("operation_id")
         if operation_id:
@@ -949,9 +1057,13 @@ class KnowledgeService:
         async with acquire_with_retry(await self._pool()) as conn:
             if not await store.delete_document(conn, bank_id, doc_id):
                 raise KnowledgeBankError(404, f"document {doc_id!r} not found")
-            # Records are derived from documents: a record only this document was behind
-            # goes with it, and one several documents contribute to just loses this source.
-            await collections_store.delete_records_for_document(conn, bank_id, doc_id)
+            # Records are derived from documents: dropping this document's contributions
+            # and rebuilding what they fed removes a record nothing else was behind, and
+            # leaves one with other sources standing, minus what this document said.
+            touched = await collections_store.records_touched_by(conn, bank_id, doc_id)
+            await collections_store.drop_contributions_of(conn, bank_id, doc_id)
+            for collection_id, record_id in touched:
+                await collections_store.materialize(conn, bank_id, collection_id, record_id)
         return {"doc_id": doc_id, "deleted": True}
 
     async def search(

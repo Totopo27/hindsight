@@ -76,6 +76,9 @@ class CollectionRequest(BaseModel):
         default=None,
         description="The field that identifies one record, so the same thing found twice is one row",
     )
+    derive_on_write: bool = Field(
+        default=False, description="Re-derive this collection's records whenever a document is written"
+    )
 
 
 class RecordsRequest(BaseModel):
@@ -86,6 +89,7 @@ class RecordsRequest(BaseModel):
 
 class DeriveRequest(BaseModel):
     doc_ids: list[str] = Field(default_factory=list, description="Only these documents; empty means all")
+    replace: bool = Field(default=True, description="Drop what those documents contributed before re-reading them")
 
 
 class PinRequest(BaseModel):
@@ -344,6 +348,7 @@ def build_router(get_request_context: Any) -> APIRouter:
         kb: str,
         body: CollectionRequest,
         collection_id: str = Query(description="Id for this collection, e.g. 'vendors'"),
+        reprocess: bool = Query(default=False, description="Re-derive the records after the change"),
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
@@ -355,6 +360,8 @@ def build_router(get_request_context: Any) -> APIRouter:
                 description=body.description,
                 fields=body.fields,
                 identity=body.identity,
+                derive_on_write=body.derive_on_write,
+                reprocess=reprocess,
             )
         )
 
@@ -372,6 +379,7 @@ def build_router(get_request_context: Any) -> APIRouter:
         kb: str,
         collection_id: str,
         body: CollectionRequest,
+        reprocess: bool = Query(default=False, description="Re-derive the records from the documents after the change"),
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
@@ -383,6 +391,8 @@ def build_router(get_request_context: Any) -> APIRouter:
                 description=body.description,
                 fields=body.fields,
                 identity=body.identity,
+                derive_on_write=body.derive_on_write,
+                reprocess=reprocess,
             )
         )
 
@@ -417,7 +427,7 @@ def build_router(get_request_context: Any) -> APIRouter:
         ctx: RequestContext = Depends(get_request_context),
         svc: KnowledgeService = Depends(service),
     ):
-        return await run(svc.submit_derive_records(kb, collection_id, body.doc_ids))
+        return await run(svc.submit_derive_records(kb, collection_id, body.doc_ids, replace=body.replace))
 
     @router.post("/{kb}/collections/{collection_id}/query", summary="Query records, joins included")
     async def query_records(
@@ -438,6 +448,16 @@ def build_router(get_request_context: Any) -> APIRouter:
         svc: KnowledgeService = Depends(service),
     ):
         return await run(svc.get_record(kb, collection_id, record_id))
+
+    @router.delete("/{kb}/collections/{collection_id}/records/{record_id}", summary="Delete one record")
+    async def delete_record(
+        kb: str,
+        collection_id: str,
+        record_id: str,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.delete_record(kb, collection_id, record_id))
 
     @router.put(
         "/{kb}/collections/{collection_id}/records/{record_id}/pins",

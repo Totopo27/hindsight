@@ -44,6 +44,8 @@ class _Join:
     alias: str
     collection_id: str
     on_field: str
+    #: The joined collection's field names, so a typo there is refused too.
+    field_names: frozenset[str] = frozenset()
 
     @property
     def table_alias(self) -> str:
@@ -57,6 +59,10 @@ class _RecordCompiler(_Compiler):
     """The document/passage compiler, with record columns and joined collections."""
 
     joins: dict[str, _Join] = field(default_factory=dict)
+    #: The queried collection's own field names. A collection knows its fields, so a name
+    #: it does not define is a typo, and answering a typo with a column of nulls is worse
+    #: than answering it with an error.
+    field_names: frozenset[str] = frozenset()
 
     @property
     def columns(self) -> dict[str, str]:
@@ -67,9 +73,20 @@ class _RecordCompiler(_Compiler):
             return _RECORD_COLUMNS[name]
         alias, _, rest = name.partition(".")
         if rest and alias in self.joins:
-            return self.value_expression(self.joins[alias].table_alias, rest)
+            join = self.joins[alias]
+            if rest not in join.field_names:
+                raise FilterError(
+                    f"collection {join.collection_id!r} has no field {rest!r}; "
+                    f"its fields are {sorted(join.field_names)}"
+                )
+            return self.value_expression(join.table_alias, rest)
         if "." in name:
             raise FilterError(f"unknown join alias in {name!r}; joined as {sorted(self.joins) or 'nothing'}")
+        if name not in self.field_names:
+            raise FilterError(
+                f"unknown field {name!r}; this collection's fields are {sorted(self.field_names)} "
+                f"plus {sorted(_RECORD_COLUMNS)}"
+            )
         return self.value_expression("r", name)
 
     def value_expression(self, table: str, field_name: str) -> str:
@@ -83,7 +100,9 @@ class _RecordCompiler(_Compiler):
         return expression
 
 
-def _validate_joins(raw: Any, collection: dict[str, Any], limits: Limits) -> dict[str, _Join]:
+def _validate_joins(
+    raw: Any, collection: dict[str, Any], limits: Limits, known: dict[str, frozenset[str]]
+) -> dict[str, _Join]:
     if raw is None:
         return {}
     if not isinstance(raw, list):
@@ -107,12 +126,21 @@ def _validate_joins(raw: Any, collection: dict[str, Any], limits: Limits) -> dic
         collection_id = spec.get("collection", available[on_field])
         if collection_id != available[on_field]:
             raise FilterError(f"join on {on_field!r} points at {available[on_field]!r}, not {collection_id!r}")
+        if collection_id not in known:
+            # The relationship still names it, but the collection is gone: a join that
+            # would quietly return nulls is worse than one that says what happened.
+            raise FilterError(f"join on {on_field!r}: collection {collection_id!r} no longer exists in this bank")
         alias = spec.get("as", on_field)
         if not isinstance(alias, str) or not alias.replace("_", "").isalnum():
             raise FilterError(f"join alias {alias!r} must be alphanumeric with _")
         if alias in joins:
             raise FilterError(f"duplicate join alias {alias!r}")
-        joins[alias] = _Join(alias=alias, collection_id=collection_id, on_field=on_field)
+        joins[alias] = _Join(
+            alias=alias,
+            collection_id=collection_id,
+            on_field=on_field,
+            field_names=known.get(collection_id, frozenset()),
+        )
     return joins
 
 
@@ -122,13 +150,19 @@ def compile_record_query(
     collection: dict[str, Any],
     *,
     limits: Limits | None = None,
+    joined_fields: dict[str, frozenset[str]] | None = None,
 ) -> CompiledQuery:
-    """Compile one record query for one collection of one bank."""
+    """Compile one record query for one collection of one bank.
+
+    ``joined_fields`` is each other collection's field names, so a name a joined
+    collection does not define is refused here rather than answered with nulls.
+    """
     limits = limits or Limits()
     compiler = _RecordCompiler(source="documents", limits=limits)
+    compiler.field_names = frozenset(collection.get("fields") or {})
     # $1 bank, $2 collection: every row this can reach belongs to both.
     compiler.params.extend([bank_id, collection["collection_id"]])
-    compiler.joins = _validate_joins(body.get("join"), collection, limits)
+    compiler.joins = _validate_joins(body.get("join"), collection, limits, joined_fields or {})
 
     select_parts = compiler.select(body.get("select"))
     group_parts = compiler.group_by(body.get("group_by"))

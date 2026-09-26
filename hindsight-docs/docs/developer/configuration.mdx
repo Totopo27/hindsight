@@ -1803,10 +1803,34 @@ corpus is set up for testing):
 
 <CodeSnippet code={configurationSh} section="kb-write-records" language="bash" />
 
-A later write merges into the record rather than replacing it, so two documents each fill
-part of a row. `PUT …/records/{id}/pins` sets values a human corrected: they outrank
-anything the documents say afterwards, and `GET …/records/{id}` returns the values, the
-evidence and the documents behind them.
+**A record is the fold of its contributions** — one per document, plus whatever a human
+pinned — rather than a row that writes merge into. That is what makes the rest behave:
+
+- a second document fills the gaps in a record without duplicating it, and both documents
+  are credited;
+- re-deriving a document *replaces* what it said before instead of adding to it, so a
+  corrected document corrects the record;
+- deleting a document takes back exactly what it contributed, and the record goes only if
+  nothing else was behind it;
+- `PUT …/records/{id}/pins` outranks every document, before and after, and keeps a record
+  alive even when its last document is deleted;
+- `DELETE …/records/{id}` removes a record and everything that fed it.
+
+`GET …/records/{id}` returns the values, the documents behind them, and the quote for each
+value — including the competing quotes when two documents disagree (the later one wins the
+value). The record keeps the 20 most recent quotes per field; the contributions keep all.
+
+**Changing a collection's definition is a migration**, and the response says what it did:
+`added`, `removed`, `retyped`, `identity_changed` and how many records were pruned. A
+dropped or retyped field's values leave the records — a column the schema no longer has
+must not survive in the rows, and prose is not silently kept as a number. A new field is
+empty until something fills it, which is what `?reprocess=true` queues: a re-derivation of
+the documents already in the bank. `derive_on_write: true` on a collection keeps it current
+with the corpus without anyone running a job.
+
+Because a collection knows its fields, a query naming one it does not have is a 400 rather
+than a column of nulls — including a field of a joined collection, and including a join to
+a collection that has since been deleted.
 
 **Querying records** uses the same DSL as documents and passages, plus `join`:
 
