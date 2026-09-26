@@ -152,6 +152,7 @@ What each finding was worth, largest first:
 | The keyword arm ORs every query word, so paragraph-length queries match on topic alone and out-vote the dense arm | ArguAna hybrid 0.372 vs dense-only 0.521 (pre-fix pair) → the new `kb_search_vector_weight` |
 | Reranking is not free. Where the answer is a *counter*-argument rather than the most similar passage, jev costs points | ArguAna, post-fix: 0.637 dense-only vs 0.483 hybrid+jev |
 | Chunk embeddings had no vector index at all (the column was an untyped `vector`, which pgvector cannot index) | invisible at 6k documents; the reason a million-passage corpus was not runnable. No measurable accuracy change (scifact 0.802 exact vs 0.818 indexed is jev's run-to-run variance) |
+| **Bulk-loading into a live HNSW index costs 10x.** nq's corpus wrote at 4.5 documents/second with the index present and 47.9 without it — 15 hours instead of a week. There is no bulk-load path in the product: the benchmark drops the index, loads, then rebuilds it | 4.5 → 47.9 documents/second |
 | The write pipeline embedded 8 documents per window and spent most of its time in round trips | 39ms/document then, ~11ms/document now (nq, short passages), i.e. embedding-bound rather than overhead-bound |
 
 **The honest reading.** Our fusion alone is behind the baseline's — their dense model is
