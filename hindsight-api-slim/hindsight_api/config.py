@@ -780,6 +780,7 @@ ENV_KB_SEARCH_CANDIDATES = "HINDSIGHT_API_KB_SEARCH_CANDIDATES"
 ENV_KB_SEARCH_VECTOR_WEIGHT = "HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT"
 ENV_KB_FIELD_EXTRACTION = "HINDSIGHT_API_KB_FIELD_EXTRACTION"
 ENV_KB_SCHEMA_CLASSIFICATION = "HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION"
+ENV_KB_RECORD_IDENTITY_SIMILARITY = "HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY"
 ENV_KB_FIELD_EXTRACTION_MAX_CHARS = "HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS"
 ENV_KB_FIELD_EXTRACTION_CONCURRENCY = "HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY"
 ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
@@ -1641,6 +1642,12 @@ DEFAULT_KB_FIELD_EXTRACTION = True
 # Off means the write simply gets no fields, which is the safe answer when the caller is
 # expected to know — and the cheaper one, since classification is a call per document.
 DEFAULT_KB_SCHEMA_CLASSIFICATION = True
+# The trigram prefilter for typo matching: how alike two record names must be before the
+# edit-distance check even looks at them. Normalisation (case, accents, punctuation, legal
+# suffix) happens first and is exact; this only catches misspellings, and the edit distance
+# — not this number — is what decides. 0 turns typo matching off entirely, leaving exact
+# keys and explicit merges, which is the right setting where a wrong merge is expensive.
+DEFAULT_KB_RECORD_IDENTITY_SIMILARITY = 0.45
 # How much of a document (and of a chunk) the extraction LLM reads. A metadata property is
 # almost always stated early, and the whole point of the feature is that it is cheap.
 DEFAULT_KB_FIELD_EXTRACTION_MAX_CHARS = 12000
@@ -3354,6 +3361,7 @@ class HindsightConfig:
     kb_search_vector_weight: float
     kb_field_extraction: bool
     kb_schema_classification: bool
+    kb_record_identity_similarity: float
     kb_field_extraction_max_chars: int
     kb_field_extraction_concurrency: int
     kb_search_rerank: bool
@@ -3757,6 +3765,7 @@ class HindsightConfig:
         "kb_search_vector_weight",
         "kb_field_extraction",
         "kb_schema_classification",
+        "kb_record_identity_similarity",
         "kb_field_extraction_max_chars",
         "kb_field_extraction_concurrency",
         "kb_search_rerank",
@@ -4917,6 +4926,9 @@ class HindsightConfig:
                 ENV_KB_SCHEMA_CLASSIFICATION, str(DEFAULT_KB_SCHEMA_CLASSIFICATION)
             ).lower()
             in ("true", "1", "yes"),
+            kb_record_identity_similarity=float(
+                os.getenv(ENV_KB_RECORD_IDENTITY_SIMILARITY, str(DEFAULT_KB_RECORD_IDENTITY_SIMILARITY))
+            ),
             kb_field_extraction_max_chars=int(
                 os.getenv(ENV_KB_FIELD_EXTRACTION_MAX_CHARS, str(DEFAULT_KB_FIELD_EXTRACTION_MAX_CHARS))
             ),

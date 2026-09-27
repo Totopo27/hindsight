@@ -434,12 +434,14 @@ async def test_a_record_whose_identity_value_changes_does_not_leave_a_ghost(kb_c
     await _derive(kb_client, bank, "vendors")
     assert await _count(kb_client, bank, "vendors") == 1
 
-    # The document is corrected: the company is actually called Acme Inc.
-    llm.says("vendor", [{"values": {"name": "acme inc", "country": "de"}, "evidence": {}}])
+    # The document is corrected: it was never Acme, it was Northwind. (A suffix would not
+    # do here — "Acme Inc" resolves to the same record as "Acme", which is the point of
+    # identity resolution.)
+    llm.says("vendor", [{"values": {"name": "northwind", "country": "de"}, "evidence": {}}])
     await _derive(kb_client, bank, "vendors", replace=True)
 
     assert await _record(kb_client, bank, "vendors", "acme") is None, "the old id has nothing behind it"
-    assert (await _record(kb_client, bank, "vendors", "acme inc"))["values"]["country"] == "de"
+    assert (await _record(kb_client, bank, "vendors", "northwind"))["values"]["country"] == "de"
     assert await _count(kb_client, bank, "vendors") == 1
 
 

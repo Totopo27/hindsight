@@ -91,6 +91,7 @@ BACKUP_TABLES = [
     "kb_collections",
     "kb_records",
     "kb_record_contributions",
+    "kb_record_aliases",
 ]
 
 MANIFEST_VERSION = "2"

@@ -1923,6 +1923,90 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/records/{record_id}/merge": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Merge this record into another \u2014 they are the same thing",
+        "operationId": "merge_records_v1_default_knowledge_banks__kb__collections__collection_id__records__record_id__merge_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/records/{record_id}/pins": {
       "put": {
         "tags": [
@@ -18031,6 +18115,20 @@
         "type": "object",
         "title": "MentalModelTrigger",
         "description": "Trigger settings for a mental model.\n\nInherits the reflect options an operator can also default per bank\n(``reflect_default_options``): set here they apply to this model's refreshes\nonly, and win over the bank default."
+      },
+      "MergeRequest": {
+        "properties": {
+          "into": {
+            "type": "string",
+            "title": "Into",
+            "description": "The record that survives; this one is folded into it"
+          }
+        },
+        "type": "object",
+        "required": [
+          "into"
+        ],
+        "title": "MergeRequest"
       },
       "MinScores": {
         "properties": {

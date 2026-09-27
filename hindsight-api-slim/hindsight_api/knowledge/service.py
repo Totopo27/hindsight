@@ -27,6 +27,7 @@ from . import store
 from .extraction import classify_schema, derive_records, extract_document, extract_passages
 from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
+from .identity import normalise
 from .passages import split_into_passages
 from .query import CompiledQuery, Limits, compile_query, json_safe
 from .records_query import compile_record_query
@@ -590,11 +591,13 @@ class KnowledgeService:
         (or to nothing), so writing the same record twice updates it instead of stacking.
         """
         collection = await self.get_collection(bank_id, collection_id)
+        collection = {**collection, "bank_id": bank_id}
+        config = await self._config(bank_id, None)
         written = 0
         async with acquire_with_retry(await self._pool()) as conn:
             for record in records:
                 values = record.get("values") or {}
-                record_id = self._record_id(collection, record.get("record_id"), values)
+                record_id = await self._record_id(conn, collection, record.get("record_id"), values, config=config)
                 doc_ids = record.get("doc_ids") or [""]
                 for doc_id in doc_ids:
                     await collections_store.contribute(
@@ -614,14 +617,34 @@ class KnowledgeService:
         """Delete a record and everything that fed it."""
         await self.get_collection(bank_id, collection_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            if not await collections_store.delete_record(conn, bank_id, collection_id, record_id):
+            resolved = await self._existing_record_id(conn, bank_id, collection_id, record_id)
+            if resolved is None or not await collections_store.delete_record(conn, bank_id, collection_id, resolved):
                 raise KnowledgeBankError(404, f"record {record_id!r} not found")
-        return {"record_id": record_id, "deleted": True}
+        return {"record_id": resolved, "deleted": True}
+
+    async def _existing_record_id(self, conn: Any, bank_id: str, collection_id: str, given: str) -> str | None:
+        """The record a caller means by this id.
+
+        A record's id is its normalised identity, so "c-1" is stored as "c 1" and
+        "Apple Inc." as "apple". A caller should not have to know that: they name the
+        record the way their data names it, and it resolves the same way a write does —
+        exactly, then through a merge, then through normalisation.
+        """
+        for candidate in (given, await collections_store.follow_aliases(conn, bank_id, collection_id, given)):
+            if await collections_store.get_record(conn, bank_id, collection_id, candidate) is not None:
+                return candidate
+        key = normalise(given)
+        if key and key != given:
+            resolved = await collections_store.follow_aliases(conn, bank_id, collection_id, key)
+            if await collections_store.get_record(conn, bank_id, collection_id, resolved) is not None:
+                return resolved
+        return None
 
     async def get_record(self, bank_id: str, collection_id: str, record_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            record = await collections_store.get_record(conn, bank_id, collection_id, record_id)
+            resolved = await self._existing_record_id(conn, bank_id, collection_id, record_id)
+            record = await collections_store.get_record(conn, bank_id, collection_id, resolved) if resolved else None
         if record is None:
             raise KnowledgeBankError(404, f"record {record_id!r} not found")
         return record
@@ -631,26 +654,64 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            if not await collections_store.pin_values(conn, bank_id, collection_id, record_id, pinned):
+            resolved = await self._existing_record_id(conn, bank_id, collection_id, record_id)
+            if resolved is None or not await collections_store.pin_values(
+                conn, bank_id, collection_id, resolved, pinned
+            ):
                 raise KnowledgeBankError(404, f"record {record_id!r} not found")
+            record_id = resolved
             # Rebuild from the parts so the pin wins by the same rule every other
             # precedence question is answered by, not because it was written last.
             await collections_store.materialize(conn, bank_id, collection_id, record_id)
         return await self.get_record(bank_id, collection_id, record_id)
 
-    def _record_id(self, collection: dict[str, Any], given: str | None, values: dict[str, Any]) -> str:
+    async def _record_id(
+        self, conn: Any, collection: dict[str, Any], given: str | None, values: dict[str, Any], *, config: Any = None
+    ) -> str:
         """Which record this is.
 
         The identity field is what makes two documents about the same vendor one record
-        rather than two, so it decides the id; without one, a record is whatever the
-        caller called it, and failing that a hash of its values.
+        rather than two, so it decides the id — after resolution, because documents do
+        not agree on how to write a name. Without an identity field a record is whatever
+        the caller called it, and failing that a hash of its values.
         """
         if given:
             return str(given)
         identity = collection.get("identity")
         if identity and values.get(identity) not in (None, ""):
-            return str(values[identity]).strip().lower()
+            key = normalise(values[identity])
+            if not key:
+                # A name that normalises to nothing (punctuation, an empty string) must
+                # not become the record every nameless thing falls into.
+                return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:24]
+            similarity = float(getattr(config, "kb_record_identity_similarity", 0.82)) if config else 0.82
+            return await collections_store.resolve_record_id(
+                conn, collection["bank_id"], collection["collection_id"], key, similarity=similarity
+            )
         return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:24]
+
+    async def merge_records(self, bank_id: str, collection_id: str, record_id: str, into: str) -> dict[str, Any]:
+        """Declare that two records are the same thing, and keep the decision.
+
+        The losing id becomes an alias of the winner, so a document that names it again
+        lands on the merged record instead of re-creating what someone just cleaned up.
+        """
+        await self.get_collection(bank_id, collection_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            # Either side may name a record that was itself merged away; following the
+            # alias means a caller working from a stale list still merges into the record
+            # that exists rather than being told the id is gone.
+            source = await self._existing_record_id(conn, bank_id, collection_id, record_id) or record_id
+            target = await self._existing_record_id(conn, bank_id, collection_id, into) or into
+            if source == target:
+                raise KnowledgeBankError(400, "a record cannot be merged into itself")
+            for candidate in (source, target):
+                if await collections_store.get_record(conn, bank_id, collection_id, candidate) is None:
+                    raise KnowledgeBankError(404, f"record {candidate!r} not found")
+            await collections_store.merge_records(conn, bank_id, collection_id, source, target)
+            # The id the caller used is now a way of naming the survivor.
+            await collections_store.add_alias(conn, bank_id, collection_id, record_id, target, source="merge")
+        return await self.get_record(bank_id, collection_id, target)
 
     async def submit_derive_records(
         self, bank_id: str, collection_id: str, doc_ids: list[str] | None, *, replace: bool = False
@@ -675,6 +736,7 @@ class KnowledgeService:
         bank_id = task["bank_id"]
         collection_id = task["collection_id"]
         collection = await self.get_collection(bank_id, collection_id)
+        collection = {**collection, "bank_id": bank_id}
         config = await self._config(bank_id, None)
         pool = await self._pool()
         llm = self._field_extraction_llm(bank_id, config)
@@ -724,7 +786,7 @@ class KnowledgeService:
                     for name in relationship_fields:
                         if values.get(name) is not None:
                             values[name] = str(values[name]).strip().lower()
-                    record_id = self._record_id(collection, None, values)
+                    record_id = await self._record_id(conn, collection, None, values, config=config)
                     await collections_store.contribute(
                         conn,
                         bank_id,

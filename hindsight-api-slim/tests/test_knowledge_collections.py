@@ -82,6 +82,12 @@ async def bank(kb_client):
     return kb
 
 
+async def client_get(client, kb: str, collection: str, record_id: str) -> dict:
+    response = await client.get(f"/v1/default/knowledge-banks/{kb}/collections/{collection}/records/{record_id}")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 async def _query(client, kb: str, collection: str, body: dict) -> list[dict]:
     response = await client.post(f"/v1/default/knowledge-banks/{kb}/collections/{collection}/query", json=body)
     assert response.status_code == 200, response.text
@@ -184,7 +190,11 @@ async def test_aggregates_and_filters_over_records(kb_client, bank):
             "order_by": [{"field": "value", "direction": "desc"}],
         },
     )
-    assert [row["record_id"] for row in filtered] == ["c-4", "c-1", "c-2"]
+    # Record ids are the normalised identity — "c-4" is stored as "c 4" — and a caller can
+    # still fetch one by the reference their own data uses.
+    assert [row["record_id"] for row in filtered] == ["c 4", "c 1", "c 2"]
+    fetched = await client_get(kb_client, bank, "contracts", "c-4")
+    assert fetched["values"]["reference"] == "c-4"
 
 
 @pytest.mark.asyncio

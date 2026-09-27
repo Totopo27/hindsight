@@ -218,6 +218,14 @@ curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/colle
 # [/docs:kb-record-query]
 echo
 
+# [docs:kb-merge-records]
+# Two records that are the same thing. The loser folds into the winner, and its id becomes
+# an alias, so the next document naming it lands on the merged record.
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors/records/big%20blue/merge" \
+  -H "Content-Type: application/json" -d '{"into": "ibm"}'
+# [/docs:kb-merge-records]
+echo
+
 curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/contracts" > /dev/null
 curl -s -X DELETE "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors" > /dev/null
 

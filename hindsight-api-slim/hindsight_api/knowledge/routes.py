@@ -92,6 +92,10 @@ class DeriveRequest(BaseModel):
     replace: bool = Field(default=True, description="Drop what those documents contributed before re-reading them")
 
 
+class MergeRequest(BaseModel):
+    into: str = Field(description="The record that survives; this one is folded into it")
+
+
 class PinRequest(BaseModel):
     values: dict[str, Any] = Field(min_length=1, description="Values that outrank what the documents say")
 
@@ -448,6 +452,20 @@ def build_router(get_request_context: Any) -> APIRouter:
         svc: KnowledgeService = Depends(service),
     ):
         return await run(svc.get_record(kb, collection_id, record_id))
+
+    @router.post(
+        "/{kb}/collections/{collection_id}/records/{record_id}/merge",
+        summary="Merge this record into another — they are the same thing",
+    )
+    async def merge_records(
+        kb: str,
+        collection_id: str,
+        record_id: str,
+        body: MergeRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.merge_records(kb, collection_id, record_id, body.into))
 
     @router.delete("/{kb}/collections/{collection_id}/records/{record_id}", summary="Delete one record")
     async def delete_record(

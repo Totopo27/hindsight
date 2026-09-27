@@ -23,6 +23,7 @@ from typing import Any
 
 from ..engine.schema import fq_table
 from .fields import PROPERTY_TYPES, SchemaError
+from .identity import can_compare_fuzzily, is_typo_of
 
 MAX_FIELDS = 50
 #: Quotes kept per field on the materialised record. A vendor mentioned in ten thousand
@@ -389,3 +390,216 @@ async def delete_records_for_document(conn: Any, bank_id: str, doc_id: str) -> N
         bank_id,
         doc_id,
     )
+
+
+# ---- identity resolution
+
+
+async def resolve_record_id(
+    conn: Any,
+    bank_id: str,
+    collection_id: str,
+    key: str,
+    *,
+    similarity: float,
+) -> str:
+    """Which record a name belongs to: an alias, an existing record, or a new one.
+
+    The order is the point. An alias is somebody's decision and wins outright; an exact
+    key match is certainty; similarity is a guess, so it comes last, only for names long
+    enough to measure, and only above the configured threshold.
+    """
+    if not key:
+        return key
+    alias = await conn.fetchval(
+        f"SELECT record_id FROM {fq_table('kb_record_aliases')} "
+        "WHERE bank_id = $1 AND collection_id = $2 AND alias_key = $3",
+        bank_id,
+        collection_id,
+        key,
+    )
+    if alias:
+        return alias
+
+    exact = await conn.fetchval(
+        f"SELECT record_id FROM {fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        key,
+    )
+    if exact:
+        return exact
+
+    if similarity <= 0 or not can_compare_fuzzily(key):
+        return key
+    # Stage one: the trigram index narrows thousands of records to a handful. It is a
+    # prefilter, not the verdict — a low threshold on purpose, because the verdict is the
+    # edit distance below and a prefilter that is too strict hides the typos from it.
+    candidates = await conn.fetch(
+        f"""
+        SELECT record_id FROM {fq_table("kb_records")}
+        WHERE bank_id = $1 AND collection_id = $2
+          AND length(record_id) BETWEEN $4 AND $5
+          AND similarity(record_id, $3) >= $6
+        ORDER BY similarity(record_id, $3) DESC
+        LIMIT 5
+        """,
+        bank_id,
+        collection_id,
+        key,
+        len(key) - 2,
+        len(key) + 2,
+        similarity,
+    )
+    # Stage two: the decision. Nearly the same length, a couple of characters apart.
+    for row in candidates:
+        if is_typo_of(key, str(row["record_id"])):
+            # Remember it, so the next document spelled that way costs a lookup instead of
+            # a scan, and the grouping cannot drift as records come and go.
+            await add_alias(conn, bank_id, collection_id, key, str(row["record_id"]), source="variant")
+            return str(row["record_id"])
+    return key
+
+
+async def follow_aliases(conn: Any, bank_id: str, collection_id: str, record_id: str) -> str:
+    """Where a record id points today, after any merges it was part of."""
+    return (
+        await conn.fetchval(
+            f"SELECT record_id FROM {fq_table('kb_record_aliases')} "
+            "WHERE bank_id = $1 AND collection_id = $2 AND alias_key = $3",
+            bank_id,
+            collection_id,
+            record_id,
+        )
+        or record_id
+    )
+
+
+async def add_alias(
+    conn: Any, bank_id: str, collection_id: str, alias_key: str, record_id: str, *, source: str = "merge"
+) -> None:
+    if not alias_key or alias_key == record_id:
+        return
+    await conn.execute(
+        f"""
+        INSERT INTO {fq_table("kb_record_aliases")} (bank_id, collection_id, alias_key, record_id, source)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (bank_id, collection_id, alias_key) DO UPDATE SET record_id = EXCLUDED.record_id,
+            source = EXCLUDED.source
+        """,
+        bank_id,
+        collection_id,
+        alias_key,
+        record_id,
+        source,
+    )
+
+
+async def merge_records(conn: Any, bank_id: str, collection_id: str, source_id: str, target_id: str) -> None:
+    """Fold one record into another and make the decision stick.
+
+    Everything that fed the loser now feeds the winner, the loser's id becomes an alias
+    of the winner so the next document does not undo the merge, and anything that pointed
+    at the loser is repointed — a contract whose vendor was merged still has a vendor.
+    """
+    contributions = await conn.fetch(
+        f"SELECT doc_id, values, evidence FROM {fq_table('kb_record_contributions')} "
+        "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3 ORDER BY updated_at",
+        bank_id,
+        collection_id,
+        source_id,
+    )
+    for row in contributions:
+        values = json.loads(row["values"]) if isinstance(row["values"], str) else row["values"]
+        evidence = json.loads(row["evidence"]) if isinstance(row["evidence"], str) else row["evidence"]
+        existing = await conn.fetchrow(
+            f"SELECT values, evidence FROM {fq_table('kb_record_contributions')} "
+            "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3 AND doc_id = $4",
+            bank_id,
+            collection_id,
+            target_id,
+            row["doc_id"],
+        )
+        if existing:
+            # The same document fed both sides: its two halves are one contribution now.
+            current = json.loads(existing["values"]) if isinstance(existing["values"], str) else existing["values"]
+            current_evidence = (
+                json.loads(existing["evidence"]) if isinstance(existing["evidence"], str) else existing["evidence"]
+            )
+            values = {**(values or {}), **(current or {})}
+            evidence = {**(evidence or {}), **(current_evidence or {})}
+        await contribute(
+            conn,
+            bank_id,
+            collection_id,
+            target_id,
+            doc_id=row["doc_id"],
+            values=values or {},
+            evidence=evidence or {},
+        )
+
+    pinned = await conn.fetchval(
+        f"SELECT pinned FROM {fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        source_id,
+    )
+    pinned_values = json.loads(pinned) if isinstance(pinned, str) else (pinned or {})
+    if pinned_values:
+        # A correction someone made on the losing record was still a correction.
+        await conn.execute(
+            f"UPDATE {fq_table('kb_records')} SET pinned = pinned || $4::jsonb "
+            "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+            bank_id,
+            collection_id,
+            target_id,
+            json.dumps(pinned_values),
+        )
+
+    await conn.execute(
+        f"DELETE FROM {fq_table('kb_record_contributions')} "
+        "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        source_id,
+    )
+    await conn.execute(
+        f"DELETE FROM {fq_table('kb_records')} WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        source_id,
+    )
+    await add_alias(conn, bank_id, collection_id, source_id, target_id, source="merge")
+    # Aliases that pointed at the loser now point at the winner, so a chain of merges
+    # stays one hop deep.
+    await conn.execute(
+        f"UPDATE {fq_table('kb_record_aliases')} SET record_id = $4 "
+        "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+        bank_id,
+        collection_id,
+        source_id,
+        target_id,
+    )
+    await repoint_relationships(conn, bank_id, collection_id, source_id, target_id)
+    await materialize(conn, bank_id, collection_id, target_id)
+
+
+async def repoint_relationships(conn: Any, bank_id: str, collection_id: str, source_id: str, target_id: str) -> None:
+    """Move every reference to the merged-away record onto the surviving one."""
+    collections = await list_collections(conn, bank_id)
+    for other in collections:
+        pointing = [name for name, target in relationships(other.get("fields") or {}).items() if target == collection_id]  # fmt: skip
+        for field_name in pointing:
+            for table in ("kb_records", "kb_record_contributions"):
+                await conn.execute(
+                    f"""
+                    UPDATE {fq_table(table)}
+                    SET values = jsonb_set(values, ARRAY[$4], to_jsonb($5::text))
+                    WHERE bank_id = $1 AND collection_id = $2 AND values ->> $4 = $3
+                    """,
+                    bank_id,
+                    other["collection_id"],
+                    source_id,
+                    field_name,
+                    target_id,
+                )

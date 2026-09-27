@@ -1695,6 +1695,7 @@ so two banks on one server can chunk differently.
 | `HINDSIGHT_API_KB_PASSAGE_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
 | `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
 | `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
+| `HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY` | Trigram prefilter for matching a misspelled record name to an existing one; an edit-distance check decides. `0` turns typo matching off, leaving exact keys and explicit merges. See [which record is which](#knowledge-bank-identity). | `0.45` |
 | `HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION` | With several schemas in a bank and no `schema_id` on the write, ask the LLM which schema the document is. Off means no fields rather than the wrong ones. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
@@ -1831,6 +1832,41 @@ with the corpus without anyone running a job.
 Because a collection knows its fields, a query naming one it does not have is a 400 rather
 than a column of nulls — including a field of a joined collection, and including a join to
 a collection that has since been deleted.
+
+##### Which record is which {#knowledge-bank-identity}
+
+Documents do not agree on how to write a name, so the identity field is resolved before it
+decides a record, in three steps — each one auditable, and each one more willing to guess
+than the last:
+
+1. **Normalisation** (exact, never guesses): case, accents, punctuation, spacing, and the
+   trailing legal form. `Apple`, `Apple Inc.`, `APPLE, INC.` are one vendor; `Nestlé` and
+   `Nestle` are one; `Acme Ltd` and `Acme Limited` are one. What it will *not* do is drop a
+   word — `Apple` and `Apple Bank` stay two companies, because "Bank" is exactly what
+   distinguishes them.
+2. **Aliases**: a merge someone performed. This is the only step that can know something no
+   string comparison could — that "Big Blue" is IBM.
+3. **Typo matching**: a trigram prefilter (indexed) followed by an edit-distance check.
+   Both stages are needed: measured here, a transposition in `Vandelay Industries` scores
+   0.600 on trigrams while `Apple` against `Apple Bank` scores 0.545, so no trigram
+   threshold separates them — edit distance does, because a typo is a small change to a
+   name of nearly the same length. It never runs on names under 12 characters, where one
+   character is the difference between `BP` and `HP`.
+   `HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY=0` turns this step off, leaving exact keys
+   and explicit merges — the right setting where a wrong merge is expensive.
+
+A record's id is its normalised identity, but callers never have to know that: fetching,
+pinning, deleting and merging resolve the id they pass the same way a write does, so
+`records/c-1` finds the record stored as `c 1`, and a link saved before a merge still lands
+on the record that now holds the data.
+
+When resolution is wrong, a person fixes it:
+
+<CodeSnippet code={configurationSh} section="kb-merge-records" language="bash" />
+
+The merge moves every contribution, keeps both sides' evidence and pins, repoints anything
+that referenced the losing record (a contract whose vendor was merged still has a vendor),
+and records the alias — so re-deriving the documents does not undo it.
 
 **Querying records** uses the same DSL as documents and passages, plus `join`:
 
