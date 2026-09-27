@@ -518,3 +518,25 @@ def test_edit_distance_stops_counting_once_the_answer_is_no():
     assert edit_distance("kitten", "sitting", cap=2) == 3, "the cap only bounds the work, not the verdict"
     assert edit_distance("abc", "xyz", cap=1) > 1
     assert edit_distance("same", "same", cap=0) == 0
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        pytest.param("The Coca-Cola Company", "Coca-Cola", id="leading-article"),
+        pytest.param("The Walt Disney Company", "Walt Disney", id="leading-article-suffix"),
+        pytest.param("Procter & Gamble", "Procter and Gamble", id="ampersand-as-word"),
+        pytest.param("AT&T", "AT and T", id="ampersand-no-spaces"),
+        pytest.param("Marks & Spencer plc", "Marks and Spencer", id="ampersand-and-suffix"),
+    ],
+)
+def test_the_ways_a_company_writes_its_own_name(left, right):
+    assert normalise(left) == normalise(right), f"{normalise(left)!r} != {normalise(right)!r}"
+
+
+def test_an_article_or_conjunction_that_is_the_name_is_kept():
+    assert normalise("The") == "the"
+    assert normalise("Bread & Butter") == normalise("Bread and Butter") == "bread and butter"
+    # "The" inside a name is part of it, not an article to strip.
+    assert normalise("Save The Children") == "save the children"
+    assert normalise("Save Children") != normalise("Save The Children")

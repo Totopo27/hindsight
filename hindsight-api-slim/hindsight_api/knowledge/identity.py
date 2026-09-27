@@ -4,9 +4,9 @@ Records are grouped by an identity field, and documents do not agree on how to w
 name: "Apple", "Apple Inc.", "APPLE, INC." are one vendor. Three steps, cheapest first,
 each one a decision someone can audit:
 
-1. **Normalise** — case, accents, punctuation, spacing, and the legal suffix that says
-   what kind of company it is rather than which one. This is exact matching on a tidied
-   key, so it never guesses.
+1. **Normalise** — case, accents, punctuation, spacing, a leading "The", the ampersand
+   written as a word, and the legal suffix that says what kind of company it is rather
+   than which one. This is exact matching on a tidied key, so it never guesses.
 2. **Alias** — a merge someone performed, or a variant already resolved. This is the only
    step that can encode a judgement no string comparison could reach ("Big Blue" = IBM),
    and it is set by a person, not inferred.
@@ -90,6 +90,14 @@ MAX_LENGTH_DIFFERENCE = 2
 
 _PUNCTUATION = re.compile(r"[^\w\s]", re.UNICODE)
 _WHITESPACE = re.compile(r"\s+")
+#: Documents write the same conjunction three ways — "Procter & Gamble", "Procter and
+#: Gamble", "AT&T" — so the ampersand becomes the word before punctuation is stripped,
+#: rather than vanishing and leaving "at t".
+_AMPERSAND = re.compile(r"\s*&\s*")
+#: A leading article is how a company writes its name on a letterhead, not which company
+#: it is: "The Coca-Cola Company" and "Coca-Cola" are one. Only leading, because "The" in
+#: the middle of a name is part of it.
+_LEADING_ARTICLE = re.compile(r"^the\s+")
 
 
 def normalise(value: object) -> str:
@@ -105,8 +113,13 @@ def normalise(value: object) -> str:
     # NFKD splits an accented letter into letter + mark, so dropping the marks leaves the
     # ASCII letter: "Nestlé" and "Nestle" become the same key.
     text = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
-    text = _PUNCTUATION.sub(" ", text.lower())
+    text = _AMPERSAND.sub(" and ", text.lower())
+    text = _PUNCTUATION.sub(" ", text)
     text = _WHITESPACE.sub(" ", text).strip()
+    without_article = _LEADING_ARTICLE.sub("", text)
+    # ...unless the article is the whole name: a company called "The" keeps it.
+    if without_article:
+        text = without_article
 
     # Suffixes come off one at a time, because "Acme Holdings Ltd Co" is a real shape and
     # one pass would leave the inner one behind.
