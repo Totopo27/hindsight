@@ -752,6 +752,103 @@ bank as a single markdown bundle. Use the HTTP endpoint
 
 ---
 
+## Knowledge Bank Tools
+
+A knowledge bank is a different kind of bank: documents split
+into passages, with fields extracted from them and records derived out of them. It is
+addressed by its own id rather than by the session bank, so every tool below takes
+`knowledge_bank_id` — which is also why a client needs `list_knowledge_banks` to find
+one. All of them are read-only: writing documents is an async batch operation a caller
+tracks by id, which belongs on the HTTP surface.
+
+### list_knowledge_banks
+
+The knowledge banks available, with their document and passage counts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | No | Filter on bank id or name |
+| `limit` | integer | No | Maximum banks (default: 50) |
+| `offset` | integer | No | Banks to skip, for paging |
+
+---
+
+### list_knowledge_schemas
+
+The fields a bank's documents and passages carry: name, type, whether it is filterable,
+and the values a classified field takes. Read this before filtering or querying.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `knowledge_bank_id` | string | Yes | The knowledge bank |
+
+---
+
+### search_knowledge_bank
+
+Hybrid search (vector + keyword, reranked) over a bank's passages.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `knowledge_bank_id` | string | Yes | The knowledge bank to search |
+| `query` | string | Yes | Natural-language query |
+| `top_k` | integer | No | Maximum passages (default: 10) |
+| `mode` | string | No | `hybrid` (default), `vector` or `keyword` |
+| `tags` | list[string] | No | Only documents carrying all of these tags |
+| `fields` | object | No | Filter on filterable fields, e.g. `{"year": {"$gte": 2024}}`. Operators: `$gte`, `$gt`, `$lte`, `$lt`, `$ne`, `$in`, `$contains`, `$exists` |
+| `collapse_documents` | boolean | No | Best passage per document, so `top_k` means k distinct documents |
+
+---
+
+### query_knowledge_bank
+
+Aggregate and filter over a bank's documents or passages in the knowledge-bank query
+language.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `knowledge_bank_id` | string | Yes | The knowledge bank |
+| `select` | list | Yes | Fields, aggregates and expressions over them |
+| `source` | string | No | `passages` (default) or `documents` |
+| `where` | object | No | The same field filter search takes |
+| `group_by` | list | No | Fields or expressions to group by |
+| `having` | object | No | Conditions on the aggregates in `select` |
+| `order_by` | list | No | How to order, each entry optionally `{"desc": true}` |
+| `limit` | integer | No | Maximum rows (default: 100) |
+| `offset` | integer | No | Rows to skip, for paging |
+
+---
+
+### list_knowledge_collections
+
+A bank's collections, their fields and their relationships to each other — the
+relationships `query_knowledge_records` can join on.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `knowledge_bank_id` | string | Yes | The knowledge bank |
+
+---
+
+### query_knowledge_records
+
+Query a collection's records, joining across relationship fields.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `knowledge_bank_id` | string | Yes | The knowledge bank |
+| `collection_id` | string | Yes | The collection whose records to query |
+| `select` | list | Yes | Fields, aggregates and expressions over them |
+| `join` | list[object] | No | `[{"on": <relationship field>, "as": <alias>}]` |
+| `where` | object | No | Conditions on the record's fields |
+| `group_by` | list | No | Fields or expressions to group by |
+| `having` | object | No | Conditions on the aggregates in `select` |
+| `order_by` | list | No | How to order, each entry optionally `{"desc": true}` |
+| `limit` | integer | No | Maximum rows (default: 100) |
+| `offset` | integer | No | Rows to skip, for paging |
+
+---
+
 ## Integration with AI Assistants
 
 The MCP server can be used with any MCP-compatible AI assistant. See the [Authentication](#authentication) section above for Claude Code and Claude Desktop configuration examples.

@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..extensions import OperationValidationError
 from ..models import RequestContext
 from .service import MAX_BATCH_DOCUMENTS, DocumentInput, KnowledgeBankError, KnowledgeService
 
@@ -155,6 +156,16 @@ def build_router(get_request_context: Any) -> APIRouter:
         cached = getattr(request.app.state, "knowledge_service", None)
         if cached is None:
             cached = request.app.state.knowledge_service = KnowledgeService(memory)
+        bank = request.path_params.get("kb")
+        if bank:
+            # Gated here, not per route: every route below depends on this, so one added
+            # later is gated without anyone remembering to. Search and the query DSL are
+            # POSTs that only read, so the direction comes from the path, not the method.
+            reads = request.method in ("GET", "HEAD") or request.url.path.endswith(("/search", "/query"))
+            try:
+                await cached.authorize(bank, write=not reads, request_context=ctx)
+            except OperationValidationError as e:
+                raise HTTPException(status_code=e.status_code, detail=e.reason)
         return cached
 
     async def run(coro: Any) -> Any:
@@ -175,8 +186,9 @@ def build_router(get_request_context: Any) -> APIRouter:
         offset: int = Query(default=0, ge=0),
         q: str | None = Query(default=None, description="Filter by id or name"),
         svc: KnowledgeService = Depends(service),
+        ctx: RequestContext = Depends(get_request_context),
     ):
-        return await run(svc.list_banks(limit, offset, q))
+        return await run(svc.list_banks(limit, offset, q, request_context=ctx))
 
     @router.get("/{kb}", summary="Knowledge bank stats")
     async def get_bank(kb: str, svc: KnowledgeService = Depends(service)):

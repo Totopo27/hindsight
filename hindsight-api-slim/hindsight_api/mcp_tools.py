@@ -27,6 +27,7 @@ from hindsight_api.engine.memory_engine import KEEP_PARENT, Budget
 from hindsight_api.engine.response_models import VALID_RECALL_FACT_TYPES, MinScores, TemporalWindow
 from hindsight_api.engine.search.tags import TagGroup, TagsMatch
 from hindsight_api.extensions import OperationValidationError
+from hindsight_api.knowledge.service import KnowledgeBankError, KnowledgeService
 from hindsight_api.models import RequestContext
 
 _TAG_GROUP_LIST_ADAPTER = TypeAdapter(list[TagGroup])
@@ -74,6 +75,12 @@ _ALL_TOOLS: frozenset[str] = frozenset(
         "create_knowledge_page",
         "update_knowledge_node",
         "delete_knowledge_node",
+        "list_knowledge_banks",
+        "list_knowledge_schemas",
+        "search_knowledge_bank",
+        "query_knowledge_bank",
+        "list_knowledge_collections",
+        "query_knowledge_records",
     }
 )
 
@@ -546,6 +553,12 @@ _READ_ONLY_TOOLS = {
     "get_knowledge_base_tree",
     "search_knowledge_base",
     "get_knowledge_page",
+    "list_knowledge_banks",
+    "list_knowledge_schemas",
+    "search_knowledge_bank",
+    "query_knowledge_bank",
+    "list_knowledge_collections",
+    "query_knowledge_records",
 }
 _DESTRUCTIVE_TOOLS = {
     "delete_bank",
@@ -630,6 +643,12 @@ def register_mcp_tools(
         "create_knowledge_page",
         "update_knowledge_node",
         "delete_knowledge_node",
+        "list_knowledge_banks",
+        "list_knowledge_schemas",
+        "search_knowledge_bank",
+        "query_knowledge_bank",
+        "list_knowledge_collections",
+        "query_knowledge_records",
     }
 
     if "retain" in tools_to_register:
@@ -755,6 +774,25 @@ def register_mcp_tools(
 
     if "delete_knowledge_node" in tools_to_register:
         _register_delete_knowledge_node(mcp, memory, config)
+
+    # Knowledge bank tools
+    if "list_knowledge_banks" in tools_to_register:
+        _register_list_knowledge_banks(mcp, memory, config)
+
+    if "list_knowledge_schemas" in tools_to_register:
+        _register_list_knowledge_schemas(mcp, memory, config)
+
+    if "search_knowledge_bank" in tools_to_register:
+        _register_search_knowledge_bank(mcp, memory, config)
+
+    if "query_knowledge_bank" in tools_to_register:
+        _register_query_knowledge_bank(mcp, memory, config)
+
+    if "list_knowledge_collections" in tools_to_register:
+        _register_list_knowledge_collections(mcp, memory, config)
+
+    if "query_knowledge_records" in tools_to_register:
+        _register_query_knowledge_records(mcp, memory, config)
 
     _apply_bank_tool_filtering(mcp, memory, config)
     _apply_audit_logging(mcp, memory, config)
@@ -4572,3 +4610,298 @@ def _register_clear_memories(mcp: FastMCP, memory: MemoryEngine, config: MCPTool
                 run=lambda target_bank: _run(target_bank, type),
                 indent=None,
             )
+
+
+# =========================================================================
+# KNOWLEDGE BANK TOOLS
+#
+# A knowledge bank is a bank of its own kind, addressed by its own id rather than
+# by the session bank, so these tools always take `knowledge_bank_id` and are the
+# same shape in both modes — there is no session knowledge bank to default to.
+# Read-only: writing documents is a batch operation an agent tracks by id, which
+# belongs on the HTTP surface.
+# =========================================================================
+
+
+async def _run_knowledge(
+    memory: MemoryEngine,
+    config: MCPToolsConfig,
+    *,
+    action: str,
+    bank: str | None = None,
+    run: Callable[[KnowledgeService], Awaitable[Any]],
+) -> dict:
+    """Authenticate the tenant, run one knowledge-bank call, and shape its errors.
+
+    The HTTP dependency resolves the tenant schema before touching the store, and MCP
+    has to do the same or every query runs against the wrong schema — and the same
+    tenant-extension gate, or a bank an extension refuses over HTTP is readable here. A
+    ``KnowledgeBankError`` is the caller's mistake (unknown bank, bad filter), so it
+    comes back as its message rather than a stack trace.
+    """
+    ctx = _get_request_context(config)
+    try:
+        await memory._authenticate_tenant(ctx)
+        svc = KnowledgeService(memory)
+        if bank is not None:
+            # Every knowledge-bank tool reads; a write is a batch operation on HTTP.
+            await svc.authorize(bank, write=False, request_context=ctx)
+        return await run(svc)
+    except KnowledgeBankError as e:
+        return {"error": str(e.detail)}
+    except OperationValidationError as e:
+        logger.warning(f"Operation rejected: {e}")
+        return {"error": str(e)}
+    except ValueError as e:
+        logger.warning(f"Operation rejected: {e}")
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"Error {action}: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+def _register_list_knowledge_banks(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig) -> None:
+    """Register the list_knowledge_banks tool."""
+
+    @mcp.tool(annotations=_tool_annotations("list_knowledge_banks"))
+    async def list_knowledge_banks(
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """
+        List the knowledge banks available, with their document and passage counts.
+
+        A knowledge bank holds documents split into passages, searchable and queryable.
+        It is separate from a memory bank: nothing retained or recalled lives here.
+
+        Args:
+            q: Optional filter on bank id or name
+            limit: Maximum number of banks (default: 50)
+            offset: Banks to skip, for paging
+        """
+        return await _run_knowledge(
+            memory,
+            config,
+            action="listing knowledge banks",
+            run=lambda svc: svc.list_banks(limit, offset, q, request_context=_get_request_context(config)),
+        )
+
+
+def _register_list_knowledge_schemas(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig) -> None:
+    """Register the list_knowledge_schemas tool."""
+
+    @mcp.tool(annotations=_tool_annotations("list_knowledge_schemas"))
+    async def list_knowledge_schemas(knowledge_bank_id: str) -> dict:
+        """
+        The schemas of a knowledge bank: the fields its documents and passages carry.
+
+        Read this before filtering or querying — it names every field, its type, whether
+        it can be filtered on, and which values a classified field takes.
+
+        Args:
+            knowledge_bank_id: The knowledge bank
+        """
+        return await _run_knowledge(
+            memory,
+            config,
+            action="listing knowledge schemas",
+            bank=knowledge_bank_id,
+            run=lambda svc: svc.list_schemas(knowledge_bank_id),
+        )
+
+
+def _register_search_knowledge_bank(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig) -> None:
+    """Register the search_knowledge_bank tool."""
+
+    @mcp.tool(annotations=_tool_annotations("search_knowledge_bank"))
+    async def search_knowledge_bank(
+        knowledge_bank_id: str,
+        query: str,
+        top_k: int = 10,
+        mode: str = "hybrid",
+        tags: list[str] | None = None,
+        fields: dict[str, Any] | None = None,
+        collapse_documents: bool = False,
+    ) -> dict:
+        """
+        Search a knowledge bank's passages, hybrid by default (vector + keyword, reranked).
+
+        Args:
+            knowledge_bank_id: The knowledge bank to search
+            query: Natural-language query
+            top_k: Maximum passages to return (default: 10)
+            mode: 'hybrid' (default), 'vector' or 'keyword'
+            tags: Only documents carrying all of these tags
+            fields: Filter on filterable fields, e.g. {"year": {"$gte": 2024}, "vendor": "Apple"}.
+                Operators: $gte, $gt, $lte, $lt, $ne, $in, $contains, $exists
+            collapse_documents: Best passage per document, so top_k means k distinct documents
+        """
+
+        async def _run(svc: KnowledgeService) -> dict:
+            hits = await svc.search(
+                knowledge_bank_id,
+                query,
+                top_k=top_k,
+                mode=mode,
+                tags=tags,
+                fields=fields,
+                collapse_documents=collapse_documents,
+                request_context=_get_request_context(config),
+            )
+            return {
+                "results": [
+                    {
+                        "document_id": hit.doc_id,
+                        "passage_index": hit.passage_index,
+                        "text": hit.text,
+                        "score": hit.score,
+                    }
+                    for hit in hits
+                ]
+            }
+
+        return await _run_knowledge(memory, config, action="searching knowledge bank", bank=knowledge_bank_id, run=_run)
+
+
+def _register_query_knowledge_bank(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig) -> None:
+    """Register the query_knowledge_bank tool."""
+
+    @mcp.tool(annotations=_tool_annotations("query_knowledge_bank"))
+    async def query_knowledge_bank(
+        knowledge_bank_id: str,
+        select: list[Any],
+        source: str = "passages",
+        where: dict[str, Any] | None = None,
+        group_by: list[Any] | None = None,
+        having: dict[str, Any] | None = None,
+        order_by: list[Any] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """
+        Aggregate and filter over a knowledge bank's documents or passages.
+
+        A SQL-shaped query language over fields, not SQL: counts, sums, averages,
+        grouping and conditions on the aggregates. Use list_knowledge_schemas first to
+        learn the field names.
+
+        Example: select=[{"field": "vendor"}, {"count": "*"}], group_by=[{"field": "vendor"}],
+        order_by=[{"count": "*", "desc": True}] — documents per vendor, most first.
+
+        Args:
+            knowledge_bank_id: The knowledge bank
+            select: Fields, aggregates and expressions over them
+            source: 'passages' (default) or 'documents'
+            where: The same field filter search takes
+            group_by: Fields or expressions to group by
+            having: Conditions on the aggregates in select
+            order_by: How to order, each entry optionally {"desc": true}
+            limit: Maximum rows (default: 100)
+            offset: Rows to skip, for paging
+        """
+        body: dict[str, Any] = {
+            "from": source,
+            "select": select,
+            "where": where,
+            "group_by": group_by,
+            "having": having,
+            "order_by": order_by,
+            "limit": limit,
+            "offset": offset,
+        }
+        return await _run_knowledge(
+            memory,
+            config,
+            action="querying knowledge bank",
+            bank=knowledge_bank_id,
+            run=lambda svc: svc.query(
+                knowledge_bank_id,
+                {k: v for k, v in body.items() if v is not None},
+                request_context=_get_request_context(config),
+            ),
+        )
+
+
+def _register_list_knowledge_collections(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig) -> None:
+    """Register the list_knowledge_collections tool."""
+
+    @mcp.tool(annotations=_tool_annotations("list_knowledge_collections"))
+    async def list_knowledge_collections(knowledge_bank_id: str) -> dict:
+        """
+        The collections of a knowledge bank: the records derived from its documents.
+
+        A collection is a kind of thing the documents talk about — a vendor, a contract —
+        and each record folds together what every document said about one of them. Read
+        this to learn a collection's fields and its relationships to other collections,
+        which are what query_knowledge_records can join on.
+
+        Args:
+            knowledge_bank_id: The knowledge bank
+        """
+        return await _run_knowledge(
+            memory,
+            config,
+            action="listing knowledge collections",
+            bank=knowledge_bank_id,
+            run=lambda svc: svc.list_collections(knowledge_bank_id),
+        )
+
+
+def _register_query_knowledge_records(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig) -> None:
+    """Register the query_knowledge_records tool."""
+
+    @mcp.tool(annotations=_tool_annotations("query_knowledge_records"))
+    async def query_knowledge_records(
+        knowledge_bank_id: str,
+        collection_id: str,
+        select: list[Any],
+        join: list[dict[str, Any]] | None = None,
+        where: dict[str, Any] | None = None,
+        group_by: list[Any] | None = None,
+        having: dict[str, Any] | None = None,
+        order_by: list[Any] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """
+        Query a collection's records, joining across relationship fields.
+
+        The same query language as query_knowledge_bank, over records instead of
+        passages. A join follows a relationship field to another collection:
+        join=[{"on": "vendor", "as": "v"}] then select [{"field": "v.country"}].
+
+        Args:
+            knowledge_bank_id: The knowledge bank
+            collection_id: The collection whose records to query
+            select: Fields, aggregates and expressions over them
+            join: [{"on": <relationship field>, "as": <alias>}]
+            where: Conditions on the record's fields
+            group_by: Fields or expressions to group by
+            having: Conditions on the aggregates in select
+            order_by: How to order, each entry optionally {"desc": true}
+            limit: Maximum rows (default: 100)
+            offset: Rows to skip, for paging
+        """
+        body: dict[str, Any] = {
+            "join": join,
+            "select": select,
+            "where": where,
+            "group_by": group_by,
+            "having": having,
+            "order_by": order_by,
+            "limit": limit,
+            "offset": offset,
+        }
+        return await _run_knowledge(
+            memory,
+            config,
+            action="querying knowledge records",
+            bank=knowledge_bank_id,
+            run=lambda svc: svc.query_records(
+                knowledge_bank_id,
+                collection_id,
+                {k: v for k, v in body.items() if v is not None},
+                request_context=_get_request_context(config),
+            ),
+        )

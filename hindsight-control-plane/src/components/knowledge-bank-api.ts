@@ -9,7 +9,7 @@ export interface KnowledgeBank {
   bank_id: string;
   name: string;
   documents: number;
-  chunks: number;
+  passages: number;
   last_write_at?: string | null;
   operations_in_flight?: number;
   created_at: string;

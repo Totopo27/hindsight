@@ -282,6 +282,18 @@ function getMcpToolGroups(t: (key: string) => string): McpToolGroup[] {
         "delete_knowledge_node",
       ],
     },
+    {
+      key: "knowledgeBanks",
+      label: t("mcpGroupKnowledgeBanks"),
+      tools: [
+        "list_knowledge_banks",
+        "list_knowledge_schemas",
+        "search_knowledge_bank",
+        "query_knowledge_bank",
+        "list_knowledge_collections",
+        "query_knowledge_records",
+      ],
+    },
   ];
 }
 
@@ -325,6 +337,12 @@ const MCP_ALL_TOOLS: string[] = [
   "create_knowledge_page",
   "update_knowledge_node",
   "delete_knowledge_node",
+  "list_knowledge_banks",
+  "list_knowledge_schemas",
+  "search_knowledge_bank",
+  "query_knowledge_bank",
+  "list_knowledge_collections",
+  "query_knowledge_records",
 ];
 const ALL_TOOLS: string[] = MCP_ALL_TOOLS;
 

@@ -134,6 +134,38 @@ class KnowledgeService:
     async def _config(self, bank_id: str, request_context: Any) -> Any:
         return await self.memory._config_resolver.resolve_full_config(bank_id, request_context)
 
+    async def authorize(self, bank_id: str, *, write: bool, request_context: Any) -> None:
+        """Let a tenant extension refuse this call before it touches the bank.
+
+        A knowledge bank is a bank, so it goes through the same validator the memory
+        banks use. One operation name covers the whole knowledge read surface and one
+        the whole write surface, and the gate lives at the two entry points (the HTTP
+        router's dependency and the MCP tools) rather than in each method, so a route
+        added later is gated by construction rather than by remembering.
+
+        One name per direction rather than one per endpoint: split the enum when an
+        extension actually needs to allow a search while refusing a schema change.
+        """
+        validator = getattr(self.memory, "_operation_validator", None)
+        if validator is None:
+            return
+        from ..extensions import BankReadContext, BankReadOperation, BankWriteContext, BankWriteOperation
+
+        if write:
+            ctx: Any = BankWriteContext(
+                bank_id=bank_id,
+                operation=BankWriteOperation.KNOWLEDGE_BANK_WRITE,
+                request_context=request_context,
+            )
+            await self.memory._validate_operation(validator.validate_bank_write(ctx))
+        else:
+            ctx = BankReadContext(
+                bank_id=bank_id,
+                operation=BankReadOperation.KNOWLEDGE_BANK_READ,
+                request_context=request_context,
+            )
+            await self.memory._validate_operation(validator.validate_bank_read(ctx))
+
     # ---- banks
 
     async def create_bank(self, bank_id: str, name: str | None) -> dict[str, Any]:
@@ -146,9 +178,37 @@ class KnowledgeService:
             await store.create_bank(conn, bank_id, name or bank_id, json.dumps(DEFAULT_DISPOSITION), uuid.uuid4())
         return await self.get_bank(bank_id)
 
-    async def list_banks(self, limit: int, offset: int, query: str | None) -> dict[str, Any]:
+    async def list_banks(
+        self, limit: int, offset: int, query: str | None, request_context: Any = None
+    ) -> dict[str, Any]:
+        """The knowledge banks this caller may see.
+
+        A deployment's operation validator decides which banks a caller is allowed to
+        know about, and a knowledge bank is a bank: the same hook that filters the memory
+        bank list filters this one, or a tenant extension that hides a bank would hide it
+        everywhere except here.
+        """
+        validator = getattr(self.memory, "_operation_validator", None)
+        if validator is None:
+            async with acquire_with_retry(await self._pool()) as conn:
+                return await store.list_banks(conn, limit, offset, query)
+
+        # The validator may drop any bank, so the page is cut after it runs — the same
+        # trade the memory bank list makes, and paid only where a validator is installed.
+        from ..extensions import BankListContext
+
         async with acquire_with_retry(await self._pool()) as conn:
-            return await store.list_banks(conn, limit, offset, query)
+            everything = await store.list_banks(conn, limit=10_000, offset=0, query=query)
+        result = await validator.filter_bank_list(
+            BankListContext(banks=everything["items"], request_context=request_context)
+        )
+        banks = result.banks
+        return {
+            "items": banks[offset : offset + limit],
+            "total": len(banks),
+            "limit": limit,
+            "offset": offset,
+        }
 
     async def get_bank(self, bank_id: str) -> dict[str, Any]:
         async with acquire_with_retry(await self._pool()) as conn:

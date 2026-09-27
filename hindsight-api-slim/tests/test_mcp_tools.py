@@ -458,7 +458,11 @@ class TestMentalModelToolRegistration:
         assert "get_knowledge_base_tree" in tools
         assert "create_knowledge_page" in tools
         assert "delete_knowledge_node" in tools
-        assert len(tools) == 39
+        # Knowledge banks
+        assert "list_knowledge_banks" in tools
+        assert "search_knowledge_bank" in tools
+        assert "query_knowledge_records" in tools
+        assert len(tools) == 45
 
     def test_all_tools_have_nonempty_descriptions(self):
         """Every registered tool must expose a non-empty description.

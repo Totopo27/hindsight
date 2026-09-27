@@ -132,7 +132,7 @@ export default function KnowledgeBankPage() {
                     {bank.bank_id}
                   </h1>
                   <span className="text-[12px] text-muted-foreground">
-                    {bank.documents} documents · {bank.chunks} chunks
+                    {bank.documents} documents · {bank.passages} passages
                   </span>
                 </div>
                 <div className="space-y-5">
@@ -156,7 +156,7 @@ export default function KnowledgeBankPage() {
 function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) => void }) {
   const stats = [
     ["Documents", bank.documents],
-    ["Chunks", bank.chunks],
+    ["Passages", bank.passages],
     ["Writes in flight", bank.operations_in_flight ?? 0],
     ["Last write", bank.last_write_at ? new Date(bank.last_write_at).toLocaleString() : "—"],
   ] as const;
@@ -311,8 +311,8 @@ function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void })
           <DialogHeader>
             <DialogTitle>Add document</DialogTitle>
             <DialogDescription>
-              It is chunked and embedded by a background write. Writing the same id again replaces
-              it.
+              It is split into passages and embedded by a background write. Writing the same id
+              again replaces it.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -436,7 +436,7 @@ function SearchPanel({ kbId }: { kbId: string }) {
               <div className="flex items-center gap-2 text-sm mb-1">
                 <span className="text-muted-foreground">#{i + 1}</span>
                 <span className="font-mono">{hit.document_id}</span>
-                <span className="text-muted-foreground">chunk {hit.passage_index}</span>
+                <span className="text-muted-foreground">passage {hit.passage_index}</span>
                 {hit.ranks.vector && (
                   <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[11px]">
                     vector #{hit.ranks.vector}
@@ -520,8 +520,8 @@ function SchemaPanel({ kbId }: { kbId: string }) {
       description="The fields this bank defines for documents and passages. Search and query filter on them."
     >
       <p className="text-sm text-muted-foreground mb-2">
-        {schema.documents_with_fields} document(s) and {schema.passages_with_fields} chunk(s) carry
-        filled fields.
+        {schema.documents_with_fields} document(s) and {schema.passages_with_fields} passage(s)
+        carry filled fields.
       </p>
       <Textarea
         rows={18}
@@ -764,7 +764,17 @@ function Operations({ kbId }: { kbId: string }) {
 function Configuration({ kbId }: { kbId: string }) {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
-  const fields = ["kb_chunk_size", "kb_chunk_overlap", "kb_search_candidates", "kb_search_rerank"];
+  const fields = [
+    "kb_passage_size",
+    "kb_passage_overlap",
+    "kb_search_candidates",
+    "kb_search_rerank",
+    "kb_search_vector_weight",
+    "kb_field_extraction",
+    "kb_schema_classification",
+    "kb_record_identity_similarity",
+  ];
+  const booleans = ["kb_search_rerank", "kb_field_extraction", "kb_schema_classification"];
 
   const load = useCallback(async () => {
     // Bank config is the memory banks' endpoint: a knowledge bank is a bank row.
@@ -782,7 +792,7 @@ function Configuration({ kbId }: { kbId: string }) {
     const updates: Record<string, unknown> = {};
     for (const field of fields) {
       const value = draft[field];
-      updates[field] = field === "kb_search_rerank" ? value === "true" : Number(value);
+      updates[field] = booleans.includes(field) ? value === "true" : Number(value);
     }
     const response = await fetch(withBasePath(`/api/banks/${encodeURIComponent(kbId)}/config`), {
       method: "PATCH",
@@ -804,7 +814,7 @@ function Configuration({ kbId }: { kbId: string }) {
         {fields.map((field) => (
           <label key={field} className="text-sm space-y-1">
             <span className="font-mono text-xs text-muted-foreground">{field}</span>
-            {field === "kb_search_rerank" ? (
+            {booleans.includes(field) ? (
               <select
                 className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
                 value={draft[field]}

@@ -265,3 +265,100 @@ async def test_collapse_documents_returns_one_chunk_per_document(kb_client):
         )
     ).json()["results"]
     assert len({hit["document_id"] for hit in collapsed}) == len(collapsed)
+
+
+def _kb_mcp_tools(memory):
+    """The knowledge-bank MCP tools, registered on a real engine."""
+    from fastmcp import FastMCP
+
+    from hindsight_api.mcp_tools import MCPToolsConfig, register_mcp_tools
+
+    mcp = FastMCP("test")
+    tools = {
+        "list_knowledge_banks",
+        "list_knowledge_schemas",
+        "search_knowledge_bank",
+        "query_knowledge_bank",
+        "list_knowledge_collections",
+        "query_knowledge_records",
+    }
+    register_mcp_tools(mcp, memory, MCPToolsConfig(bank_id_resolver=lambda: None, tools=tools))
+    return {
+        k.split(":")[1].split("@")[0]: v for k, v in mcp._local_provider._components.items() if k.startswith("tool:")
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_read_a_knowledge_bank(kb_client, memory):
+    """The MCP surface answers the same questions the HTTP one does.
+
+    A knowledge bank is addressed by its own id, not by the session bank, so these tools
+    take it as an argument — which is also why a caller needs list_knowledge_banks to
+    find one at all.
+    """
+    kb = await _bank(kb_client)
+    await _write(kb_client, kb, DOCS)
+    tools = _kb_mcp_tools(memory)
+
+    banks = await tools["list_knowledge_banks"].fn()
+    assert kb in [bank["bank_id"] for bank in banks["items"]]
+
+    hits = await tools["search_knowledge_bank"].fn(knowledge_bank_id=kb, query="Italian stock exchange", top_k=3)
+    assert hits["results"][0]["document_id"] == "milan"
+
+    counted = await tools["query_knowledge_bank"].fn(knowledge_bank_id=kb, source="documents", select=[{"count": "*"}])
+    assert counted["rows"] == [[len(DOCS)]]
+
+    # No schemas and no collections is an empty answer, not an error.
+    assert (await tools["list_knowledge_schemas"].fn(knowledge_bank_id=kb))["items"] == []
+    assert (await tools["list_knowledge_collections"].fn(knowledge_bank_id=kb))["items"] == []
+
+    # An unknown bank comes back as a message the model can read, not a stack trace.
+    missing = await tools["search_knowledge_bank"].fn(knowledge_bank_id="nope", query="x")
+    assert "error" in missing
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_extension_can_refuse_a_knowledge_bank(kb_client, memory):
+    """The validator gates the knowledge surface the way it gates a memory bank's.
+
+    Reads and writes are separate names, and the direction comes from the path rather
+    than the method: search and the query DSL are POSTs that only read.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from hindsight_api.extensions import BankListResult, BankReadOperation, ValidationResult
+
+    kb = await _bank(kb_client)
+    await _write(kb_client, kb, DOCS)
+
+    validator = MagicMock()
+    validator.validate_bank_read = AsyncMock(
+        side_effect=lambda ctx: (
+            ValidationResult.reject("not yours")
+            if ctx.operation is BankReadOperation.KNOWLEDGE_BANK_READ
+            else ValidationResult.accept()
+        )
+    )
+    validator.validate_bank_write = AsyncMock(return_value=ValidationResult.accept())
+    validator.filter_bank_list = AsyncMock(side_effect=lambda ctx: BankListResult(banks=ctx.banks))
+    memory._operation_validator = validator
+    try:
+        search = await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Milan"})
+        assert search.status_code == 403
+        assert search.json()["detail"] == "not yours"
+        assert (await kb_client.get(f"/v1/default/knowledge-banks/{kb}")).status_code == 403
+        # A write is a different name, so refusing reads does not refuse it.
+        assert (await kb_client.get("/v1/default/knowledge-banks")).status_code == 200
+        assert (
+            await kb_client.post(
+                f"/v1/default/knowledge-banks/{kb}/documents",
+                json={"documents": [{"id": "x", "text": "Rome is a city."}]},
+            )
+        ).status_code == 202
+
+        # MCP goes through the same gate, or it would be a way around the extension.
+        refused = await _kb_mcp_tools(memory)["search_knowledge_bank"].fn(knowledge_bank_id=kb, query="Milan")
+        assert "not yours" in refused["error"]
+    finally:
+        memory._operation_validator = None

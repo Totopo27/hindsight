@@ -62,7 +62,7 @@ export default function KnowledgeBanksPage() {
                 Knowledge banks
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
-                Documents, chunked and searchable. No memory extraction.
+                Documents, split into passages and searchable. No memory extraction.
               </p>
             </div>
             <Input
@@ -105,7 +105,7 @@ export default function KnowledgeBanksPage() {
                       <FileText className="w-3.5 h-3.5" /> {bank.documents} documents
                     </span>
                     <span className="flex items-center gap-1">
-                      <Search className="w-3.5 h-3.5" /> {bank.chunks} chunks
+                      <Search className="w-3.5 h-3.5" /> {bank.passages} passages
                     </span>
                   </div>
                 </button>
