@@ -129,7 +129,7 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
         raw = response.json()
         documents = [
             Document(
-                id=f"{hit['document_id']}#{hit['chunk_index']}",
+                id=f"{hit['document_id']}#{hit['passage_index']}",
                 content=hit["text"],
                 user_id=user_id,
                 source_ids=[hit["document_id"]],
