@@ -2423,26 +2423,38 @@ function CollectionRecords({
 
   return (
     <div className="space-y-4">
+      {/* The collections as a row of pills rather than a dropdown: a bank has a handful,
+          they are the thing being switched between, and a dropdown hides which ones
+          exist behind a click. */}
+      <div className="flex gap-1 overflow-x-auto rounded-lg border border-border bg-muted/40 p-1">
+        {collections.map((c) => {
+          const active = c.collection_id === collectionId;
+          return (
+            <button
+              key={c.collection_id}
+              onClick={() => {
+                setCollectionId(c.collection_id);
+                setPage(0);
+                setResult(null);
+                setSearch("");
+              }}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                active
+                  ? "bg-background font-semibold text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Table2 className="h-3.5 w-3.5" />
+              <span className="font-mono">{c.collection_id}</span>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {c.records ?? 0}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
-        <Select
-          value={collectionId}
-          onValueChange={(v) => {
-            setCollectionId(v);
-            setPage(0);
-            setResult(null);
-          }}
-        >
-          <SelectTrigger className="w-[200px] h-9" aria-label="Collection">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent position="popper">
-            {collections.map((c) => (
-              <SelectItem key={c.collection_id} value={c.collection_id}>
-                {c.collection_id}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
         <div className="relative min-w-[220px] flex-1">
           <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
