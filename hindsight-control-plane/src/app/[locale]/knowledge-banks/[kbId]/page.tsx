@@ -12,6 +12,7 @@ import {
   List,
   Network,
   MoreVertical,
+  PieChart,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -187,6 +188,18 @@ export default function KnowledgeBankPage() {
     loadBank();
   }, [loadBank]);
 
+  // The header's Add document button lives beside the bank selector, as it does for a
+  // memory bank; the dialog is this page's, so the button asks for it by event.
+  const [addRequested, setAddRequested] = useState(0);
+  useEffect(() => {
+    const open = () => {
+      router.push(`/knowledge-banks/${encodeURIComponent(kbId)}?section=documents`);
+      setAddRequested((n) => n + 1);
+    };
+    window.addEventListener("hindsight:kb-add-document", open);
+    return () => window.removeEventListener("hindsight:kb-add-document", open);
+  }, [kbId, router]);
+
   const rawDocTab = searchParams.get("docTab");
   const docTab = (
     rawDocTab === "schemas" || rawDocTab === "search" ? rawDocTab : "documents"
@@ -212,7 +225,7 @@ export default function KnowledgeBankPage() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <div className="sticky top-0 z-30">
-        <BankSelector />
+        <BankSelector knowledgeBankId={kbId} />
       </div>
       <div className="flex flex-1">
         <div className="sticky top-14 self-start h-[calc(100vh-3.5rem)] z-20">
@@ -237,6 +250,7 @@ export default function KnowledgeBankPage() {
                       onChanged={loadBank}
                       tab={docTab}
                       onTab={goDocTab}
+                      addRequested={addRequested}
                     />
                   )}
                   {section === "collections" && <CollectionsPanel kbId={kbId} />}
@@ -323,11 +337,14 @@ function DocumentsSection({
   onChanged,
   tab,
   onTab,
+  addRequested,
 }: {
   kbId: string;
   onChanged: () => void;
   tab: DocTab;
   onTab: (tab: DocTab) => void;
+  /** Bumped by the header's Add document button; each bump opens the dialog once. */
+  addRequested: number;
 }) {
   const [schemas, setSchemas] = useState<KnowledgeSchema[] | null>(null);
 
@@ -376,7 +393,12 @@ function DocumentsSection({
         ))}
       </div>
       {tab === "documents" && (
-        <Documents kbId={kbId} onChanged={onChanged} schemas={schemas ?? []} />
+        <Documents
+          kbId={kbId}
+          onChanged={onChanged}
+          schemas={schemas ?? []}
+          addRequested={addRequested}
+        />
       )}
       {tab === "search" && <SearchPanel kbId={kbId} schemas={schemas ?? []} />}
       {tab === "schemas" && <SchemaPanel kbId={kbId} onSaved={loadSchemas} />}
@@ -421,10 +443,12 @@ function Documents({
   kbId,
   onChanged,
   schemas,
+  addRequested,
 }: {
   kbId: string;
   onChanged: () => void;
   schemas: KnowledgeSchema[];
+  addRequested: number;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
@@ -462,6 +486,11 @@ function Documents({
     const timer = setTimeout(load, searchQuery ? 250 : 0);
     return () => clearTimeout(timer);
   }, [load, searchQuery]);
+
+  // Zero is the initial value, not a request, so the dialog does not open on mount.
+  useEffect(() => {
+    if (addRequested > 0) setAdding(true);
+  }, [addRequested]);
 
   const done = (message: string) => {
     toast.success(message);
@@ -536,11 +565,6 @@ function Documents({
       title="Documents"
       tab
       description="Writes are queued as operations and run in the background."
-      action={
-        <Button size="sm" onClick={() => setAdding(true)}>
-          <Plus className="w-4 h-4 mr-1" /> Add document
-        </Button>
-      }
     >
       <div className="mb-6 flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
@@ -1553,24 +1577,24 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                   </div>
                 </div>
 
+                {/* Documents only: how many this schema owns, what share of the bank that
+                    is, and how many of them the extraction has actually filled. */}
                 <StatStrip className="mb-4">
+                  <InlineStat icon={FileText} label="Documents" value={current.documents ?? 0} />
+                  <InlineStat
+                    icon={PieChart}
+                    label="Share of bank"
+                    value={
+                      current.bank_documents
+                        ? Math.round(((current.documents ?? 0) / current.bank_documents) * 100)
+                        : 0
+                    }
+                    suffix="%"
+                  />
                   <InlineStat
                     icon={Tags}
-                    label="Fields"
-                    value={
-                      Object.keys(current.document_fields).length +
-                      Object.keys(current.passage_fields).length
-                    }
-                  />
-                  <InlineStat
-                    icon={FileText}
                     label="Documents filled"
                     value={current.documents_with_fields}
-                  />
-                  <InlineStat
-                    icon={Layers}
-                    label="Passages filled"
-                    value={current.passages_with_fields}
                   />
                 </StatStrip>
 

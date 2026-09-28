@@ -101,7 +101,7 @@ function formatTimeAgo(isoDate: string): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
-function BankSelectorInner() {
+function BankSelectorInner({ knowledgeBankId }: { knowledgeBankId?: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tNav = useTranslations("nav");
@@ -127,7 +127,7 @@ function BankSelectorInner() {
   const [open, setOpen] = React.useState(false);
   // The selector lists both kinds of bank. Knowledge banks are a different resource with
   // their own list endpoint, so they are fetched here rather than through the bank context.
-  const [kind, setKind] = React.useState<BankKind>("memory");
+  const [kind, setKind] = React.useState<BankKind>(knowledgeBankId ? "knowledge" : "memory");
   const [knowledgeBanks, setKnowledgeBanks] = React.useState<KnowledgeBank[] | null>(null);
   const [newKnowledgeBankOpen, setNewKnowledgeBankOpen] = React.useState(false);
   // One-shot spin of the header logo, fired by sidebar navigation (see the
@@ -634,7 +634,10 @@ function BankSelectorInner() {
               className="w-[250px] justify-between font-bold border-2 border-primary hover:bg-accent"
             >
               <span className="truncate">
-                {currentBankName || currentBank || tNavBank("select")}
+                {/* On a knowledge bank the page IS that bank, so the trigger says so —
+                    it used to show whichever memory bank was picked last, which read as
+                    the wrong bank being open. */}
+                {knowledgeBankId || currentBankName || currentBank || tNavBank("select")}
               </span>
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
@@ -670,12 +673,23 @@ function BankSelectorInner() {
                       <button
                         key={bank.bank_id}
                         type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent"
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent",
+                          bank.bank_id === knowledgeBankId && "ring-1 ring-inset ring-primary/50"
+                        )}
                         onClick={() => {
                           setOpen(false);
                           router.push(`/knowledge-banks/${encodeURIComponent(bank.bank_id)}`);
                         }}
                       >
+                        <Check
+                          className={cn(
+                            "h-4 w-4 shrink-0",
+                            bank.bank_id === knowledgeBankId
+                              ? "opacity-100 text-primary"
+                              : "opacity-0"
+                          )}
+                        />
                         <span className="flex-1 truncate font-medium">{bank.bank_id}</span>
                         <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/70">
                           {bank.documents} · {bank.passages}
@@ -864,8 +878,22 @@ function BankSelectorInner() {
         {/* Separator */}
         <div className="h-8 w-px bg-border" />
 
-        {/* Add Document Button */}
-        {currentBank && (
+        {/* Add Document Button. On a knowledge bank the page owns the dialog (its form
+            is a different one), so the header asks for it by event rather than
+            reaching into that page's state. */}
+        {knowledgeBankId && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5"
+            onClick={() => window.dispatchEvent(new CustomEvent("hindsight:kb-add-document"))}
+            title={tAddDocument("addDocumentButton")}
+          >
+            <Plus className="h-4 w-4" />
+            <span>{tAddDocument("addDocumentButton")}</span>
+          </Button>
+        )}
+        {!knowledgeBankId && currentBank && (
           <Button
             variant="outline"
             size="sm"
@@ -1642,7 +1670,7 @@ function BankSelectorInner() {
   );
 }
 
-export function BankSelector() {
+export function BankSelector({ knowledgeBankId }: { knowledgeBankId?: string } = {}) {
   return (
     <Suspense
       fallback={
@@ -1683,7 +1711,7 @@ export function BankSelector() {
         </div>
       }
     >
-      <BankSelectorInner />
+      <BankSelectorInner knowledgeBankId={knowledgeBankId} />
     </Suspense>
   );
 }

@@ -31,6 +31,10 @@ export interface KnowledgeSchema {
   description: string | null;
   document_fields: Record<string, SchemaField>;
   passage_fields: Record<string, SchemaField>;
+  /** Documents written under this schema, and all documents in the bank. */
+  // Optional: a server older than these fields does not send them.
+  documents?: number;
+  bank_documents?: number;
   documents_with_fields: number;
   passages_with_fields: number;
   updated_at: string | null;

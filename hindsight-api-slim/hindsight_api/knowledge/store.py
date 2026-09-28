@@ -189,7 +189,13 @@ async def delete_schema(conn: Any, bank_id: str, schema_id: str) -> bool:
 
 
 async def schema_usage(conn: Any, bank_id: str, schema_id: str) -> dict[str, Any]:
-    """How much of the bank this schema has actually filled."""
+    """How much of the bank this schema owns, and how much of that it has actually filled."""
+    counts = await conn.fetchrow(
+        f"SELECT count(*) FILTER (WHERE schema_id = $2) AS owned, count(*) AS total "
+        f"FROM {fq_table('kb_documents')} WHERE bank_id = $1",
+        bank_id,
+        schema_id,
+    )
     documents = await conn.fetchval(
         f"SELECT count(*) FROM {fq_table('kb_documents')} "
         "WHERE bank_id = $1 AND schema_id = $2 AND fields <> '{}'::jsonb",
@@ -205,7 +211,12 @@ async def schema_usage(conn: Any, bank_id: str, schema_id: str) -> dict[str, Any
         bank_id,
         schema_id,
     )
-    return {"documents_with_fields": documents, "passages_with_fields": passages}
+    return {
+        "documents": counts["owned"],
+        "bank_documents": counts["total"],
+        "documents_with_fields": documents,
+        "passages_with_fields": passages,
+    }
 
 
 async def value_counts(conn: Any, bank_id: str, property_name: str, *, level: str) -> list[dict[str, Any]]:

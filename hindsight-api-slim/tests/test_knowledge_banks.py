@@ -437,3 +437,31 @@ async def test_the_map_is_every_passage_with_the_schema_it_belongs_to(kb_client)
     assert {row["schema_id"] for row in page["items"]} == {"city"}
     assert {row["doc_id"] for row in page["items"]} == {"milan", "turin"}
     assert all(len(row["snippet"]) <= 160 for row in page["items"])
+
+
+@pytest.mark.asyncio
+async def test_a_knowledge_bank_is_not_in_the_memory_bank_list(kb_client):
+    """The two lists are two kinds of bank, and the picker offers one of them at a time.
+
+    A knowledge bank is a `banks` row, so without this it appeared in the memory-bank
+    list — where choosing it opened a page that can say nothing about it.
+    """
+    kb = await _bank(kb_client)
+    memory_bank = f"mb-{uuid.uuid4().hex[:8]}"
+    created = await kb_client.put(f"/v1/default/banks/{memory_bank}", json={"name": memory_bank})
+    assert created.status_code in (200, 201), created.text
+
+    listed = await kb_client.get("/v1/default/banks", params={"limit": 500})
+    assert listed.status_code == 200, listed.text
+    ids = {bank["bank_id"] for bank in listed.json()["banks"]}
+    assert memory_bank in ids
+    assert kb not in ids
+
+    searched = await kb_client.get("/v1/default/banks", params={"q": kb, "limit": 50})
+    assert {bank["bank_id"] for bank in searched.json()["banks"]} == set()
+
+    # And the knowledge list is the other half of the same coin.
+    knowledge = (await kb_client.get("/v1/default/knowledge-banks", params={"limit": 500})).json()
+    knowledge_ids = {bank["bank_id"] for bank in knowledge["items"]}
+    assert kb in knowledge_ids
+    assert memory_bank not in knowledge_ids

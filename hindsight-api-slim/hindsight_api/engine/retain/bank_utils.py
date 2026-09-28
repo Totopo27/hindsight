@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Banks of this kind are knowledge banks: documents and passages, no memories. They are
+#: listed by their own endpoint, never by the memory-bank list.
+KNOWLEDGE_BANK_KIND = "knowledge"
+
 # Fact types that get per-bank partial vector indexes, mapped to their 4-char index suffix.
 _BANK_INDEX_FACT_TYPES: dict[str, str] = {
     "world": "worl",
@@ -704,14 +708,18 @@ async def list_banks(pool, *, search_query: str | None = None) -> list:
     # Spelled out as UPPER(...) LIKE UPPER(...) rather than ILIKE: the Oracle
     # rewriter only recognizes ILIKE on an unqualified column, and these are
     # alias-qualified.
-    where_clause = ""
+    # A knowledge bank is a `banks` row too, and it has no memories, no dispositions and
+    # no recall — listing it here put it in the memory-bank picker, where selecting it
+    # led to a page that could say nothing about it.
+    where_clause = f"WHERE b.kind <> '{KNOWLEDGE_BANK_KIND}'"
     params: list[str] = []
     if search_query:
         # Aliases are matched too, so searching the id a caller actually uses finds
         # the bank it reaches. Mid-migration that is the only id someone may know:
         # without this, the new id is live in the API but invisible in the picker.
         where_clause = (
-            "WHERE (UPPER(b.bank_id) LIKE UPPER($1) OR UPPER(COALESCE(b.name, '')) LIKE UPPER($2) "
+            f"WHERE b.kind <> '{KNOWLEDGE_BANK_KIND}' "
+            "AND (UPPER(b.bank_id) LIKE UPPER($1) OR UPPER(COALESCE(b.name, '')) LIKE UPPER($2) "
             f"OR EXISTS (SELECT 1 FROM {fq_table('bank_aliases')} a "
             "WHERE a.bank_id = b.bank_id AND UPPER(a.alias) LIKE UPPER($3)))"
         )
@@ -996,7 +1004,8 @@ async def _banks_by_created(pool, want: int) -> "list[BankWriteTime]":
             # `bank_id` breaks ties: banks created in one batch share a `created_at`, and without a
             # tiebreaker Postgres may order them differently for the page-1 LIMIT than for the
             # page-2 one, which shows up as a bank on both pages or on neither.
-            f"SELECT bank_id, created_at FROM {banks_table} ORDER BY created_at DESC NULLS LAST, bank_id DESC LIMIT $1",
+            f"SELECT bank_id, created_at FROM {banks_table} WHERE kind <> '{KNOWLEDGE_BANK_KIND}' "
+            "ORDER BY created_at DESC NULLS LAST, bank_id DESC LIMIT $1",
             want,
         )
     return [BankWriteTime(bank_id=r["bank_id"], last_write_at=_as_utc(r["created_at"]) or _UNIX_EPOCH) for r in rows]
@@ -1005,7 +1014,7 @@ async def _banks_by_created(pool, want: int) -> "list[BankWriteTime]":
 async def _count_banks(pool) -> int:
     banks_table = fq_table("banks")
     async with acquire_with_retry(pool) as conn:
-        row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {banks_table}")
+        row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {banks_table} WHERE kind <> '{KNOWLEDGE_BANK_KIND}'")
     return int(row["n"]) if row else 0
 
 
@@ -1070,7 +1079,7 @@ async def _bank_rows(pool, bank_ids: "list[str]") -> list:
                 WHERE bank_id = ANY($1::text[])
                 GROUP BY bank_id
             ) d ON d.bank_id = b.bank_id{fact_join}
-            WHERE b.bank_id = ANY($1::text[])
+            WHERE b.bank_id = ANY($1::text[]) AND b.kind <> '{KNOWLEDGE_BANK_KIND}'
             """,
             *params,
         )

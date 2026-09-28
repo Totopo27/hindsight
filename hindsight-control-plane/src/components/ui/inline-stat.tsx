@@ -36,10 +36,13 @@ export function InlineStat({
   icon: Icon,
   label,
   value,
+  suffix,
 }: {
   icon: LucideIcon;
   label: string;
   value: number;
+  /** Printed after the number, e.g. "%". */
+  suffix?: string;
 }) {
   return (
     <div className="flex items-center gap-3 p-4">
@@ -48,10 +51,10 @@ export function InlineStat({
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-xs text-muted-foreground font-medium">{label}</p>
-        <CompactNumber
-          value={value}
-          className="text-2xl font-semibold text-foreground leading-tight tabular-nums block"
-        />
+        <span className="text-2xl font-semibold text-foreground leading-tight tabular-nums block">
+          <CompactNumber value={value} />
+          {suffix}
+        </span>
       </div>
     </div>
   );
