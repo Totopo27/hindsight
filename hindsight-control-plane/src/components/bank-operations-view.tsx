@@ -138,9 +138,15 @@ const STATUS_FILTER_VALUES = [
   "cancelled",
 ] as const;
 
-export function BankOperationsView() {
+// bankId / operationTypes: for pages outside the memory-bank context (knowledge banks),
+// whose operations are other task types; default to the current bank and memory types.
+export function BankOperationsView({
+  bankId,
+  operationTypes = OPERATION_TYPE_VALUES,
+}: { bankId?: string; operationTypes?: readonly string[] } = {}) {
   const t = useTranslations("bankOperations");
-  const { currentBank } = useBank();
+  const bank = useBank();
+  const currentBank = bankId ?? bank.currentBank;
   const [operations, setOperations] = useState<Operation[]>([]);
   const [totalOperations, setTotalOperations] = useState(0);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -577,10 +583,10 @@ export function BankOperationsView() {
               <SelectValue placeholder={t("allTypes")} />
             </SelectTrigger>
             <SelectContent>
-              {OPERATION_TYPE_VALUES.map((value) => (
+              {operationTypes.map((value) => (
                 <SelectItem key={value} value={value}>
                   <div>
-                    <div>{operationTypeLabels[value]}</div>
+                    <div>{operationTypeLabels[value] ?? value}</div>
                     {value !== "all" && (
                       <div className="text-xs text-muted-foreground font-mono">{value}</div>
                     )}

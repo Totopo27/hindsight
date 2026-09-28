@@ -410,3 +410,30 @@ async def test_an_uploaded_file_becomes_a_searchable_document(kb_client):
         "results"
     ]
     assert hits[0]["document_id"] == documents[0]["doc_id"]
+
+
+@pytest.mark.asyncio
+async def test_the_map_is_every_passage_with_the_schema_it_belongs_to(kb_client):
+    """One request draws the whole bank: a point per passage, grouped by schema.
+
+    The snippet is cut server-side — a map that labels its points does not need the
+    corpus sent twice.
+    """
+    kb = await _bank(kb_client)
+    response = await kb_client.put(
+        f"/v1/default/knowledge-banks/{kb}/schemas/city",
+        json={"document_fields": {}, "passage_fields": {}},
+    )
+    assert response.status_code == 200, response.text
+    long_text = " ".join(f"Milan hosts fair number {i} for design and fashion." for i in range(200))
+    await _write(kb_client, kb, [{"id": "milan", "text": long_text, "schema_id": "city"}, DOCS[1]])
+
+    page = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/map")).json()
+    assert page["total"] == len(page["items"]) > 2
+    milan = [row for row in page["items"] if row["doc_id"] == "milan"]
+    assert len(milan) > 1, "a long document is several points, one per passage"
+    # A bank with exactly one schema applies it to a document that named none, so both
+    # documents are "city" here — the map reports what the write decided, not what it asked.
+    assert {row["schema_id"] for row in page["items"]} == {"city"}
+    assert {row["doc_id"] for row in page["items"]} == {"milan", "turin"}
+    assert all(len(row["snippet"]) <= 160 for row in page["items"])

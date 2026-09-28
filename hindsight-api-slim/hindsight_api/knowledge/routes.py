@@ -291,6 +291,19 @@ def build_router(get_request_context: Any) -> APIRouter:
     ):
         return await run(svc.list_documents(kb, limit, offset, q, schema_id))
 
+    @router.get(
+        "/{kb}/map",
+        summary="Every passage as a point, for a whole-bank picture",
+        description="One row per passage with its document, its schema and a snippet — what a map "
+        "view draws. Bounded by `limit`; the total says how much of the bank it covers.",
+    )
+    async def passage_map(
+        kb: str,
+        limit: int = Query(default=1000, ge=1, le=5000),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.passage_map(kb, limit))
+
     @router.get("/{kb}/documents/{doc_id:path}", summary="One document with its passages")
     async def get_document(kb: str, doc_id: str, svc: KnowledgeService = Depends(service)):
         return await run(svc.get_document(kb, doc_id))

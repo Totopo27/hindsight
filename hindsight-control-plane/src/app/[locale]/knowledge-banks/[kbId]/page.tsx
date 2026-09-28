@@ -3,7 +3,7 @@
 // A knowledge bank: its own page with a left rail (Overview · Documents · Search ·
 // Operations · Configuration), the same shell the memory-bank page uses.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -14,8 +14,11 @@ import {
   MoreVertical,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Activity,
   Search as SearchIcon,
   Settings as SettingsIcon,
+  Sparkles,
   Table2,
   Tags,
   Trash2,
@@ -48,6 +51,7 @@ import {
   Section as Section2,
   Segmented,
 } from "@/components/form-layout";
+import { Constellation } from "@/components/constellation";
 import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
 import { InlineStat, StatStrip } from "@/components/ui/inline-stat";
@@ -75,15 +79,37 @@ import {
   type KnowledgeBank,
   type KnowledgeDocument,
   type KnowledgeCollection,
-  type KnowledgeOperation,
   type QueryResult,
   type KnowledgeSchema,
+  type PassagePoint,
   type SchemaField,
   type SearchResult,
 } from "@/components/knowledge-bank-api";
 import { FilterBuilder } from "@/components/kb-filter-builder";
 import { SchemaEditor, type SchemaDraft } from "@/components/kb-schema-editor";
 import { withBasePath } from "@/lib/base-path";
+import { LLMRequestsView } from "@/components/llm-requests-view";
+import {
+  OperationsCard,
+  SectionHeading as StatsHeading,
+  type BankStats,
+} from "@/components/bank-stats-view";
+import { BankOperationsView } from "@/components/bank-operations-view";
+import { ConfigSection, FieldRow } from "@/components/bank-config-view";
+import { LlmHealthDialog } from "@/components/llm-health-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { client } from "@/lib/api";
+import { FeatureNotEnabled } from "@/components/feature-not-enabled";
+import { useFeatures } from "@/lib/features-context";
 
 const SECTIONS: KbSection[] = ["overview", "documents", "collections", "settings"];
 
@@ -161,17 +187,18 @@ export default function KnowledgeBankPage() {
     loadBank();
   }, [loadBank]);
 
-  // Search first, and so the default: a bank is asked questions far more often than its
-  // document list is read.
   const rawDocTab = searchParams.get("docTab");
   const docTab = (
-    rawDocTab === "schemas" || rawDocTab === "documents" ? rawDocTab : "search"
+    rawDocTab === "schemas" || rawDocTab === "search" ? rawDocTab : "documents"
   ) as DocTab;
   const goDocTab = (next: DocTab) =>
     router.push(`/knowledge-banks/${encodeURIComponent(kbId)}?section=documents&docTab=${next}`);
 
+  const rawSettingsTab = searchParams.get("settingsTab");
   const settingsTab = (
-    searchParams.get("settingsTab") === "configuration" ? "configuration" : "general"
+    rawSettingsTab === "configuration" || rawSettingsTab === "llm-requests"
+      ? rawSettingsTab
+      : "general"
   ) as SettingsTab;
 
   const go = (next: KbSection) =>
@@ -233,40 +260,57 @@ export default function KnowledgeBankPage() {
 
 /** The bank's numbers. Shown on Overview and again under Settings > General, which is
  *  where the memory banks put theirs. */
-function Stats({ bank, sub }: { bank: KnowledgeBank; sub?: boolean }) {
-  const stats = [
-    ["Documents", bank.documents],
-    ["Passages", bank.passages],
-    ["Writes in flight", bank.operations_in_flight ?? 0],
-    ["Last write", bank.last_write_at ? new Date(bank.last_write_at).toLocaleString() : "—"],
-  ] as const;
+function Stats({ bank }: { bank: KnowledgeBank }) {
+  // Operations by status come from the memory banks' stats endpoint: a knowledge bank's
+  // writes are ordinary async operations of its bank row.
+  const [byStatus, setByStatus] = useState<Record<string, number>>({});
+  useEffect(() => {
+    client
+      .getBankStats(bank.bank_id)
+      .then((s) => setByStatus((s as BankStats).operations_by_status ?? {}))
+      .catch(() => setByStatus({}));
+  }, [bank.bank_id, bank.operations_in_flight]);
+
   return (
-    <Section title="Overview" sub={sub} description="What is in this bank right now.">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {stats.map(([label, value]) => (
-          <div key={label}>
-            <div className="text-[12px] text-muted-foreground">{label}</div>
-            <div className="text-[20px] font-semibold">{value}</div>
-          </div>
-        ))}
-      </div>
-    </Section>
+    <div className="space-y-8">
+      <section>
+        <StatsHeading>Knowledge store</StatsHeading>
+        <StatStrip>
+          <InlineStat icon={FileText} label="Documents" value={bank.documents} />
+          <InlineStat icon={Layers} label="Passages" value={bank.passages} />
+          <InlineStat
+            icon={Activity}
+            label="Writes in flight"
+            value={bank.operations_in_flight ?? 0}
+          />
+        </StatStrip>
+        <p className="text-xs text-muted-foreground mt-2">
+          Last write: {bank.last_write_at ? new Date(bank.last_write_at).toLocaleString() : "never"}
+        </p>
+      </section>
+      <section>
+        <StatsHeading>Activity</StatsHeading>
+        <OperationsCard byStatus={byStatus} />
+      </section>
+    </div>
   );
 }
 
 function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) => void }) {
   return (
-    <div className="space-y-6">
-      <Stats bank={bank} />
-      <div className="flex gap-2">
-        <Button size="sm" variant="outline" onClick={() => onGo("documents")}>
-          <FileText className="w-4 h-4 mr-1" /> Documents
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => onGo("collections")}>
-          <Table2 className="w-4 h-4 mr-1" /> Collections
-        </Button>
+    <Section title="Overview" description="What is in this bank right now.">
+      <div className="space-y-6">
+        <Stats bank={bank} />
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => onGo("documents")}>
+            <FileText className="w-4 h-4 mr-1" /> Documents
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => onGo("collections")}>
+            <Table2 className="w-4 h-4 mr-1" /> Collections
+          </Button>
+        </div>
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -302,8 +346,8 @@ function DocumentsSection({
   }, [loadSchemas]);
 
   const tabs: { id: DocTab; label: string }[] = [
-    { id: "search", label: "Search" },
     { id: "documents", label: "Documents" },
+    { id: "search", label: "Search" },
     { id: "schemas", label: "Schemas" },
   ];
   return (
@@ -344,14 +388,15 @@ function DocumentsSection({
 function ViewToggle({
   value,
   onChange,
+  options = [
+    { id: "list" as const, label: "List", Icon: List },
+    { id: "diagram" as const, label: "Diagram", Icon: Network },
+  ],
 }: {
   value: "list" | "diagram";
   onChange: (view: "list" | "diagram") => void;
+  options?: { id: "list" | "diagram"; label: string; Icon: typeof List }[];
 }) {
-  const options = [
-    { id: "list" as const, label: "List", Icon: List },
-    { id: "diagram" as const, label: "Diagram", Icon: Network },
-  ];
   return (
     <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
       {options.map(({ id, label, Icon }) => (
@@ -392,6 +437,9 @@ function Documents({
   const fileInput = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [schemaFilter, setSchemaFilter] = useState("all");
+  // The map is what the tab opens on: a bank of a thousand passages is a shape before it
+  // is a list, and the shape is what says whether the schemas caught anything.
+  const [view, setView] = useState<"list" | "diagram">("diagram");
 
   // Both filters are the server's, as they are for a memory bank's documents: the list
   // is paginated, so filtering the page in the browser would filter the wrong set.
@@ -487,121 +535,143 @@ function Documents({
     <Section
       title="Documents"
       tab
-      description={`${total} document${total === 1 ? "" : "s"}. Writes are queued as operations and run in the background.`}
+      description="Writes are queued as operations and run in the background."
       action={
         <Button size="sm" onClick={() => setAdding(true)}>
           <Plus className="w-4 h-4 mr-1" /> Add document
         </Button>
       }
     >
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[220px] flex-1">
-          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by document id or title…"
-            className="pl-8 pr-8 h-9"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery("")}
-              aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
+      <div className="mb-6 flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          {total} document{total === 1 ? "" : "s"}
         </div>
-        <Select value={schemaFilter} onValueChange={setSchemaFilter}>
-          <SelectTrigger className="w-[200px] h-9" aria-label="Filter by schema">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent position="popper">
-            <SelectItem value="all">Any schema</SelectItem>
-            {schemas.map((schema) => (
-              <SelectItem key={schema.schema_id} value={schema.schema_id}>
-                {schema.schema_id}
-              </SelectItem>
-            ))}
-            {/* Not a missing filter: these are the documents nothing was extracted from. */}
-            <SelectItem value="none">No schema</SelectItem>
-          </SelectContent>
-        </Select>
-        {(searchQuery || schemaFilter !== "all") && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-9 gap-1 text-xs shrink-0"
-            onClick={() => {
-              setSearchQuery("");
-              setSchemaFilter("all");
-            }}
-          >
-            <X className="h-3.5 w-3.5" />
-            Clear filters
-          </Button>
-        )}
+        <ViewToggle
+          value={view}
+          onChange={setView}
+          options={[
+            { id: "diagram", label: "Map", Icon: Sparkles },
+            { id: "list", label: "List", Icon: List },
+          ]}
+        />
       </div>
 
-      {!documents ? (
-        <Spinner />
-      ) : documents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {searchQuery || schemaFilter !== "all"
-            ? "No documents match these filters."
-            : "Nothing written yet."}
-        </p>
-      ) : (
-        <TableFrame>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Document</TableHead>
-                <TableHead className="w-40">Schema</TableHead>
-                <TableHead className="w-48">Updated</TableHead>
-                <TableHead className="text-right w-24">Passages</TableHead>
-                <TableHead className="w-12" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {documents.map((doc) => (
-                <TableRow
-                  key={doc.doc_id}
-                  className="cursor-pointer"
-                  onClick={() => setOpen(doc.doc_id)}
+      {view === "diagram" && <PassageMap kbId={kbId} schemas={schemas} onOpen={setOpen} />}
+
+      {view === "list" && (
+        <>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[220px] flex-1">
+              <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search by document id or title…"
+                className="pl-8 pr-8 h-9"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
-                  <TableCell className="font-mono text-sm">
-                    {doc.doc_id}
-                    {doc.title && <div className="text-xs text-muted-foreground">{doc.title}</div>}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {doc.schema_id ? (
-                      <span className="font-mono">{doc.schema_id}</span>
-                    ) : (
-                      <span className="text-muted-foreground">none</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {new Date(doc.updated_at).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-right">{doc.passage_count}</TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      title="Delete"
-                      onClick={() => remove(doc.doc_id)}
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <Select value={schemaFilter} onValueChange={setSchemaFilter}>
+              <SelectTrigger className="w-[200px] h-9" aria-label="Filter by schema">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="all">Any schema</SelectItem>
+                {schemas.map((schema) => (
+                  <SelectItem key={schema.schema_id} value={schema.schema_id}>
+                    {schema.schema_id}
+                  </SelectItem>
+                ))}
+                {/* Not a missing filter: these are the documents nothing was extracted from. */}
+                <SelectItem value="none">No schema</SelectItem>
+              </SelectContent>
+            </Select>
+            {(searchQuery || schemaFilter !== "all") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 gap-1 text-xs shrink-0"
+                onClick={() => {
+                  setSearchQuery("");
+                  setSchemaFilter("all");
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+                Clear filters
+              </Button>
+            )}
+          </div>
+
+          {!documents ? (
+            <Spinner />
+          ) : documents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {searchQuery || schemaFilter !== "all"
+                ? "No documents match these filters."
+                : "Nothing written yet."}
+            </p>
+          ) : (
+            <TableFrame>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Document</TableHead>
+                    <TableHead className="w-40">Schema</TableHead>
+                    <TableHead className="w-48">Updated</TableHead>
+                    <TableHead className="text-right w-24">Passages</TableHead>
+                    <TableHead className="w-12" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {documents.map((doc) => (
+                    <TableRow
+                      key={doc.doc_id}
+                      className="cursor-pointer"
+                      onClick={() => setOpen(doc.doc_id)}
                     >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
+                      <TableCell className="font-mono text-sm">
+                        {doc.doc_id}
+                        {doc.title && (
+                          <div className="text-xs text-muted-foreground">{doc.title}</div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {doc.schema_id ? (
+                          <span className="font-mono">{doc.schema_id}</span>
+                        ) : (
+                          <span className="text-muted-foreground">none</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {new Date(doc.updated_at).toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-right">{doc.passage_count}</TableCell>
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Delete"
+                          onClick={() => remove(doc.doc_id)}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableFrame>
+          )}
+        </>
       )}
 
       <DocumentDetail kbId={kbId} docId={open} schemas={schemas} onClose={() => setOpen(null)} />
@@ -756,6 +826,119 @@ interface DocumentWithPassages extends KnowledgeDocument {
  *  document answered — and the same, per passage. A field the schema defines but nothing
  *  filled is shown empty rather than left out, because "we looked and found nothing" and
  *  "we never asked" are different answers. */
+/** The bank as a star field: one point per passage, clustered by the schema its document
+ *  was read with, and the passages of one document strung together. It answers what a
+ *  table cannot — is this bank one kind of thing or five, and did the schemas catch them
+ *  — in the time it takes to look. */
+function PassageMap({
+  kbId,
+  schemas,
+  onOpen,
+}: {
+  kbId: string;
+  schemas: KnowledgeSchema[];
+  onOpen: (docId: string) => void;
+}) {
+  const [points, setPoints] = useState<PassagePoint[] | null>(null);
+  const [total, setTotal] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    kbFetch<{ items: PassagePoint[]; total: number }>(`/${encodeURIComponent(kbId)}/map?limit=1500`)
+      .then((page) => {
+        if (!live) return;
+        setPoints(page.items);
+        setTotal(page.total);
+      })
+      .catch((e) => toast.error((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [kbId]);
+
+  const data = useMemo(() => {
+    const items = points ?? [];
+    const nodes = items.map((point) => ({
+      id: `${point.doc_id}#${point.passage_index}`,
+      label: point.snippet.slice(0, 60),
+      group: point.schema_id ?? "no schema",
+      // Size is the passage's length: a map of a corpus should show where its weight is.
+      size: point.token_count,
+      metadata: { doc_id: point.doc_id, title: point.title },
+    }));
+    // A document is a thread through its own passages, so a long document reads as a
+    // constellation rather than as unrelated dots.
+    const links = items.slice(1).flatMap((point, i) => {
+      const previous = items[i];
+      return previous.doc_id === point.doc_id
+        ? [
+            {
+              source: `${previous.doc_id}#${previous.passage_index}`,
+              target: `${point.doc_id}#${point.passage_index}`,
+            },
+          ]
+        : [];
+    });
+    return { nodes, links };
+  }, [points]);
+
+  const palette = useMemo(() => {
+    const colors = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#06b6d4", "#8b5cf6"];
+    const keys = [...schemas.map((schema) => schema.schema_id), "no schema"];
+    return new Map(
+      keys.map((key, i) => [key, key === "no schema" ? "#94a3b8" : colors[i % colors.length]])
+    );
+  }, [schemas]);
+
+  if (!points) return <Spinner />;
+  if (points.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Nothing written yet — the map fills in as documents arrive.
+      </p>
+    );
+  }
+
+  const bySchema = new Map<string, number>();
+  for (const point of points) {
+    const key = point.schema_id ?? "no schema";
+    bySchema.set(key, (bySchema.get(key) ?? 0) + 1);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-border bg-card overflow-hidden">
+        <Constellation
+          data={data}
+          height={520}
+          nodeSizeFn={(node) => 2 + Math.min(6, Math.sqrt((node.size ?? 1) / 20))}
+          clusterKeyFn={(node) => node.group ?? null}
+          clusterColorFn={(key) => palette.get(key) ?? "#94a3b8"}
+          clusterLabelFn={(key) => key}
+          sizeLegendLabel="passage length"
+          onNodeClick={(node) => onOpen(String(node.metadata?.doc_id ?? ""))}
+          compactLabels
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          {points.length.toLocaleString()} of {total.toLocaleString()} passages
+        </span>
+        {[...bySchema.entries()].map(([key, count]) => (
+          <span key={key} className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: palette.get(key) ?? "#94a3b8" }}
+            />
+            <span className="font-mono">{key}</span>
+            <span>{count}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DocumentDetail({
   kbId,
   docId,
@@ -1992,64 +2175,16 @@ function ResultTable({ result }: { result: QueryResult }) {
   );
 }
 
-function Operations({ kbId }: { kbId: string }) {
-  const [operations, setOperations] = useState<KnowledgeOperation[] | null>(null);
+// The task types a knowledge bank queues, for the shared operations list's filter.
+const KB_OPERATION_TYPES = [
+  "all",
+  "knowledge_write_batch",
+  "knowledge_file_convert",
+  "knowledge_extract_fields",
+  "knowledge_derive_records",
+] as const;
 
-  useEffect(() => {
-    const load = () =>
-      kbFetch<{ operations: KnowledgeOperation[] }>(
-        `/${encodeURIComponent(kbId)}/operations?limit=50`
-      )
-        .then((r) => setOperations(r.operations))
-        .catch((e) => toast.error((e as Error).message));
-    load();
-    const timer = setInterval(load, 4000); // writes are async: keep the list live
-    return () => clearInterval(timer);
-  }, [kbId]);
-
-  return (
-    <Section
-      title="Operations"
-      sub
-      description="Every write is an operation; this list refreshes itself."
-    >
-      {!operations ? (
-        <Spinner />
-      ) : operations.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No writes yet.</p>
-      ) : (
-        <TableFrame>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Detail</TableHead>
-                <TableHead>Updated</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {operations.map((op) => (
-                <TableRow key={op.id}>
-                  <TableCell className="font-mono text-xs">{op.task_type}</TableCell>
-                  <TableCell>{op.status}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {op.error_message ?? op.details ?? ""}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {op.updated_at ? new Date(op.updated_at).toLocaleTimeString() : ""}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
-      )}
-    </Section>
-  );
-}
-
-type SettingsTab = "general" | "configuration";
+type SettingsTab = "general" | "configuration" | "llm-requests";
 
 /** Settings, laid out like a memory bank's: General carries the stats and the write
  *  operations, Configuration carries the per-bank settings. */
@@ -2067,14 +2202,19 @@ function SettingsPanel({
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: "general", label: "General" },
     { id: "configuration", label: "Configuration" },
+    { id: "llm-requests", label: "LLM Requests" },
   ];
+  const { features } = useFeatures();
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2 text-foreground">Settings</h1>
-        <p className="text-muted-foreground">
-          What is in this bank, what it is doing, and how it is configured.
-        </p>
+      <div className="flex justify-between items-start mb-6">
+        <div>
+          <h1 className="text-3xl font-bold mb-2 text-foreground">Settings</h1>
+          <p className="text-muted-foreground">
+            What is in this bank, what it is doing, and how it is configured.
+          </p>
+        </div>
+        <SettingsActions kbId={kbId} />
       </div>
       <div className="border-b border-border mb-6 flex">
         {tabs.map((item) => (
@@ -2094,91 +2234,359 @@ function SettingsPanel({
       </div>
       {tab === "general" ? (
         <div className="space-y-8">
-          <Stats bank={bank} sub />
-          <Operations kbId={kbId} />
+          <Stats bank={bank} />
+          <BankOperationsView bankId={kbId} operationTypes={KB_OPERATION_TYPES} />
+        </div>
+      ) : tab === "configuration" ? (
+        <Configuration kbId={kbId} />
+      ) : features?.llm_trace ? (
+        <div>
+          <p className="text-sm text-muted-foreground mb-4">
+            Every LLM call this bank made while extracting fields and records.
+          </p>
+          <LLMRequestsView bankId={kbId} />
         </div>
       ) : (
-        <Configuration kbId={kbId} />
+        <FeatureNotEnabled
+          title="LLM request tracing is not enabled"
+          description={
+            <>
+              Set{" "}
+              <code className="px-1 py-0.5 bg-muted rounded text-xs">
+                HINDSIGHT_API_LLM_TRACE_ENABLED=true
+              </code>{" "}
+              on the API to record them.
+            </>
+          }
+        />
       )}
     </div>
   );
 }
 
+type KbConfigField = {
+  key: string;
+  label: string;
+  description: string;
+  kind: "number" | "boolean";
+};
+
+// Grouped the way the memory-bank Configuration groups its settings: one card per stage,
+// each with its own Save. Descriptions follow docs/developer/configuration.mdx.
+const KB_CONFIG_SECTIONS: { title: string; description: string; fields: KbConfigField[] }[] = [
+  {
+    title: "Passages",
+    description: "How documents are cut into passages on write.",
+    fields: [
+      {
+        key: "kb_passage_size",
+        label: "Passage size",
+        description: "Tokens per passage, cut on paragraph, then sentence, then word boundaries.",
+        kind: "number",
+      },
+      {
+        key: "kb_passage_overlap",
+        label: "Passage overlap",
+        description: "Tokens of the previous passage repeated at the start of the next.",
+        kind: "number",
+      },
+    ],
+  },
+  {
+    title: "Search",
+    description: "How search finds and ranks passages.",
+    fields: [
+      {
+        key: "kb_search_candidates",
+        label: "Candidates",
+        description:
+          "Candidates each arm (vector, keyword) contributes before fusion and reranking.",
+        kind: "number",
+      },
+      {
+        key: "kb_search_vector_weight",
+        label: "Vector weight",
+        description: "Weight of the vector arm in the fusion; keyword gets the rest. 0.5 is even.",
+        kind: "number",
+      },
+      {
+        key: "kb_search_rerank",
+        label: "Rerank",
+        description: "Rerank the fused candidates with the configured reranker.",
+        kind: "boolean",
+      },
+    ],
+  },
+  {
+    title: "Extraction",
+    description: "How the LLM fills schema fields and records.",
+    fields: [
+      {
+        key: "kb_field_extraction",
+        label: "Field extraction",
+        description: "Fill the bank's schema fields with the LLM on write.",
+        kind: "boolean",
+      },
+      {
+        key: "kb_schema_classification",
+        label: "Schema classification",
+        description: "With several schemas and none given on write, ask the LLM which one fits.",
+        kind: "boolean",
+      },
+      {
+        key: "kb_field_extraction_max_chars",
+        label: "Max characters",
+        description: "How much of a document (and of a passage) the extraction LLM reads.",
+        kind: "number",
+      },
+      {
+        key: "kb_field_extraction_concurrency",
+        label: "Concurrency",
+        description: "Passage-level extraction calls run at once per document.",
+        kind: "number",
+      },
+      {
+        key: "kb_record_identity_similarity",
+        label: "Record name similarity",
+        description:
+          "How close a misspelled record name must be to match an existing one. 0 is off.",
+        kind: "number",
+      },
+    ],
+  },
+];
+
 function Configuration({ kbId }: { kbId: string }) {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const fields = [
-    "kb_passage_size",
-    "kb_passage_overlap",
-    "kb_search_candidates",
-    "kb_search_rerank",
-    "kb_search_vector_weight",
-    "kb_field_extraction",
-    "kb_schema_classification",
-    "kb_record_identity_similarity",
-  ];
-  const booleans = ["kb_search_rerank", "kb_field_extraction", "kb_schema_classification"];
 
   const load = useCallback(async () => {
     // Bank config is the memory banks' endpoint: a knowledge bank is a bank row.
     const response = await fetch(withBasePath(`/api/banks/${encodeURIComponent(kbId)}/config`));
     const data = await response.json();
     setConfig(data.config ?? {});
-    setDraft(Object.fromEntries(fields.map((f) => [f, String(data.config?.[f] ?? "")])));
   }, [kbId]);
 
   useEffect(() => {
     load().catch((e) => toast.error((e as Error).message));
   }, [load]);
 
-  const save = async () => {
-    const updates: Record<string, unknown> = {};
-    for (const field of fields) {
-      const value = draft[field];
-      updates[field] = booleans.includes(field) ? value === "true" : Number(value);
-    }
-    const response = await fetch(withBasePath(`/api/banks/${encodeURIComponent(kbId)}/config`), {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ updates }),
-    });
-    if (!response.ok) {
-      toast.error(`Could not save: HTTP ${response.status}`);
-      return;
-    }
-    toast.success("Saved. It applies to the next write and the next search.");
-    await load();
-  };
-
   if (!config) return <Spinner />;
   return (
-    <Section title="Configuration" tab description="Chunking and search settings for this bank.">
-      <div className="grid gap-3 md:grid-cols-2">
-        {fields.map((field) => (
-          <label key={field} className="text-sm space-y-1">
-            <span className="font-mono text-xs text-muted-foreground">{field}</span>
-            {booleans.includes(field) ? (
-              <select
-                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                value={draft[field]}
-                onChange={(e) => setDraft({ ...draft, [field]: e.target.value })}
-              >
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            ) : (
-              <Input
-                type="number"
-                value={draft[field]}
-                onChange={(e) => setDraft({ ...draft, [field]: e.target.value })}
-              />
-            )}
-          </label>
-        ))}
-      </div>
-      <Button className="mt-4" size="sm" onClick={save}>
-        Save
-      </Button>
-    </Section>
+    <div className="space-y-8">
+      {KB_CONFIG_SECTIONS.map((section) => (
+        <KbConfigSection
+          key={section.title}
+          kbId={kbId}
+          config={config}
+          onSaved={load}
+          {...section}
+        />
+      ))}
+    </div>
+  );
+}
+
+function KbConfigSection({
+  kbId,
+  config,
+  onSaved,
+  title,
+  description,
+  fields,
+}: {
+  kbId: string;
+  config: Record<string, unknown>;
+  onSaved: () => Promise<void>;
+  title: string;
+  description: string;
+  fields: KbConfigField[];
+}) {
+  const initial = useCallback(
+    () => Object.fromEntries(fields.map((f) => [f.key, String(config[f.key] ?? "")])),
+    [config, fields]
+  );
+  const [draft, setDraft] = useState<Record<string, string>>(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => setDraft(initial()), [initial]);
+
+  const dirty = fields.some((f) => draft[f.key] !== String(config[f.key] ?? ""));
+
+  const save = async () => {
+    const updates = Object.fromEntries(
+      fields.map((f) => [
+        f.key,
+        f.kind === "boolean" ? draft[f.key] === "true" : Number(draft[f.key]),
+      ])
+    );
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(withBasePath(`/api/banks/${encodeURIComponent(kbId)}/config`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+      if (!response.ok) {
+        setError(`Could not save: HTTP ${response.status}`);
+        return;
+      }
+      toast.success("Saved. It applies to the next write and the next search.");
+      await onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ConfigSection
+      title={title}
+      description={description}
+      error={error}
+      dirty={dirty}
+      saving={saving}
+      onSave={save}
+    >
+      {fields.map((field) => (
+        <FieldRow key={field.key} label={field.label} description={field.description}>
+          {field.kind === "boolean" ? (
+            <Select
+              value={draft[field.key]}
+              onValueChange={(v) => setDraft({ ...draft, [field.key]: v })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="true">On</SelectItem>
+                <SelectItem value="false">Off</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              type="number"
+              value={draft[field.key]}
+              onChange={(e) => setDraft({ ...draft, [field.key]: e.target.value })}
+            />
+          )}
+        </FieldRow>
+      ))}
+    </ConfigSection>
+  );
+}
+
+/** The Settings actions menu, as the memory banks have it — minus the memory-only
+ *  operations (consolidation, observations, clone). */
+function SettingsActions({ kbId }: { kbId: string }) {
+  const router = useRouter();
+  const { features } = useFeatures();
+  const [showHealth, setShowHealth] = useState(false);
+  const [confirm, setConfirm] = useState<"delete" | "reset" | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      if (confirm === "delete") {
+        await kbFetch(`/${encodeURIComponent(kbId)}`, { method: "DELETE" });
+        router.push("/knowledge-banks");
+      } else {
+        await client.resetBankConfig(kbId);
+        toast.success("Configuration reset to the server defaults.");
+        // The Configuration tab loads on mount; a reload shows the defaults.
+        router.refresh();
+      }
+      setConfirm(null);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm">
+            Actions
+            <MoreVertical className="w-4 h-4 ml-2" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          {features?.bank_llm_health && (
+            <>
+              <DropdownMenuItem onClick={() => setShowHealth(true)}>
+                <Activity className="w-4 h-4 mr-2" />
+                Health
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          <DropdownMenuItem
+            onClick={() => setConfirm("reset")}
+            disabled={!features?.bank_config_api}
+            className="text-amber-600 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-300"
+          >
+            <RotateCcw className="w-4 h-4 mr-2" />
+            Reset configuration
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() => setConfirm("delete")}
+            className="text-red-600 dark:text-red-400 focus:text-red-700 dark:focus:text-red-300"
+          >
+            <Trash2 className="w-4 h-4 mr-2" />
+            Delete bank
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <LlmHealthDialog bankId={kbId} open={showHealth} onOpenChange={setShowHealth} />
+
+      <AlertDialog open={confirm !== null} onOpenChange={(open) => !open && setConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirm === "delete" ? "Delete knowledge bank" : "Reset configuration"}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  {confirm === "delete" ? "Delete " : "Reset the configuration of "}
+                  <span className="font-semibold text-foreground">{kbId}</span>?
+                </p>
+                {confirm === "delete" ? (
+                  <p className="text-red-600 dark:text-red-400 font-medium">
+                    Every document, passage, schema, collection and record goes with it. This cannot
+                    be undone.
+                  </p>
+                ) : (
+                  <p className="text-amber-600 dark:text-amber-400 font-medium">
+                    Every per-bank setting goes back to the server default.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={run}
+              disabled={busy}
+              className={
+                confirm === "delete"
+                  ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  : undefined
+              }
+            >
+              {busy && <Spinner size="sm" className="mr-2" />}
+              {confirm === "delete" ? "Delete bank" : "Reset configuration"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

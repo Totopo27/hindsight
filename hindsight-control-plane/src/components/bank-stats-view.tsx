@@ -187,7 +187,7 @@ function ChartTooltip({ active, payload, label, valueLabel }: ChartTooltipProps)
   );
 }
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
+export function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
     <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.08em] mb-3">
       {children}
@@ -370,7 +370,7 @@ interface OpsStatusEntry {
   color: string;
 }
 
-function OperationsCard({ byStatus }: { byStatus: Record<string, number> }) {
+export function OperationsCard({ byStatus }: { byStatus: Record<string, number> }) {
   const t = useTranslations("bankStats");
   const statusLabel: Record<string, string> = {
     completed: t("opsCompleted"),

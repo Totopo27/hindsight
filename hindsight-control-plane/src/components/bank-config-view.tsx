@@ -1892,7 +1892,7 @@ function ToolSelector({
 
 // ─── ConfigSection ────────────────────────────────────────────────────────────
 
-function ConfigSection({
+export function ConfigSection({
   title,
   description,
   children,
@@ -2141,7 +2141,7 @@ function BankAliasRows({ bankId }: { bankId: string | null }) {
 
 // ─── FieldRow (2-column layout for number / select / boolean) ─────────────────
 
-function FieldRow({
+export function FieldRow({
   label,
   description,
   children,

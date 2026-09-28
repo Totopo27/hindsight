@@ -513,6 +513,75 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/map": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Every passage as a point, for a whole-bank picture",
+        "description": "One row per passage with its document, its schema and a snippet \u2014 what a map view draws. Bounded by `limit`; the total says how much of the bank it covers.",
+        "operationId": "passage_map_v1_default_knowledge_banks__kb__map_get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 1,
+              "default": 1000,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/documents/{doc_id}": {
       "get": {
         "tags": [

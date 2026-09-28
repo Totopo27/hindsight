@@ -121,3 +121,13 @@ export async function kbUpload(
   }
   return data as { operation_ids: string[] };
 }
+
+/** One passage as a point on the bank's map. */
+export interface PassagePoint {
+  doc_id: string;
+  passage_index: number;
+  token_count: number;
+  schema_id: string | null;
+  title: string | null;
+  snippet: string;
+}

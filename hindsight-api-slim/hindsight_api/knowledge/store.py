@@ -374,6 +374,29 @@ async def get_document(conn: Any, bank_id: str, doc_id: str) -> dict[str, Any] |
     }
 
 
+async def passage_map(conn: Any, bank_id: str, limit: int) -> list[dict[str, Any]]:
+    """Every passage as a point: which document and schema it belongs to, and a snippet.
+
+    One query for a whole-bank picture. The text is cut to a snippet because the map
+    labels points with it — sending whole passages to draw dots would be sending the
+    corpus twice.
+    """
+    rows = await conn.fetch(
+        f"""
+        SELECT c.doc_id, c.passage_index, c.token_count, d.schema_id, d.title,
+               left(c.text, 160) AS snippet
+        FROM {fq_table("kb_passages")} c
+        JOIN {fq_table("kb_documents")} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id
+        WHERE c.bank_id = $1
+        ORDER BY d.updated_at DESC, c.doc_id, c.passage_index
+        LIMIT $2
+        """,
+        bank_id,
+        limit,
+    )
+    return [dict(row) for row in rows]
+
+
 async def delete_document(conn: Any, bank_id: str, doc_id: str) -> bool:
     deleted = await conn.fetchval(
         f"DELETE FROM {fq_table('kb_documents')} WHERE bank_id = $1 AND doc_id = $2 RETURNING doc_id",

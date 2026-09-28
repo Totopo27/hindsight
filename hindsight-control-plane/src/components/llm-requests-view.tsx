@@ -781,11 +781,13 @@ function LLMRequestChart({ bankId }: { bankId: string }) {
 
 // ---- Main Component ----
 
-export function LLMRequestsView() {
+// bankId: for pages outside the memory-bank context (knowledge banks); defaults to the current bank.
+export function LLMRequestsView({ bankId }: { bankId?: string } = {}) {
   const t = useTranslations("llmRequestsView");
   const statusOptions = getStatusOptions(t);
   const operationOptions = getOperationOptions(t);
-  const { currentBank } = useBank();
+  const bank = useBank();
+  const currentBank = bankId ?? bank.currentBank;
   const [requests, setRequests] = useState<LLMRequestEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);

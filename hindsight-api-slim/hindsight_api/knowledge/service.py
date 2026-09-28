@@ -1317,6 +1317,16 @@ class KnowledgeService:
         async with acquire_with_retry(await self._pool()) as conn:
             return await store.list_documents(conn, bank_id, limit, offset, query, schema_id)
 
+    async def passage_map(self, bank_id: str, limit: int) -> dict[str, Any]:
+        """The bank's passages as points, for the map view."""
+        await self._require_bank(bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            items = await store.passage_map(conn, bank_id, limit)
+            total = await conn.fetchval(
+                f"SELECT count(*) FROM {store.fq_table('kb_passages')} WHERE bank_id = $1", bank_id
+            )
+        return {"items": items, "total": total, "limit": limit}
+
     async def get_document(self, bank_id: str, doc_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
