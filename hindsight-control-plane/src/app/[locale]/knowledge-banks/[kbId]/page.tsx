@@ -50,7 +50,7 @@ const SECTIONS: KbSection[] = [
   "schemas",
   "collections",
   "operations",
-  "configuration",
+  "settings",
 ];
 
 function Card({
@@ -106,8 +106,17 @@ export default function KnowledgeBankPage() {
     loadBank();
   }, [loadBank]);
 
+  const settingsTab = (
+    searchParams.get("settingsTab") === "configuration" ? "configuration" : "general"
+  ) as SettingsTab;
+
   const go = (next: KbSection) =>
     router.push(`/knowledge-banks/${encodeURIComponent(kbId)}?section=${next}`);
+
+  const goSettingsTab = (next: SettingsTab) =>
+    router.push(
+      `/knowledge-banks/${encodeURIComponent(kbId)}?section=settings&settingsTab=${next}`
+    );
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -144,7 +153,14 @@ export default function KnowledgeBankPage() {
                   {section === "schemas" && <SchemaPanel kbId={kbId} />}
                   {section === "collections" && <CollectionsPanel kbId={kbId} />}
                   {section === "operations" && <Operations kbId={kbId} />}
-                  {section === "configuration" && <Configuration kbId={kbId} />}
+                  {section === "settings" && (
+                    <SettingsPanel
+                      kbId={kbId}
+                      bank={bank}
+                      tab={settingsTab}
+                      onTab={goSettingsTab}
+                    />
+                  )}
                 </div>
               </>
             )}
@@ -155,7 +171,9 @@ export default function KnowledgeBankPage() {
   );
 }
 
-function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) => void }) {
+/** The bank's numbers. Shown on Overview and again under Settings > General, which is
+ *  where the memory banks put theirs. */
+function Stats({ bank }: { bank: KnowledgeBank }) {
   const stats = [
     ["Documents", bank.documents],
     ["Passages", bank.passages],
@@ -172,7 +190,15 @@ function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) =>
           </div>
         ))}
       </div>
-      <div className="mt-4 flex gap-2">
+    </Card>
+  );
+}
+
+function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) => void }) {
+  return (
+    <>
+      <Stats bank={bank} />
+      <div className="flex gap-2">
         <Button size="sm" variant="outline" onClick={() => onGo("documents")}>
           <FileText className="w-4 h-4 mr-1" /> Documents
         </Button>
@@ -180,7 +206,7 @@ function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) =>
           <SearchIcon className="w-4 h-4 mr-1" /> Search
         </Button>
       </div>
-    </Card>
+    </>
   );
 }
 
@@ -1188,6 +1214,61 @@ function Operations({ kbId }: { kbId: string }) {
         </Table>
       )}
     </Card>
+  );
+}
+
+type SettingsTab = "general" | "configuration";
+
+/** Settings, laid out like a memory bank's: General carries the stats and the write
+ *  operations, Configuration carries the per-bank settings. */
+function SettingsPanel({
+  kbId,
+  bank,
+  tab,
+  onTab,
+}: {
+  kbId: string;
+  bank: KnowledgeBank;
+  tab: SettingsTab;
+  onTab: (tab: SettingsTab) => void;
+}) {
+  const tabs: { id: SettingsTab; label: string }[] = [
+    { id: "general", label: "General" },
+    { id: "configuration", label: "Configuration" },
+  ];
+  return (
+    <div>
+      <div className="mb-6">
+        <h2 className="text-[20px] font-semibold leading-[26px]">Settings</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          What is in this bank, what it is doing, and how it is configured.
+        </p>
+      </div>
+      <div className="border-b border-border mb-6 flex">
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onTab(item.id)}
+            className={`px-6 py-3 font-semibold text-sm transition-all relative ${
+              tab === item.id ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {item.label}
+            {tab === item.id && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
+            )}
+          </button>
+        ))}
+      </div>
+      {tab === "general" ? (
+        <div className="space-y-5">
+          <Stats bank={bank} />
+          <Operations kbId={kbId} />
+        </div>
+      ) : (
+        <Configuration kbId={kbId} />
+      )}
+    </div>
   );
 }
 
