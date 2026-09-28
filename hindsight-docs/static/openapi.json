@@ -2035,6 +2035,71 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/stats": {
+      "get": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "What a collection holds: records, the documents behind them, field coverage",
+        "operationId": "collection_stats_v1_default_knowledge_banks__kb__collections__collection_id__stats_get",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/records/{record_id}": {
       "get": {
         "tags": [

@@ -16,7 +16,6 @@ import {
   RefreshCw,
   RotateCcw,
   Activity,
-  Link2,
   Search as SearchIcon,
   Settings as SettingsIcon,
   Sparkles,
@@ -54,6 +53,7 @@ import {
 } from "@/components/form-layout";
 import { Constellation } from "@/components/constellation";
 import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
+import { QueryBuilder } from "@/components/kb-query-builder";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
 import { InlineStat, StatStrip } from "@/components/ui/inline-stat";
 import { Spinner } from "@/components/ui/spinner";
@@ -81,6 +81,7 @@ import {
   type KnowledgeDocument,
   type KnowledgeCollection,
   type QueryResult,
+  type CollectionStats,
   type KnowledgeRecord,
   type KnowledgeRecordDetail,
   type KnowledgeSchema,
@@ -247,7 +248,7 @@ export default function KnowledgeBankPage() {
             ) : (
               <>
                 <div>
-                  {section === "overview" && <Overview bank={bank} onGo={go} />}
+                  {section === "overview" && <Overview bank={bank} />}
                   {section === "documents" && (
                     <DocumentsSection
                       kbId={kbId}
@@ -314,19 +315,118 @@ function Stats({ bank }: { bank: KnowledgeBank }) {
   );
 }
 
-function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) => void }) {
+function Overview({ bank }: { bank: KnowledgeBank }) {
+  const router = useRouter();
+  const [schemas, setSchemas] = useState<KnowledgeSchema[] | null>(null);
+  const [collections, setCollections] = useState<KnowledgeCollection[] | null>(null);
+  const [byStatus, setByStatus] = useState<Record<string, number>>({});
+  const id = encodeURIComponent(bank.bank_id);
+
+  useEffect(() => {
+    kbFetch<{ items: KnowledgeSchema[] }>(`/${id}/schemas`)
+      .then((r) => setSchemas(r.items))
+      .catch(() => setSchemas([]));
+    kbFetch<{ items: KnowledgeCollection[] }>(`/${id}/collections`)
+      .then((r) => setCollections(r.items))
+      .catch(() => setCollections([]));
+    client
+      .getBankStats(bank.bank_id)
+      .then((s) => setByStatus((s as BankStats).operations_by_status ?? {}))
+      .catch(() => setByStatus({}));
+  }, [id, bank.bank_id, bank.operations_in_flight]);
+
+  const records = (collections ?? []).reduce((sum, c) => sum + (c.records ?? 0), 0);
+  const open = (query: string) => router.push(`/knowledge-banks/${id}?${query}`);
+  const links = [
+    {
+      icon: FileText,
+      title: "Documents",
+      text: "Browse what was written and the fields pulled from it.",
+      query: "section=documents&docTab=documents",
+    },
+    {
+      icon: SearchIcon,
+      title: "Search",
+      text: "Hybrid search over the passages, filtered by fields.",
+      query: "section=documents&docTab=search",
+    },
+    {
+      icon: Tags,
+      title: "Schemas",
+      text: "The fields each kind of document has.",
+      query: "section=documents&docTab=schemas",
+    },
+    {
+      icon: Table2,
+      title: "Collections",
+      text: "Records derived from documents, queried like tables.",
+      query: "section=collections",
+    },
+  ];
+
   return (
-    <Section title="Overview" description="What is in this bank right now.">
-      <div className="space-y-6">
-        <Stats bank={bank} />
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => onGo("documents")}>
-            <FileText className="w-4 h-4 mr-1" /> Documents
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => onGo("collections")}>
-            <Table2 className="w-4 h-4 mr-1" /> Collections
-          </Button>
+    <Section
+      title="Overview"
+      description={
+        bank.last_write_at
+          ? `What is in this bank right now. Last write ${new Date(bank.last_write_at).toLocaleString()}.`
+          : "What is in this bank right now. Nothing written yet."
+      }
+    >
+      <div className="space-y-8">
+        <StatStrip className="sm:grid-cols-5">
+          <InlineStat icon={FileText} label="Documents" value={bank.documents} />
+          <InlineStat icon={Layers} label="Passages" value={bank.passages} />
+          <InlineStat icon={Tags} label="Schemas" value={schemas?.length ?? 0} />
+          <InlineStat icon={Table2} label="Collections" value={collections?.length ?? 0} />
+          <InlineStat icon={List} label="Records" value={records} />
+        </StatStrip>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2">
+            {schemas && schemas.length > 0 ? (
+              <SchemaShareCard schemas={schemas} />
+            ) : (
+              <div className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground h-full flex items-center">
+                No schema yet: documents are searchable, but carry no fields. Add one under
+                Documents › Schemas.
+              </div>
+            )}
+          </div>
+          <OperationsCard byStatus={byStatus} />
         </div>
+
+        <section>
+          <StatsHeading>How a knowledge bank works</StatsHeading>
+          <div className="rounded-lg border border-border bg-card p-4 overflow-x-auto">
+            <img
+              src={withBasePath("/img/knowledge/how-knowledge-banks-work.svg")}
+              alt="A Document is kept as Passages. A Schema says which Fields a kind of document has; a Collection keeps one Record per thing across documents. Search finds passages; Query filters and counts on fields and records."
+              className="w-full max-w-[900px] mx-auto"
+            />
+          </div>
+        </section>
+
+        <section>
+          <StatsHeading>Go to</StatsHeading>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {links.map((link) => (
+              <button
+                key={link.title}
+                onClick={() => open(link.query)}
+                className="text-left rounded-lg border border-border bg-card p-4 hover:border-primary/50 hover:bg-muted/40 transition-colors"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="p-1.5 rounded-md bg-muted">
+                    <link.icon className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                  <span className="font-semibold text-sm">{link.title}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">{link.text}</p>
+              </button>
+            ))}
+          </div>
+        </section>
       </div>
     </Section>
   );
@@ -1482,7 +1582,11 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
         </Button>
       }
     >
-      {schemas.length > 0 && <SchemaShareCard schemas={schemas} />}
+      {schemas.length > 0 && (
+        <div className="mb-6">
+          <SchemaShareCard schemas={schemas} />
+        </div>
+      )}
       <div className="mb-6 flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
           {schemas.length} schema{schemas.length === 1 ? "" : "s"}
@@ -1697,7 +1801,7 @@ function SchemaShareCard({ schemas }: { schemas: KnowledgeSchema[] }) {
   const bankTotal = schemas[0]?.bank_documents ?? 0;
   const assigned = schemas.reduce((sum, s) => sum + (s.documents ?? 0), 0);
   return (
-    <div className="mb-6 rounded-lg border border-border bg-card p-5">
+    <div className="rounded-lg border border-border bg-card p-5 h-full">
       <Distribution
         title="Documents by schema"
         items={[
@@ -2093,19 +2197,7 @@ function CollectionDefinitions({
                   </div>
                 </div>
 
-                <StatStrip className="mb-4">
-                  <InlineStat
-                    icon={Table2}
-                    label="Fields"
-                    value={Object.keys(current.fields).length}
-                  />
-                  <InlineStat icon={Layers} label="Records" value={current.records ?? 0} />
-                  <InlineStat
-                    icon={Link2}
-                    label="Relationships"
-                    value={Object.values(current.fields).filter((spec) => spec.collection).length}
-                  />
-                </StatStrip>
+                <CollectionData kbId={kbId} collection={current} />
 
                 <ErdDiagram nodes={[collectionCard(current)]} edges={[]} />
               </>
@@ -2151,6 +2243,90 @@ function CollectionDefinitions({
   );
 }
 
+/** What the collection actually holds. The definition is right there in the card below;
+ *  what a reader cannot see from it is whether anything filled it — so this counts the
+ *  records, the documents behind them, and how much of each field was ever answered. A
+ *  field at zero is a field the documents do not carry or the model never finds, and
+ *  that is worth knowing before writing a query that filters on it. */
+function CollectionData({ kbId, collection }: { kbId: string; collection: KnowledgeCollection }) {
+  const [stats, setStats] = useState<CollectionStats | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    kbFetch<CollectionStats>(
+      `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collection.collection_id)}/stats`
+    )
+      .then((s) => live && setStats(s))
+      .catch(() => live && setStats(null));
+    return () => {
+      live = false;
+    };
+  }, [kbId, collection.collection_id]);
+
+  if (!stats) return <Spinner size="sm" />;
+
+  const filledMost = Math.max(1, ...stats.coverage.map((row) => row.filled));
+  return (
+    <div className="mb-4 space-y-3">
+      <StatStrip>
+        <InlineStat icon={Layers} label="Records" value={stats.records} />
+        <InlineStat icon={FileText} label="Documents behind them" value={stats.documents} />
+        <InlineStat
+          icon={Table2}
+          label="Fields answered"
+          value={stats.coverage.filter((row) => row.filled > 0).length}
+        />
+      </StatStrip>
+
+      {stats.records > 0 && (
+        <div className="rounded-lg border border-border p-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+            Field coverage
+          </div>
+          <div className="space-y-2">
+            {stats.coverage.map((row) => {
+              const percent = stats.records > 0 ? (row.filled / stats.records) * 100 : 0;
+              return (
+                <div key={row.field} className="flex items-center gap-3 text-xs">
+                  <span className="w-40 shrink-0 truncate font-mono">{row.field}</span>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={
+                        row.filled === 0
+                          ? "h-full bg-muted-foreground/30"
+                          : "h-full bg-primary-gradient"
+                      }
+                      style={{ width: `${Math.max(percent, row.filled === 0 ? 0 : 2)}%` }}
+                    />
+                  </div>
+                  <span className="w-28 shrink-0 text-right tabular-nums text-muted-foreground">
+                    {row.filled} / {stats.records} ({percent.toFixed(0)}%)
+                  </span>
+                  {/* The widest bar is the field the documents answer best; the empties
+                      are the ones to ask about. */}
+                  {row.filled === filledMost && row.filled > 0 && (
+                    <span className="w-16 shrink-0 text-[10px] text-muted-foreground">fullest</span>
+                  )}
+                  {row.filled === 0 && (
+                    <span className="w-16 shrink-0 text-[10px] text-muted-foreground">
+                      never filled
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {stats.last_updated && (
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              Last changed {new Date(stats.last_updated).toLocaleString()}.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One collection as a diagram card. */
 function collectionCard(collection: KnowledgeCollection): ErdNode {
   return {
@@ -2187,7 +2363,7 @@ function CollectionRecords({
   const [open, setOpen] = useState<string | null>(null);
 
   const [queryOpen, setQueryOpen] = useState(false);
-  const [query, setQuery] = useState('{\n  "select": [{"count": "*", "as": "records"}]\n}');
+  const [query, setQuery] = useState<Record<string, unknown>>({ select: [{ count: "*" }] });
   const [result, setResult] = useState<QueryResult | null>(null);
   const [running, setRunning] = useState(false);
 
@@ -2218,19 +2394,12 @@ function CollectionRecords({
 
   const run = async () => {
     if (!collectionId) return;
-    let body: unknown;
-    try {
-      body = JSON.parse(query);
-    } catch {
-      toast.error("That is not valid JSON");
-      return;
-    }
     setRunning(true);
     try {
       setResult(
         await kbFetch<QueryResult>(
           `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/query`,
-          { method: "POST", body }
+          { method: "POST", body: query }
         )
       );
     } catch (e) {
@@ -2290,15 +2459,23 @@ function CollectionRecords({
       </div>
 
       {queryOpen && (
-        <div className="space-y-2">
-          <Textarea
-            rows={8}
-            className="font-mono text-xs"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            spellCheck={false}
+        <div className="space-y-2 rounded-lg border border-border p-4">
+          <QueryBuilder
+            key={collectionId}
+            fields={[
+              // The record's own columns are always there, whatever the collection defines.
+              { name: "record_id" },
+              { name: "doc_count", type: "number" },
+              { name: "updated_at" },
+              ...Object.entries(collection?.fields ?? {}).map(([name, spec]) => ({
+                name,
+                type: spec.type,
+                values: spec.values as (string | number | boolean)[] | undefined,
+              })),
+            ]}
+            onChange={setQuery}
           />
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pt-1">
             <Button size="sm" onClick={run} disabled={running}>
               {running ? <Spinner size="sm" /> : "Run query"}
             </Button>

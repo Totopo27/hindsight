@@ -528,6 +528,17 @@ def build_router(get_request_context: Any) -> APIRouter:
     ):
         return await run(svc.query_records(kb, collection_id, body.model_dump(exclude_none=True), request_context=ctx))
 
+    @router.get(
+        "/{kb}/collections/{collection_id}/stats",
+        summary="What a collection holds: records, the documents behind them, field coverage",
+    )
+    async def collection_stats(
+        kb: str,
+        collection_id: str,
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.collection_stats(kb, collection_id))
+
     @router.get("/{kb}/collections/{collection_id}/records", summary="One page of a collection's records")
     async def list_records(
         kb: str,

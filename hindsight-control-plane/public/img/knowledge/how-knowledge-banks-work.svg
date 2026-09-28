@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1179.9" height="319" viewBox="0 0 1179.9 319" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<metadata id="figure-spec"><![CDATA[{"props":{"speed":2200,"layout":{"gap":90,"align":"center","children":[{"id":"writer","label":"You write","sub":"contracts, memos, PDFs"},{"id":"bank","label":"Knowledge bank","direction":"row","gap":40,"children":[{"id":"doc","label":"Documents","sub":"text kept as passages","shape":"store"},{"id":"schema","label":"Schema","sub":"fields per kind of document"},{"id":"collection","label":"Collection","sub":"one record per thing","shape":"store"}]},{"id":"reader","label":"You read","sub":"Search · Query"}]},"edges":[{"id":"write","from":"writer","to":"doc","label":"write"},{"id":"fill","from":"doc","to":"schema","label":"fill"},{"id":"group","from":"schema","to":"collection","label":"group"},{"id":"read","from":"bank","to":"reader","label":"answer"}],"steps":[{"label":"how a knowledge bank works","flow":[{"edges":{"edge":"write","data":"acme-contract.pdf"},"show":{"doc":[{"tag":"doc","tone":"gray","text":"acme-contract.pdf"},{"tag":"passage","tone":"gray","text":"Payment is due in 30 days…"}]},"say":"You write Documents. Their text is kept as passages, ready to search."},{"edges":"fill","show":{"schema":[{"tag":"contract","tone":"purple","text":"vendor: Acme"},{"tag":"contract","tone":"purple","text":"total: 1,200"}]},"say":"A Schema lists the fields a kind of document has. The LLM fills them in."},{"edges":"group","show":{"collection":[{"tag":"supplier","tone":"orange","text":"Acme","meta":"3 contracts"}]},"say":"A Collection keeps one record per thing — one per supplier, across all its contracts."},{"edges":{"edge":"read","data":"“when is Acme paid?”"},"show":{"reader":[{"tag":"search","tone":"green","text":"Payment is due in 30 days","mark":"found"}]},"say":"Search finds the passages that answer a question."},{"edges":{"edge":"read","data":"total by supplier"},"ms":3000,"show":{"reader":[{"tag":"query","tone":"blue","text":"Acme · 3,600","mono":true}]},"say":"Query filters and counts on fields and records, like a spreadsheet."}]}]}}]]></metadata>
+<style>
+svg { --accent:#0074d9; --fg:#1c1e21; --muted:#606770; --bg:#ffffff; --surface:#f5f7fa; --border:#d0d7de; --card-on:#eef5fd; }
+@media (prefers-color-scheme: dark) { svg { --accent:#3396e8; --fg:#e3e3e3; --muted:#9aa0a6; --bg:#1b1b1d; --surface:#242526; --border:#3a3b3c; --card-on:#1d2733; } }
+.label { fill: var(--fg); font-size: 14px; font-weight: 500; text-anchor: middle; }
+.sub { fill: var(--muted); font-size: 12px; text-anchor: middle; }
+.frame { fill: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+.edgelabel { fill: var(--muted); font-size: 11px; text-anchor: middle; font-family: ui-monospace, Menlo, monospace; }
+.row { fill: var(--fg); font-size: 11px; }
+.row.mono { font-size: 10.5px; font-family: ui-monospace, Menlo, monospace; }
+.muted { fill: var(--muted); }
+.tag { font-size: 9px; font-weight: 600; letter-spacing: .03em; text-anchor: middle; }
+.mark { fill: var(--accent); font-size: 11px; font-weight: 600; text-anchor: end; }
+.chip { fill: #fff; font-size: 11.5px; text-anchor: middle; }
+.steplabel { fill: var(--fg); font-size: 13px; font-weight: 600; text-anchor: middle; font-family: ui-monospace, Menlo, monospace; }
+.caption { fill: var(--muted); font-size: 13.5px; text-anchor: middle; }
+@keyframes a0 { 0%,14.6% { stroke: var(--accent) } 14.6%,29.1% { stroke: var(--accent) } 29.1%,43.7% { stroke: var(--accent) } 43.7%,58.3% { stroke: var(--accent) } 58.3%,100% { stroke: var(--accent) } }
+.a0 { animation: a0 12.1s infinite step-end; }
+@keyframes a1 { 0%,14.6% { stroke: var(--border) } 14.6%,29.1% { stroke: var(--border) } 29.1%,43.7% { stroke: var(--border) } 43.7%,58.3% { stroke: var(--accent) } 58.3%,100% { stroke: var(--accent) } }
+.a1 { animation: a1 12.1s infinite step-end; }
+@keyframes a2 { 0%,14.6% { stroke: var(--accent); fill: var(--card-on) } 14.6%,29.1% { stroke: var(--accent); fill: var(--card-on) } 29.1%,43.7% { stroke: var(--accent); fill: var(--card-on) } 43.7%,58.3% { stroke: var(--accent); fill: var(--card-on) } 58.3%,100% { stroke: var(--accent); fill: var(--card-on) } }
+.a2 { animation: a2 12.1s infinite step-end; }
+@keyframes a3 { 0%,14.6% { opacity: 1 } 14.6%,29.1% { opacity: 1 } 29.1%,43.7% { opacity: 1 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 1 } }
+.a3 { animation: a3 12.1s infinite step-end; }
+@keyframes a4 { 0%,14.6% { stroke: var(--border) } 14.6%,29.1% { stroke: var(--accent) } 29.1%,43.7% { stroke: var(--accent) } 43.7%,58.3% { stroke: var(--accent) } 58.3%,100% { stroke: var(--accent) } }
+.a4 { animation: a4 12.1s infinite step-end; }
+@keyframes a5 { 0%,14.6% { stroke: var(--border); fill: var(--surface) } 14.6%,29.1% { stroke: var(--accent); fill: var(--card-on) } 29.1%,43.7% { stroke: var(--accent); fill: var(--card-on) } 43.7%,58.3% { stroke: var(--accent); fill: var(--card-on) } 58.3%,100% { stroke: var(--accent); fill: var(--card-on) } }
+.a5 { animation: a5 12.1s infinite step-end; }
+@keyframes a6 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 1 } 29.1%,43.7% { opacity: 1 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 1 } }
+.a6 { animation: a6 12.1s infinite step-end; }
+@keyframes a7 { 0%,14.6% { opacity: 1 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 0 } }
+.a7 { animation: a7 12.1s infinite step-end; }
+@keyframes a8 { 0%,14.6% { stroke: var(--border) } 14.6%,29.1% { stroke: var(--border) } 29.1%,43.7% { stroke: var(--accent) } 43.7%,58.3% { stroke: var(--accent) } 58.3%,100% { stroke: var(--accent) } }
+.a8 { animation: a8 12.1s infinite step-end; }
+@keyframes a9 { 0%,14.6% { stroke: var(--border); fill: var(--surface) } 14.6%,29.1% { stroke: var(--border); fill: var(--surface) } 29.1%,43.7% { stroke: var(--accent); fill: var(--card-on) } 43.7%,58.3% { stroke: var(--accent); fill: var(--card-on) } 58.3%,100% { stroke: var(--accent); fill: var(--card-on) } }
+.a9 { animation: a9 12.1s infinite step-end; }
+@keyframes a10 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 1 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 1 } }
+.a10 { animation: a10 12.1s infinite step-end; }
+@keyframes a11 { 0%,14.6% { opacity: 1 } 14.6%,29.1% { opacity: 1 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 0 } }
+.a11 { animation: a11 12.1s infinite step-end; }
+@keyframes a12 { 0%,14.6% { stroke: var(--border); fill: var(--surface) } 14.6%,29.1% { stroke: var(--border); fill: var(--surface) } 29.1%,43.7% { stroke: var(--border); fill: var(--surface) } 43.7%,58.3% { stroke: var(--accent); fill: var(--card-on) } 58.3%,100% { stroke: var(--accent); fill: var(--card-on) } }
+.a12 { animation: a12 12.1s infinite step-end; }
+@keyframes a13 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 0 } }
+.a13 { animation: a13 12.1s infinite step-end; }
+@keyframes a14 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 1 } }
+.a14 { animation: a14 12.1s infinite step-end; }
+@keyframes a15 { 0%,14.6% { opacity: 1 } 14.6%,29.1% { opacity: 1 } 29.1%,43.7% { opacity: 1 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 0 } }
+.a15 { animation: a15 12.1s infinite step-end; }
+@keyframes a16 { 0%,14.6% { stroke: var(--accent); stroke-width: 2 } 14.6%,29.1% { stroke: var(--accent); stroke-width: 2 } 29.1%,43.7% { stroke: var(--accent); stroke-width: 2 } 43.7%,58.3% { stroke: var(--accent); stroke-width: 2 } 58.3%,100% { stroke: var(--accent); stroke-width: 2 } }
+.a16 { animation: a16 12.1s infinite step-end; }
+@keyframes a17 { 0%,14.6% { fill: var(--accent); stroke: var(--accent) } 14.6%,29.1% { fill: var(--accent); stroke: var(--accent) } 29.1%,43.7% { fill: var(--accent); stroke: var(--accent) } 43.7%,58.3% { fill: var(--accent); stroke: var(--accent) } 58.3%,100% { fill: var(--accent); stroke: var(--accent) } }
+.a17 { animation: a17 12.1s infinite step-end; }
+@keyframes a18 { 0%,14.6% { fill: #fff } 14.6%,29.1% { fill: #fff } 29.1%,43.7% { fill: #fff } 43.7%,58.3% { fill: #fff } 58.3%,100% { fill: #fff } }
+.a18 { animation: a18 12.1s infinite step-end; }
+@keyframes a19 { 0%,14.6% { stroke: var(--muted); stroke-width: 1.25 } 14.6%,29.1% { stroke: var(--accent); stroke-width: 2 } 29.1%,43.7% { stroke: var(--accent); stroke-width: 2 } 43.7%,58.3% { stroke: var(--accent); stroke-width: 2 } 58.3%,100% { stroke: var(--accent); stroke-width: 2 } }
+.a19 { animation: a19 12.1s infinite step-end; }
+@keyframes a20 { 0%,14.6% { fill: var(--bg); stroke: var(--border) } 14.6%,29.1% { fill: var(--accent); stroke: var(--accent) } 29.1%,43.7% { fill: var(--accent); stroke: var(--accent) } 43.7%,58.3% { fill: var(--accent); stroke: var(--accent) } 58.3%,100% { fill: var(--accent); stroke: var(--accent) } }
+.a20 { animation: a20 12.1s infinite step-end; }
+@keyframes a21 { 0%,14.6% { fill: var(--muted) } 14.6%,29.1% { fill: #fff } 29.1%,43.7% { fill: #fff } 43.7%,58.3% { fill: #fff } 58.3%,100% { fill: #fff } }
+.a21 { animation: a21 12.1s infinite step-end; }
+@keyframes a22 { 0%,14.6% { stroke: var(--muted); stroke-width: 1.25 } 14.6%,29.1% { stroke: var(--muted); stroke-width: 1.25 } 29.1%,43.7% { stroke: var(--accent); stroke-width: 2 } 43.7%,58.3% { stroke: var(--accent); stroke-width: 2 } 58.3%,100% { stroke: var(--accent); stroke-width: 2 } }
+.a22 { animation: a22 12.1s infinite step-end; }
+@keyframes a23 { 0%,14.6% { fill: var(--bg); stroke: var(--border) } 14.6%,29.1% { fill: var(--bg); stroke: var(--border) } 29.1%,43.7% { fill: var(--accent); stroke: var(--accent) } 43.7%,58.3% { fill: var(--accent); stroke: var(--accent) } 58.3%,100% { fill: var(--accent); stroke: var(--accent) } }
+.a23 { animation: a23 12.1s infinite step-end; }
+@keyframes a24 { 0%,14.6% { fill: var(--muted) } 14.6%,29.1% { fill: var(--muted) } 29.1%,43.7% { fill: #fff } 43.7%,58.3% { fill: #fff } 58.3%,100% { fill: #fff } }
+.a24 { animation: a24 12.1s infinite step-end; }
+@keyframes a25 { 0%,14.6% { stroke: var(--muted); stroke-width: 1.25 } 14.6%,29.1% { stroke: var(--muted); stroke-width: 1.25 } 29.1%,43.7% { stroke: var(--muted); stroke-width: 1.25 } 43.7%,58.3% { stroke: var(--accent); stroke-width: 2 } 58.3%,100% { stroke: var(--accent); stroke-width: 2 } }
+.a25 { animation: a25 12.1s infinite step-end; }
+@keyframes a26 { 0%,14.6% { fill: var(--bg); stroke: var(--border) } 14.6%,29.1% { fill: var(--bg); stroke: var(--border) } 29.1%,43.7% { fill: var(--bg); stroke: var(--border) } 43.7%,58.3% { fill: var(--accent); stroke: var(--accent) } 58.3%,100% { fill: var(--accent); stroke: var(--accent) } }
+.a26 { animation: a26 12.1s infinite step-end; }
+@keyframes a27 { 0%,14.6% { fill: var(--muted) } 14.6%,29.1% { fill: var(--muted) } 29.1%,43.7% { fill: var(--muted) } 43.7%,58.3% { fill: #fff } 58.3%,100% { fill: #fff } }
+.a27 { animation: a27 12.1s infinite step-end; }
+@keyframes p0 { 0%,0% { opacity: 0 } 0%,14.6% { opacity: 1 } 14.6%,100% { opacity: 0 } }
+.p0 { animation: p0 12.1s infinite step-end; }
+@keyframes p1 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 1 } 29.1%,100% { opacity: 0 } }
+.p1 { animation: p1 12.1s infinite step-end; }
+@keyframes p2 { 0%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 1 } 43.7%,100% { opacity: 0 } }
+.p2 { animation: p2 12.1s infinite step-end; }
+@keyframes p3 { 0%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 0 } }
+.p3 { animation: p3 12.1s infinite step-end; }
+@keyframes p4 { 0%,58.3% { opacity: 0 } 58.3%,78.1% { opacity: 1 } 78.1%,100% { opacity: 0 } }
+.p4 { animation: p4 12.1s infinite step-end; }
+@keyframes a28 { 0%,14.6% { opacity: 1 } 14.6%,29.1% { opacity: 1 } 29.1%,43.7% { opacity: 1 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 1 } }
+.a28 { animation: a28 12.1s infinite step-end; }
+@keyframes a29 { 0%,14.6% { opacity: 1 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 0 } }
+.a29 { animation: a29 12.1s infinite step-end; }
+@keyframes a30 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 1 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 0 } }
+.a30 { animation: a30 12.1s infinite step-end; }
+@keyframes a31 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 1 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 0 } }
+.a31 { animation: a31 12.1s infinite step-end; }
+@keyframes a32 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 1 } 58.3%,100% { opacity: 0 } }
+.a32 { animation: a32 12.1s infinite step-end; }
+@keyframes a33 { 0%,14.6% { opacity: 0 } 14.6%,29.1% { opacity: 0 } 29.1%,43.7% { opacity: 0 } 43.7%,58.3% { opacity: 0 } 58.3%,100% { opacity: 1 } }
+.a33 { animation: a33 12.1s infinite step-end; }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="var(--muted)"/></marker></defs>
+<rect width="100%" height="100%" fill="var(--bg)"/>
+<g transform="translate(0 0)">
+<rect x="24" y="108" width="171.9" height="53" rx="10" fill="var(--bg)" stroke="var(--border)" class="a0"/><text x="110" y="132.5" class="label">You write</text><text x="110" y="147.5" class="sub">contracts, memos, PDFs</text>
+<rect x="285.9" y="24" width="614" height="221" rx="14" fill="var(--surface)" stroke="var(--border)" class="a1"/><text x="303.9" y="44" class="frame">KNOWLEDGE BANK</text>
+<path d="M303.9 73 a 83 12 0 0 1 166 0 v 142 a 83 12 0 0 1 -166 0 z" fill="var(--bg)" stroke="var(--border)" class="a0"/><path d="M303.9 73 a 83 12 0 0 0 166 0" fill="none" stroke="var(--border)" class="a0"/><text x="386.9" y="98" class="label">Documents</text><text x="386.9" y="113" class="sub">text kept as passages</text><rect x="313.9" y="126" width="146" height="91" rx="6" fill="var(--surface)" stroke="var(--border)" stroke-dasharray="3 3" class="a2"/><g opacity="0" class="a3"><rect x="321.9" y="133" width="22.3" height="14" rx="4" fill="#8b949e" fill-opacity="0.15"/><text x="333.1" y="143.5" class="tag" fill="#8b949e">DOC</text><text x="321.9" y="158" class="row">acme-contract.pdf</text><rect x="321.9" y="167" width="41.4" height="14" rx="4" fill="#8b949e" fill-opacity="0.15"/><text x="342.6" y="177.5" class="tag" fill="#8b949e">PASSAGE</text><text x="321.9" y="192" class="row">Payment is due in 30</text><text x="321.9" y="207" class="row">days…</text></g>
+<rect x="509.9" y="75.5" width="166" height="137" rx="10" fill="var(--bg)" stroke="var(--border)" class="a4"/><text x="592.9" y="98.5" class="label">Schema</text><text x="592.9" y="113.5" class="sub">fields per kind of document</text><rect x="519.9" y="126.5" width="146" height="76" rx="6" fill="var(--surface)" stroke="var(--border)" stroke-dasharray="3 3" class="a5"/><g opacity="0" class="a6"><rect x="527.9" y="133.5" width="46.2" height="14" rx="4" fill="#8b5cf6" fill-opacity="0.15"/><text x="551" y="144" class="tag" fill="#8b5cf6">CONTRACT</text><text x="527.9" y="158.5" class="row">vendor: Acme</text><rect x="527.9" y="167.5" width="46.2" height="14" rx="4" fill="#8b5cf6" fill-opacity="0.15"/><text x="551" y="178" class="tag" fill="#8b5cf6">CONTRACT</text><text x="527.9" y="192.5" class="row">total: 1,200</text></g><text x="527.9" y="143.5" opacity="0" class="row muted a7">—</text>
+<path d="M715.9 97.5 a 83 12 0 0 1 166 0 v 93 a 83 12 0 0 1 -166 0 z" fill="var(--bg)" stroke="var(--border)" class="a8"/><path d="M715.9 97.5 a 83 12 0 0 0 166 0" fill="none" stroke="var(--border)" class="a8"/><text x="798.9" y="122.5" class="label">Collection</text><text x="798.9" y="137.5" class="sub">one record per thing</text><rect x="725.9" y="150.5" width="146" height="42" rx="6" fill="var(--surface)" stroke="var(--border)" stroke-dasharray="3 3" class="a9"/><g opacity="0" class="a10"><rect x="733.9" y="157.5" width="46.2" height="14" rx="4" fill="#f59e0b" fill-opacity="0.15"/><text x="757" y="168" class="tag" fill="#f59e0b">SUPPLIER</text><text x="733.9" y="182.5" class="row">Acme · 3 contracts</text></g><text x="733.9" y="167.5" opacity="0" class="row muted a11">—</text>
+<rect x="989.9" y="75.5" width="166" height="118" rx="10" fill="var(--bg)" stroke="var(--border)" class="a1"/><text x="1072.9" y="98.5" class="label">You read</text><text x="1072.9" y="113.5" class="sub">Search · Query</text><rect x="999.9" y="126.5" width="146" height="57" rx="6" fill="var(--surface)" stroke="var(--border)" stroke-dasharray="3 3" class="a12"/><g opacity="0" class="a13"><rect x="1007.9" y="133.5" width="36.6" height="14" rx="4" fill="#10b981" fill-opacity="0.15"/><text x="1026.2" y="144" class="tag" fill="#10b981">SEARCH</text><text x="1137.9" y="143.5" class="mark">found</text><text x="1007.9" y="158.5" class="row">Payment is due in 30</text><text x="1007.9" y="173.5" class="row">days</text></g><g opacity="0" class="a14"><rect x="1007.9" y="133.5" width="31.9" height="14" rx="4" fill="#3b82f6" fill-opacity="0.15"/><text x="1023.8" y="144" class="tag" fill="#3b82f6">QUERY</text><text x="1007.9" y="158.5" class="row mono">Acme · 3,600</text></g><text x="1007.9" y="143.5" opacity="0" class="row muted a15">—</text>
+<path id="p-write" d="M 195.92000000000002 134.5 C 249.92000000000002 134.5, 249.92000000000002 144, 303.92 144" fill="none" stroke="var(--muted)" stroke-width="1.25" marker-end="url(#arrow)" class="a16"/><rect x="228.3" y="130.3" width="43.2" height="18" rx="9" fill="var(--bg)" stroke="var(--border)" class="a17"/><text x="249.9" y="143.3" class="edgelabel a18">write</text>
+<path id="p-fill" d="M 469.92 144 C 489.92 144, 489.92 144, 509.92 144" fill="none" stroke="var(--muted)" stroke-width="1.25" marker-end="url(#arrow)" class="a19"/><rect x="471.3" y="135" width="37.3" height="18" rx="9" fill="var(--bg)" stroke="var(--border)" class="a20"/><text x="489.9" y="148" class="edgelabel a21">fill</text>
+<path id="p-group" d="M 675.9200000000001 144 C 695.9200000000001 144, 695.9200000000001 144, 715.9200000000001 144" fill="none" stroke="var(--muted)" stroke-width="1.25" marker-end="url(#arrow)" class="a22"/><rect x="674.3" y="135" width="43.2" height="18" rx="9" fill="var(--bg)" stroke="var(--border)" class="a23"/><text x="695.9" y="148" class="edgelabel a24">group</text>
+<path id="p-read" d="M 899.9200000000001 134.5 C 944.9200000000001 134.5, 944.9200000000001 134.5, 989.9200000000001 134.5" fill="none" stroke="var(--muted)" stroke-width="1.25" marker-end="url(#arrow)" class="a25"/><rect x="920.4" y="125.5" width="49" height="18" rx="9" fill="var(--bg)" stroke="var(--border)" class="a26"/><text x="944.9" y="138.5" class="edgelabel a27">answer</text>
+<g class="p0" opacity="0"><circle r="10" fill="var(--accent)" opacity="0.2"/><circle r="4.5" fill="var(--accent)"/><rect x="-60.8" y="-35" width="121.6" height="23" rx="8" fill="var(--accent)"/><text x="0" y="-20" class="chip">acme-contract.pdf</text><animateMotion dur="12.1s" repeatCount="indefinite" keyTimes="0;0;0.1;1" keyPoints="0;0;1;1" calcMode="linear"><mpath href="#p-write" xlink:href="#p-write"/></animateMotion></g>
+<g class="p1" opacity="0"><circle r="10" fill="var(--accent)" opacity="0.2"/><circle r="4.5" fill="var(--accent)"/><animateMotion dur="12.1s" repeatCount="indefinite" keyTimes="0;0.1;0.3;1" keyPoints="0;0;1;1" calcMode="linear"><mpath href="#p-fill" xlink:href="#p-fill"/></animateMotion></g>
+<g class="p2" opacity="0"><circle r="10" fill="var(--accent)" opacity="0.2"/><circle r="4.5" fill="var(--accent)"/><animateMotion dur="12.1s" repeatCount="indefinite" keyTimes="0;0.3;0.4;1" keyPoints="0;0;1;1" calcMode="linear"><mpath href="#p-group" xlink:href="#p-group"/></animateMotion></g>
+<g class="p3" opacity="0"><circle r="10" fill="var(--accent)" opacity="0.2"/><circle r="4.5" fill="var(--accent)"/><rect x="-69.9" y="-35" width="139.9" height="23" rx="8" fill="var(--accent)"/><text x="0" y="-20" class="chip">“when is Acme paid?”</text><animateMotion dur="12.1s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" keyPoints="0;0;1;1" calcMode="linear"><mpath href="#p-read" xlink:href="#p-read"/></animateMotion></g>
+<g class="p4" opacity="0"><circle r="10" fill="var(--accent)" opacity="0.2"/><circle r="4.5" fill="var(--accent)"/><rect x="-60.8" y="-35" width="121.6" height="23" rx="8" fill="var(--accent)"/><text x="0" y="-20" class="chip">total by supplier</text><animateMotion dur="12.1s" repeatCount="indefinite" keyTimes="0;0.6;0.8;1" keyPoints="0;0;1;1" calcMode="linear"><mpath href="#p-read" xlink:href="#p-read"/></animateMotion></g>
+</g>
+<text x="590" y="285" opacity="0" class="steplabel a28">how a knowledge bank works</text>
+<g opacity="0" class="a29"><text x="590" y="311" class="caption">You write Documents. Their text is kept as passages, ready to search.</text></g>
+<g opacity="0" class="a30"><text x="590" y="311" class="caption">A Schema lists the fields a kind of document has. The LLM fills them in.</text></g>
+<g opacity="0" class="a31"><text x="590" y="311" class="caption">A Collection keeps one record per thing — one per supplier, across all its contracts.</text></g>
+<g opacity="0" class="a32"><text x="590" y="311" class="caption">Search finds the passages that answer a question.</text></g>
+<g opacity="0" class="a33"><text x="590" y="311" class="caption">Query filters and counts on fields and records, like a spreadsheet.</text></g>
+</svg>

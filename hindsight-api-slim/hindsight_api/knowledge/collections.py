@@ -405,6 +405,47 @@ async def list_records(
     }
 
 
+async def collection_stats(conn: Any, bank_id: str, collection_id: str, field_names: list[str]) -> dict[str, Any]:
+    """What is actually in a collection: how many records, what they came from, and how
+    much of each field was ever filled.
+
+    Field coverage is the question a definition cannot answer — a field every record
+    leaves empty is a field the documents do not carry, or one the model never finds,
+    and either way it is worth seeing before trusting a query that filters on it.
+    """
+    totals = await conn.fetchrow(
+        f"""
+        SELECT count(*) AS records,
+               count(DISTINCT d) AS documents,
+               max(updated_at) AS last_updated
+        FROM {fq_table("kb_records")} r
+        LEFT JOIN LATERAL unnest(r.doc_ids) AS d ON TRUE
+        WHERE r.bank_id = $1 AND r.collection_id = $2
+        """,
+        bank_id,
+        collection_id,
+    )
+    coverage: list[dict[str, Any]] = []
+    for name in field_names:
+        filled = await conn.fetchval(
+            f"""
+            SELECT count(*) FROM {fq_table("kb_records")}
+            WHERE bank_id = $1 AND collection_id = $2
+              AND values ? $3 AND values -> $3 <> 'null'::jsonb
+            """,
+            bank_id,
+            collection_id,
+            name,
+        )
+        coverage.append({"field": name, "filled": filled})
+    return {
+        "records": totals["records"] if totals else 0,
+        "documents": totals["documents"] if totals else 0,
+        "last_updated": totals["last_updated"] if totals else None,
+        "coverage": coverage,
+    }
+
+
 async def delete_records_for_document(conn: Any, bank_id: str, doc_id: str) -> None:
     """Forget what one document contributed: drop records it alone is behind."""
     await conn.execute(

@@ -150,3 +150,11 @@ export interface KnowledgeRecord {
 export interface KnowledgeRecordDetail extends KnowledgeRecord {
   evidence?: Record<string, { doc_id: string; quote: string }[]>;
 }
+
+/** What a collection holds, as opposed to what it defines. */
+export interface CollectionStats {
+  records: number;
+  documents: number;
+  last_updated: string | null;
+  coverage: { field: string; filled: number }[];
+}

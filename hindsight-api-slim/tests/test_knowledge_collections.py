@@ -387,3 +387,35 @@ async def test_records_are_paginated_and_searchable(kb_client, bank):
 
     assert (await page(q="vendor-0"))["total"] == 7, "the filter reads the record id"
     assert (await page(q="fr"))["total"] >= 3, "and the values too — 'fr' is a country, not a name"
+
+
+@pytest.mark.asyncio
+async def test_collection_stats_describe_the_data_not_the_definition(kb_client, bank):
+    """How full a collection is, and how full each of its fields is.
+
+    A field every record leaves empty is a field the documents do not carry, or one the
+    model never finds — and a definition cannot tell you which.
+    """
+    written = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/collections/vendors/records",
+        json={
+            "records": [
+                {"values": {"name": "alpha", "country": "de", "tier": "gold"}, "doc_ids": ["d1"]},
+                {"values": {"name": "beta"}, "doc_ids": ["d1", "d2"]},
+            ]
+        },
+    )
+    assert written.status_code == 200, written.text
+
+    stats = await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections/vendors/stats")
+    assert stats.status_code == 200, stats.text
+    body = stats.json()
+    coverage = {row["field"]: row["filled"] for row in body["coverage"]}
+    assert set(coverage) == {"name", "country", "tier"}, "every field the definition names"
+    assert body["records"] >= 2
+    # Not every record carries every field: one this collection has was created by a
+    # contract naming its vendor, and a record a relationship points at has no values of
+    # its own until a document fills them. That gap is exactly what coverage shows.
+    assert 0 < coverage["name"] <= body["records"]
+    assert coverage["country"] < coverage["name"], "the record written without a country counts"
+    assert body["documents"] >= 2, "the documents behind the records, counted once each"

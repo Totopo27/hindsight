@@ -723,6 +723,14 @@ class KnowledgeService:
                 return resolved
         return None
 
+    async def collection_stats(self, bank_id: str, collection_id: str) -> dict[str, Any]:
+        """What a collection holds, as opposed to what it defines."""
+        collection = await self.get_collection(bank_id, collection_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            return await collections_store.collection_stats(
+                conn, bank_id, collection_id, sorted(collection.get("fields") or {})
+            )
+
     async def list_records(
         self, bank_id: str, collection_id: str, limit: int, offset: int, query: str | None
     ) -> dict[str, Any]:
