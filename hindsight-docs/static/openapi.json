@@ -2035,14 +2035,14 @@
         }
       }
     },
-    "/v1/default/knowledge-banks/{kb}/collections/propose": {
+    "/v1/default/knowledge-banks/{kb}/collections/chat": {
       "post": {
         "tags": [
           "Knowledge Banks"
         ],
-        "summary": "Ask the model what collections this corpus deserves",
-        "description": "Reads a sample of the bank's documents and the collections it already has, and answers with changes to make: create, update or delete, each with the definition and why. Nothing is written \u2014 applying a proposal is the caller's PUT or DELETE, deliberately, because a schema change re-reads the corpus and costs an LLM call per document.",
-        "operationId": "propose_collections_v1_default_knowledge_banks__kb__collections_propose_post",
+        "summary": "Talk to a model about this bank's collections",
+        "description": "A turn of conversation. The model is given the collections as they are now and a sample of the bank's documents, and either answers or calls its one tool to propose changes. It cannot apply them: a proposal comes back for the caller to approve and PUT, because a schema change re-reads the corpus at one LLM call per document.",
+        "operationId": "collection_chat_v1_default_knowledge_banks__kb__collections_chat_post",
         "parameters": [
           {
             "name": "kb",
@@ -2075,7 +2075,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProposeCollectionsRequest"
+                "$ref": "#/components/schemas/CollectionChatRequest"
               }
             }
           }
@@ -12416,6 +12416,28 @@
           "success": true
         }
       },
+      "ChatMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatMessage"
+      },
       "ChildOperationStatus": {
         "properties": {
           "operation_id": {
@@ -12661,6 +12683,33 @@
         "example": {
           "deleted_count": 3
         }
+      },
+      "CollectionChatRequest": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "type": "array",
+            "maxItems": 60,
+            "minItems": 1,
+            "title": "Messages"
+          },
+          "sample_documents": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 0.0,
+            "title": "Sample Documents",
+            "description": "How many of the most recent documents the model reads",
+            "default": 8
+          }
+        },
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "title": "CollectionChatRequest",
+        "description": "One turn. The conversation is the caller's to keep: the server holds no session,\nand the bank's own state is read fresh on every turn anyway."
       },
       "CollectionRequest": {
         "properties": {
@@ -19360,33 +19409,6 @@
         "type": "object",
         "title": "PromptPreviewResponse",
         "description": "The messages one call of the requested operation would send.\n\n`messages` is in send order, system first. Both are always present because a\nmission is not necessarily in the system prompt: retain and consolidation keep\ntheir system prompt bank-agnostic (so one provider-side cache serves every bank)\nand carry the mission in the user message instead.\n\nWhen `skipped_reason` is set the configuration means no prompt is sent at all \u2014\n`chunks` extraction mode stores each chunk verbatim and never calls an LLM \u2014 and\n`messages` is empty."
-      },
-      "ProposeCollectionsRequest": {
-        "properties": {
-          "instruction": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Instruction",
-            "description": "What the caller wants out of this bank, in their words"
-          },
-          "sample_documents": {
-            "type": "integer",
-            "maximum": 50.0,
-            "minimum": 1.0,
-            "title": "Sample Documents",
-            "description": "How many of the most recent documents the model reads",
-            "default": 12
-          }
-        },
-        "type": "object",
-        "title": "ProposeCollectionsRequest",
-        "description": "What to take into account when proposing collections."
       },
       "QueryRequest": {
         "properties": {

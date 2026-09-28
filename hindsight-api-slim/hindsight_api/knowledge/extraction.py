@@ -305,36 +305,112 @@ class CollectionProposal(BaseModel):
     collections: list[ProposedCollection] = Field(default_factory=list)
 
 
-_PROPOSE_SYSTEM = (
-    "You design collections for a knowledge bank. A collection is a kind of thing the documents "
-    "talk about — a vendor, a contract, an incident — and each record folds together what every "
-    "document said about one of them.\n"
-    "Rules:\n"
-    "- Propose only what the documents shown actually support. A field no document answers is a "
-    "field that will sit empty forever.\n"
-    "- Every collection needs an identity field: the one that says WHICH thing a record is, so the "
-    "same thing named in two documents becomes one record.\n"
-    "- Use a relationship (the `collection` key on a field) when a field's value IS another "
-    "collection's record, rather than repeating that thing's attributes.\n"
-    "- Keep what already exists unless it is wrong: 'update' an existing collection only to add or "
-    "fix fields, and give the full field list you want it to end with.\n"
+_CHAT_SYSTEM = (
+    "You help someone design the collections of a knowledge bank, by talking with them.\n"
+    "A collection is a kind of thing the documents talk about — a vendor, a contract, an "
+    "incident — and each record folds together what every document said about one of them. "
+    "A record's fields are read out of the documents by a model, one call per document.\n"
+    "\n"
+    "You have one tool, propose_collection_changes. You cannot change anything yourself: the "
+    "tool records a proposal that the person reviews and applies. So:\n"
+    "- Answer in plain text when they ask a question, or when you need to know more.\n"
+    "- Call the tool when you have a concrete change to suggest, and say in your reply what it "
+    "does and why.\n"
+    "- Never claim to have changed something. You proposed it; they decide.\n"
+    "\n"
+    "Design rules:\n"
+    "- Propose only what the documents support. A field no document answers sits empty forever.\n"
+    "- Every collection needs an identity field: the one that says WHICH thing a record is, so "
+    "the same thing named in two documents becomes one record.\n"
+    "- Use a relationship (a field's `collection`) when the value IS another collection's "
+    "record, rather than repeating that thing's attributes.\n"
+    "- An update replaces the collection's field list, so give every field it should end with, "
+    "not only the new ones.\n"
     "- Prefer few collections that earn their place over a schema of everything."
 )
 
+#: The one tool the chat has. Its arguments are the change, flat and closed: a free-form
+#: map becomes ``additionalProperties``, which the Gemini Developer API refuses outright.
+COLLECTION_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "propose_collection_changes",
+        "description": (
+            "Propose changes to this bank's collections for the person to review. This does not "
+            "apply anything — they approve it in the UI."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "description": "One entry per collection to create, update or delete.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["create", "update", "delete"]},
+                            "collection_id": {"type": "string", "description": "snake_case, plural, e.g. vendors"},
+                            "name": {"type": "string"},
+                            "description": {"type": "string", "description": "What one record of it is"},
+                            "identity": {
+                                "type": "string",
+                                "description": "The field that says which thing a record is",
+                            },
+                            "reason": {"type": "string", "description": "Why, in one sentence"},
+                            "fields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "type": {
+                                            "type": "string",
+                                            "enum": [
+                                                "string",
+                                                "integer",
+                                                "number",
+                                                "boolean",
+                                                "date",
+                                                "datetime",
+                                                "array",
+                                            ],
+                                        },
+                                        "description": {"type": "string"},
+                                        "values": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "The allowed values, if it is a classification",
+                                        },
+                                        "collection": {
+                                            "type": "string",
+                                            "description": "Another collection's id when this field points at one",
+                                        },
+                                    },
+                                    "required": ["name"],
+                                },
+                            },
+                        },
+                        "required": ["action", "collection_id"],
+                    },
+                }
+            },
+            "required": ["changes"],
+        },
+    },
+}
 
-async def propose_collections(
-    llm: Any,
-    *,
-    instruction: str | None,
-    existing: list[dict[str, Any]],
-    documents: list[dict[str, str]],
-) -> list[ProposedCollection]:
-    """Ask the LLM what collections this corpus deserves. It proposes; it never writes.
 
-    The existing collections are sent too, so the answer is a change to what is there
-    rather than a design that ignores it.
-    """
-    lines = ["Collections that already exist:"]
+@dataclass(frozen=True)
+class CollectionChat:
+    """What one turn came to: what to say, and what to propose."""
+
+    reply: str
+    proposals: list[ProposedCollection]
+
+
+def collections_context(existing: list[dict[str, Any]], documents: list[dict[str, str]]) -> str:
+    """The bank as the agent sees it: what it defines now, and what its documents say."""
+    lines = ["Collections this bank has now:"]
     if existing:
         for collection in existing:
             fields = ", ".join(
@@ -342,34 +418,50 @@ async def propose_collections(
                 for name, spec in (collection.get("fields") or {}).items()
             )
             lines.append(
-                f"- {collection['collection_id']}: identity={collection.get('identity') or 'none'}; fields: {fields or 'none'}"
+                f"- {collection['collection_id']}: identity={collection.get('identity') or 'none'}; "
+                f"fields: {fields or 'none'}"
             )
     else:
         lines.append("- none yet")
+    if documents:
+        lines.append("\nA sample of its documents:")
+        for document in documents:
+            heading = document.get("title") or document["doc_id"]
+            lines.append(f"\n### {heading}\n{document['text']}")
+    return "\n".join(lines)
 
-    lines.append("\nDocuments from this bank:")
-    for document in documents:
-        heading = document.get("title") or document["doc_id"]
-        lines.append(f"\n### {heading}\n{document['text']}")
 
-    if instruction:
-        lines.append(f"\nWhat the user asked for:\n{instruction}")
+async def chat_about_collections(
+    llm: Any,
+    *,
+    messages: list[dict[str, str]],
+    context: str,
+) -> CollectionChat:
+    """One turn of the collection chat: an answer, a proposal, or both.
 
-    messages = [
-        {"role": "system", "content": _PROPOSE_SYSTEM},
-        {"role": "user", "content": "\n".join(lines)},
+    The agent is given the bank as it is now on every turn, so after a proposal is
+    applied the next turn sees the result rather than its own memory of it.
+    """
+    conversation = [
+        {"role": "system", "content": _CHAT_SYSTEM},
+        {"role": "system", "content": context},
+        *messages,
     ]
-    try:
-        result = await llm.call(
-            messages=messages, response_format=CollectionProposal, scope="knowledge_collection_proposal"
-        )
-    except Exception as e:
-        logger.warning("knowledge collection proposal failed: %s", e)
-        raise
-
-    content = result.content
-    if isinstance(content, CollectionProposal):
-        return list(content.collections)
-    if isinstance(content, dict):
-        return list(CollectionProposal.model_validate(content).collections)
-    return []
+    result = await llm.call_with_tools(
+        messages=conversation, tools=[COLLECTION_TOOL], scope="knowledge_collection_chat"
+    )
+    logger.debug(
+        "knowledge collection chat: finish=%s tools=%s",
+        result.finish_reason,
+        [call.name for call in result.tool_calls],
+    )
+    proposals: list[ProposedCollection] = []
+    for call in result.tool_calls:
+        if call.name != "propose_collection_changes":
+            continue
+        for change in call.arguments.get("changes") or []:
+            try:
+                proposals.append(ProposedCollection.model_validate(change))
+            except Exception as e:  # noqa: BLE001 - one bad change must not lose the others
+                logger.warning("knowledge collection chat: unusable change %s: %s", change, e)
+    return CollectionChat(reply=(result.content or "").strip(), proposals=proposals)

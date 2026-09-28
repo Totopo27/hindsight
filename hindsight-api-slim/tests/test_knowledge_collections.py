@@ -422,12 +422,30 @@ async def test_collection_stats_describe_the_data_not_the_definition(kb_client, 
 
 
 @pytest.mark.asyncio
-async def test_a_proposal_is_applyable_and_writes_nothing(kb_client, bank, memory):
-    """The model proposes; a person applies. The endpoint must not touch the bank.
+async def test_the_chat_answers_without_proposing_anything(kb_client, bank, memory):
+    """A question is a question. The agent replies in text and proposes nothing."""
+    memory._llm_config._provider_impl.set_response_callback(
+        lambda messages, scope: "A collection is a kind of thing your documents talk about."
+    )
+    response = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/collections/chat",
+        json={"messages": [{"role": "user", "content": "what is a collection?"}]},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["proposals"] == []
+    assert "collection" in body["reply"].lower()
 
-    What comes back is validated against the same rules a PUT applies, so approving a
-    proposal cannot fail on a shape the model invented.
+
+@pytest.mark.asyncio
+async def test_the_chats_tool_call_is_a_proposal_and_writes_nothing(kb_client, bank, memory):
+    """The agent's one tool records a proposal; it cannot apply it.
+
+    What comes back is validated by the rules a PUT applies, so approving it cannot fail
+    on a shape the model invented — and the bank is untouched until someone does.
     """
+    from hindsight_api.engine.response_models import LLMToolCall, LLMToolCallResult
+
     await kb_client.post(
         f"/v1/default/knowledge-banks/{bank}/documents",
         json={"documents": [{"id": "inv", "text": "Invoice from Acme Ltd for 4200 EUR."}]},
@@ -435,114 +453,111 @@ async def test_a_proposal_is_applyable_and_writes_nothing(kb_client, bank, memor
     before = (await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections")).json()
 
     memory._llm_config._provider_impl.set_response_callback(
-        lambda messages, scope: {
-            "collections": [
-                {
-                    "action": "create",
-                    "collection_id": "invoices",
-                    "name": "Invoices",
-                    "identity": "number",
-                    "reason": "The documents are invoices.",
-                    "fields": [
-                        {"name": "number", "type": "string"},
-                        {"name": "total", "type": "number"},
-                        {"name": "vendor", "collection": "vendors"},
-                        # A relationship to a collection that will not exist. Structured
-                        # output stops the model inventing a TYPE, but nothing stops it
-                        # naming a collection, so this is the shape that can arrive.
-                        {"name": "region", "collection": "nope"},
-                    ],
-                },
-                {"action": "delete", "collection_id": "contracts", "reason": "Superseded."},
-                {"action": "delete", "collection_id": "never-existed", "reason": "Noise."},
-            ]
-        }
+        lambda messages, scope: LLMToolCallResult(
+            content="These look like invoices — here is what I suggest.",
+            finish_reason="tool_calls",
+            tool_calls=[
+                LLMToolCall(
+                    id="1",
+                    name="propose_collection_changes",
+                    arguments={
+                        "changes": [
+                            {
+                                "action": "create",
+                                "collection_id": "invoices",
+                                "identity": "number",
+                                "reason": "The documents are invoices.",
+                                "fields": [
+                                    {"name": "number", "type": "string"},
+                                    {"name": "total", "type": "number"},
+                                    {"name": "vendor", "collection": "vendors"},
+                                ],
+                            },
+                            {
+                                "action": "create",
+                                "collection_id": "broken",
+                                # Points at a collection that will not exist.
+                                "fields": [{"name": "region", "collection": "nope"}],
+                            },
+                            {"action": "delete", "collection_id": "never-existed"},
+                        ]
+                    },
+                )
+            ],
+        )
     )
 
     response = await kb_client.post(
-        f"/v1/default/knowledge-banks/{bank}/collections/propose",
-        json={"instruction": "track the invoices", "sample_documents": 5},
+        f"/v1/default/knowledge-banks/{bank}/collections/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "help me track invoices"},
+                {"role": "assistant", "content": "What do your documents look like?"},
+                {"role": "user", "content": "have a look yourself"},
+            ]
+        },
     )
     assert response.status_code == 200, response.text
     body = response.json()
+    assert body["reply"].startswith("These look like invoices")
     by_id = {p["collection_id"]: p for p in body["proposals"]}
 
-    # A relationship pointing nowhere refuses the whole collection rather than being
-    # quietly dropped — approving half a definition is worse than being told.
-    assert "invoices" not in by_id
-    assert any("invoices" in warning for warning in body["warnings"])
-    assert by_id["contracts"]["action"] == "delete"
-    assert "never-existed" not in by_id, "a delete of something that is not there is not a change"
-    assert body["documents_read"] >= 1
+    assert by_id["invoices"]["action"] == "create"
+    assert by_id["invoices"]["definition"]["fields"]["vendor"]["collection"] == "vendors"
+    # A relationship pointing nowhere refuses that collection whole, with a reason:
+    # approving half a definition is worse than being told.
+    assert "broken" not in by_id
+    assert any("broken" in warning for warning in body["warnings"])
+    assert "never-existed" not in by_id, "deleting something that is not there is not a change"
 
     after = (await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections")).json()
-    assert after == before, "proposing changed nothing"
+    assert after == before, "the chat wrote nothing"
 
-
-@pytest.mark.asyncio
-async def test_a_valid_proposal_comes_back_ready_to_put(kb_client, bank, memory):
-    """The definition in a proposal is the body of the PUT that applies it."""
-    await kb_client.post(
-        f"/v1/default/knowledge-banks/{bank}/documents",
-        json={"documents": [{"id": "inv", "text": "Invoice from Acme Ltd for 4200 EUR."}]},
-    )
-    memory._llm_config._provider_impl.set_response_callback(
-        lambda messages, scope: {
-            "collections": [
-                {
-                    "action": "create",
-                    "collection_id": "invoices",
-                    "identity": "number",
-                    "fields": [
-                        {"name": "number", "type": "string"},
-                        {"name": "total", "type": "number"},
-                        # A relationship to a collection this bank already has.
-                        {"name": "vendor", "collection": "vendors"},
-                    ],
-                }
-            ]
-        }
-    )
-    proposal = (await kb_client.post(f"/v1/default/knowledge-banks/{bank}/collections/propose", json={})).json()[
-        "proposals"
-    ][0]
-    assert proposal["action"] == "create"
-
+    # And what it proposed is the body of the PUT that applies it.
     applied = await kb_client.put(
-        f"/v1/default/knowledge-banks/{bank}/collections/invoices", json=proposal["definition"]
+        f"/v1/default/knowledge-banks/{bank}/collections/invoices",
+        json=by_id["invoices"]["definition"],
     )
     assert applied.status_code == 200, applied.text
-    stored = applied.json()
-    assert stored["identity"] == "number"
-    assert stored["fields"]["vendor"]["collection"] == "vendors"
 
 
 @pytest.mark.asyncio
 async def test_an_update_proposal_keeps_what_it_did_not_mention(kb_client, bank, memory):
     """A PUT replaces the whole definition, so a proposal that only changes fields must
     not carry a blank name or identity through and erase them."""
-    await kb_client.post(
-        f"/v1/default/knowledge-banks/{bank}/documents",
-        json={"documents": [{"id": "d", "text": "Acme Ltd invoices us monthly."}]},
-    )
+    from hindsight_api.engine.response_models import LLMToolCall, LLMToolCallResult
+
     memory._llm_config._provider_impl.set_response_callback(
-        lambda messages, scope: {
-            "collections": [
-                {
-                    "action": "update",
-                    "collection_id": "vendors",
-                    "fields": [
-                        {"name": "name", "type": "string"},
-                        {"name": "country", "type": "string"},
-                        {"name": "rating", "type": "number"},
-                    ],
-                }
-            ]
-        }
+        lambda messages, scope: LLMToolCallResult(
+            content="Adding a rating.",
+            finish_reason="tool_calls",
+            tool_calls=[
+                LLMToolCall(
+                    id="1",
+                    name="propose_collection_changes",
+                    arguments={
+                        "changes": [
+                            {
+                                "action": "update",
+                                "collection_id": "vendors",
+                                "fields": [
+                                    {"name": "name", "type": "string"},
+                                    {"name": "country", "type": "string"},
+                                    {"name": "rating", "type": "number"},
+                                ],
+                            }
+                        ]
+                    },
+                )
+            ],
+        )
     )
-    proposal = (await kb_client.post(f"/v1/default/knowledge-banks/{bank}/collections/propose", json={})).json()[
-        "proposals"
-    ][0]
+    proposal = (
+        await kb_client.post(
+            f"/v1/default/knowledge-banks/{bank}/collections/chat",
+            json={"messages": [{"role": "user", "content": "rate the vendors"}]},
+        )
+    ).json()["proposals"][0]
     assert proposal["definition"]["identity"] == "name", "the identity it already had"
     assert proposal["definition"]["name"] == "Vendors"
     assert "rating" in proposal["definition"]["fields"], "and the field the model added"

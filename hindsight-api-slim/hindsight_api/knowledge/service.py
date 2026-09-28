@@ -28,11 +28,12 @@ from ..engine.storage import bank_storage_prefix
 from . import collections as collections_store
 from . import store
 from .extraction import (
+    chat_about_collections,
     classify_schema,
+    collections_context,
     derive_records,
     extract_document,
     extract_passages,
-    propose_collections,
 )
 from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
@@ -588,17 +589,22 @@ class KnowledgeService:
             )
         return collection
 
-    async def propose_collections(
-        self, bank_id: str, instruction: str | None, sample: int, request_context: Any = None
+    async def chat_about_collections(
+        self,
+        bank_id: str,
+        messages: list[dict[str, str]],
+        sample: int,
+        request_context: Any = None,
     ) -> dict[str, Any]:
-        """What collections this corpus deserves, as a proposal a person applies or drops.
+        """One turn of the collection chat: what to say back, and what it proposes.
 
-        The model reads the documents and the collections that exist and answers with
-        changes; nothing here writes. That separation is the point: a schema change
-        re-reads a corpus and costs an LLM call per document, so it is a decision, not
-        something an agent should be able to make on its own.
+        The agent answers or calls its one tool; the tool records a proposal. Nothing
+        here writes. That separation is the point: applying a schema change re-reads the
+        corpus at one LLM call per document, so it is a decision a person makes.
         """
         await self._require_bank(bank_id)
+        if not messages:
+            raise KnowledgeBankError(400, "messages must not be empty")
         config = await self._config(bank_id, request_context)
         async with acquire_with_retry(await self._pool()) as conn:
             existing = await collections_store.list_collections(conn, bank_id)
@@ -615,23 +621,38 @@ class KnowledgeService:
                 sample,
             )
         documents = [dict(row) for row in rows]
-        if not documents:
-            raise KnowledgeBankError(400, "this bank has no documents to read; write some first")
 
         llm = self._field_extraction_llm(bank_id, config)
         try:
-            proposals = await propose_collections(llm, instruction=instruction, existing=existing, documents=documents)
+            turn = await chat_about_collections(
+                llm,
+                messages=messages,
+                context=collections_context(existing, documents),
+            )
         except Exception as e:
-            raise KnowledgeBankError(502, f"the model could not propose collections: {e}") from e
+            raise KnowledgeBankError(502, f"the model could not answer: {e}") from e
 
-        # Everything the model returns is validated here, against the same rules a PUT
-        # applies, so what comes back can be applied as-is — or is reported as refused
-        # rather than handed on to fail later.
-        known = {c["collection_id"] for c in existing} | {p.collection_id for p in proposals if p.action != "delete"}
+        proposals, warnings = self._validated_proposals(turn.proposals, existing)
+        return {
+            "reply": turn.reply,
+            "proposals": proposals,
+            "warnings": warnings,
+            "documents_read": len(documents),
+        }
+
+    def _validated_proposals(
+        self, proposed: list[Any], existing: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Every proposal, checked by the rules a PUT applies.
+
+        What comes back has to be applyable as-is: a definition the model got wrong is
+        reported here rather than handed on to fail when someone approves it.
+        """
+        known = {c["collection_id"] for c in existing} | {p.collection_id for p in proposed if p.action != "delete"}
         existing_ids = {c["collection_id"] for c in existing}
         out: list[dict[str, Any]] = []
         warnings: list[str] = []
-        for proposal in proposals:
+        for proposal in proposed:
             if not proposal.collection_id:
                 continue
             if proposal.action == "delete":
@@ -669,9 +690,8 @@ class KnowledgeService:
             identity = proposal.identity if proposal.identity in validated else None
             if proposal.identity and identity is None:
                 warnings.append(f"{proposal.collection_id}: identity {proposal.identity!r} is not one of its fields")
-            # An update the model left blank keeps what the collection has. A proposal is
-            # about the fields; a PUT replaces the whole definition, so an omitted name or
-            # identity would silently erase one — which is not what "update" asked for.
+            # An update the model left blank keeps what the collection has: a PUT replaces
+            # the definition, and "add a field" must not erase a name or an identity.
             current = next((c for c in existing if c["collection_id"] == proposal.collection_id), None)
             if identity is None and current and current.get("identity") in validated:
                 identity = current["identity"]
@@ -689,7 +709,7 @@ class KnowledgeService:
                     },
                 }
             )
-        return {"proposals": out, "documents_read": len(documents), "warnings": warnings}
+        return out, warnings
 
     async def put_collection(
         self,

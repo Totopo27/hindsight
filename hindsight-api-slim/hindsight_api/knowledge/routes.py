@@ -100,12 +100,18 @@ class CollectionRequest(BaseModel):
     )
 
 
-class ProposeCollectionsRequest(BaseModel):
-    """What to take into account when proposing collections."""
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
 
-    instruction: str | None = Field(default=None, description="What the caller wants out of this bank, in their words")
+
+class CollectionChatRequest(BaseModel):
+    """One turn. The conversation is the caller's to keep: the server holds no session,
+    and the bank's own state is read fresh on every turn anyway."""
+
+    messages: list[ChatMessage] = Field(min_length=1, max_length=60)
     sample_documents: int = Field(
-        default=12, ge=1, le=50, description="How many of the most recent documents the model reads"
+        default=8, ge=0, le=50, description="How many of the most recent documents the model reads"
     )
 
 
@@ -538,20 +544,27 @@ def build_router(get_request_context: Any) -> APIRouter:
         return await run(svc.query_records(kb, collection_id, body.model_dump(exclude_none=True), request_context=ctx))
 
     @router.post(
-        "/{kb}/collections/propose",
-        summary="Ask the model what collections this corpus deserves",
-        description="Reads a sample of the bank's documents and the collections it already has, and "
-        "answers with changes to make: create, update or delete, each with the definition and why. "
-        "Nothing is written — applying a proposal is the caller's PUT or DELETE, deliberately, "
-        "because a schema change re-reads the corpus and costs an LLM call per document.",
+        "/{kb}/collections/chat",
+        summary="Talk to a model about this bank's collections",
+        description="A turn of conversation. The model is given the collections as they are now "
+        "and a sample of the bank's documents, and either answers or calls its one tool to propose "
+        "changes. It cannot apply them: a proposal comes back for the caller to approve and PUT, "
+        "because a schema change re-reads the corpus at one LLM call per document.",
     )
-    async def propose_collections(
+    async def collection_chat(
         kb: str,
-        body: ProposeCollectionsRequest,
+        body: CollectionChatRequest,
         svc: KnowledgeService = Depends(service),
         ctx: RequestContext = Depends(get_request_context),
     ):
-        return await run(svc.propose_collections(kb, body.instruction, body.sample_documents, ctx))
+        return await run(
+            svc.chat_about_collections(
+                kb,
+                [message.model_dump() for message in body.messages],
+                body.sample_documents,
+                ctx,
+            )
+        )
 
     @router.get(
         "/{kb}/collections/{collection_id}/stats",
