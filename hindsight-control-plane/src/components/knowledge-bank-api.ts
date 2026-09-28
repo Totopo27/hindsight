@@ -135,3 +135,18 @@ export interface PassagePoint {
   title: string | null;
   snippet: string;
 }
+
+/** A record as the list returns it. */
+export interface KnowledgeRecord {
+  record_id: string;
+  values: Record<string, unknown>;
+  pinned?: Record<string, unknown> | null;
+  doc_ids?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** The same record with what every value was read from. */
+export interface KnowledgeRecordDetail extends KnowledgeRecord {
+  evidence?: Record<string, { doc_id: string; quote: string }[]>;
+}

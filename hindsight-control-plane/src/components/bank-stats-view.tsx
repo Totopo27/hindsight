@@ -248,7 +248,7 @@ function formatBucketTooltip(iso: string, trunc: string): string {
 }
 
 // Slim horizontal progress bar — replaces ugly recharts radial gauge.
-function ProgressRow({
+export function ProgressRow({
   done,
   total,
   doneColor,
@@ -286,7 +286,7 @@ interface DistributionItem {
   color: string;
 }
 
-function Distribution({
+export function Distribution({
   title,
   items,
   emptyLabel,

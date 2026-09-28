@@ -528,6 +528,17 @@ def build_router(get_request_context: Any) -> APIRouter:
     ):
         return await run(svc.query_records(kb, collection_id, body.model_dump(exclude_none=True), request_context=ctx))
 
+    @router.get("/{kb}/collections/{collection_id}/records", summary="One page of a collection's records")
+    async def list_records(
+        kb: str,
+        collection_id: str,
+        limit: int = Query(default=50, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        q: str | None = Query(default=None, description="Filter by record id or any value"),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.list_records(kb, collection_id, limit, offset, q))
+
     @router.get("/{kb}/collections/{collection_id}/records/{record_id}", summary="One record, with its evidence")
     async def get_record(
         kb: str,

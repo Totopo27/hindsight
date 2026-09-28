@@ -371,6 +371,40 @@ async def get_record(conn: Any, bank_id: str, collection_id: str, record_id: str
     return _loaded(row, "values", "evidence", "pinned") if row else None
 
 
+async def list_records(
+    conn: Any, bank_id: str, collection_id: str, limit: int, offset: int, query: str | None
+) -> dict[str, Any]:
+    """One page of a collection's records, most recently changed first.
+
+    The query DSL can select records too, but a list someone pages through wants a total
+    and a plain shape; the DSL answers questions, not "show me what is in here".
+    """
+    where = "bank_id = $1 AND collection_id = $2"
+    params: list[Any] = [bank_id, collection_id]
+    if query:
+        params.append(f"%{query}%")
+        where += f" AND (record_id ILIKE ${len(params)} OR values::text ILIKE ${len(params)})"
+    total = await conn.fetchval(f"SELECT count(*) FROM {fq_table('kb_records')} WHERE {where}", *params)
+    rows = await conn.fetch(
+        f"""
+        SELECT record_id, values, pinned, doc_ids, created_at, updated_at
+        FROM {fq_table("kb_records")}
+        WHERE {where}
+        ORDER BY updated_at DESC, record_id
+        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+        """,
+        *params,
+        limit,
+        offset,
+    )
+    return {
+        "items": [_loaded(row, "values", "pinned") for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 async def delete_records_for_document(conn: Any, bank_id: str, doc_id: str) -> None:
     """Forget what one document contributed: drop records it alone is behind."""
     await conn.execute(

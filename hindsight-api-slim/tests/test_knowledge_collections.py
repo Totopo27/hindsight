@@ -360,3 +360,30 @@ def test_the_record_schema_never_asks_for_a_free_form_dict():
     )
     batch: type[BaseModel] = create_model("Records", records=(list[record], Field(default_factory=list)))  # type: ignore[valid-type]
     assert "additionalProperties" not in json.dumps(batch.model_json_schema())
+
+
+@pytest.mark.asyncio
+async def test_records_are_paginated_and_searchable(kb_client, bank):
+    """A list someone pages through needs a total and a stable order.
+
+    The query DSL can select records too, but it answers questions; this answers "show
+    me what is in here", which is the first thing anyone asks of a collection.
+    """
+    records = [{"values": {"name": f"vendor-{i:02d}", "country": "de" if i % 2 else "fr"}} for i in range(7)]
+    written = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/collections/vendors/records", json={"records": records}
+    )
+    assert written.status_code == 200, written.text
+
+    async def page(**params) -> dict:
+        response = await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections/vendors/records", params=params)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    first = await page(limit=3)
+    assert first["total"] >= 7 and len(first["items"]) == 3
+    second = await page(limit=3, offset=3)
+    assert {r["record_id"] for r in first["items"]} & {r["record_id"] for r in second["items"]} == set()
+
+    assert (await page(q="vendor-0"))["total"] == 7, "the filter reads the record id"
+    assert (await page(q="fr"))["total"] >= 3, "and the values too — 'fr' is a country, not a name"

@@ -12,11 +12,11 @@ import {
   List,
   Network,
   MoreVertical,
-  PieChart,
   Plus,
   RefreshCw,
   RotateCcw,
   Activity,
+  Link2,
   Search as SearchIcon,
   Settings as SettingsIcon,
   Sparkles,
@@ -81,6 +81,8 @@ import {
   type KnowledgeDocument,
   type KnowledgeCollection,
   type QueryResult,
+  type KnowledgeRecord,
+  type KnowledgeRecordDetail,
   type KnowledgeSchema,
   type PassagePoint,
   type SchemaField,
@@ -91,6 +93,8 @@ import { SchemaEditor, type SchemaDraft } from "@/components/kb-schema-editor";
 import { withBasePath } from "@/lib/base-path";
 import { LLMRequestsView } from "@/components/llm-requests-view";
 import {
+  Distribution,
+  ProgressRow,
   OperationsCard,
   SectionHeading as StatsHeading,
   type BankStats,
@@ -1478,6 +1482,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
         </Button>
       }
     >
+      {schemas.length > 0 && <SchemaShareCard schemas={schemas} />}
       <div className="mb-6 flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
           {schemas.length} schema{schemas.length === 1 ? "" : "s"}
@@ -1577,26 +1582,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                   </div>
                 </div>
 
-                {/* Documents only: how many this schema owns, what share of the bank that
-                    is, and how many of them the extraction has actually filled. */}
-                <StatStrip className="mb-4">
-                  <InlineStat icon={FileText} label="Documents" value={current.documents ?? 0} />
-                  <InlineStat
-                    icon={PieChart}
-                    label="Share of bank"
-                    value={
-                      current.bank_documents
-                        ? Math.round(((current.documents ?? 0) / current.bank_documents) * 100)
-                        : 0
-                    }
-                    suffix="%"
-                  />
-                  <InlineStat
-                    icon={Tags}
-                    label="Documents filled"
-                    value={current.documents_with_fields}
-                  />
-                </StatStrip>
+                <SchemaFillCard schema={current} />
 
                 {/* Its definition, and what that definition actually caught. */}
                 <div className="border-b border-border mb-4 flex">
@@ -1701,6 +1687,58 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
 }
 
 /** The documents this schema was read with — what the definition actually caught. */
+// One hue per schema, in list order; documents without a schema stay grey.
+const SCHEMA_COLORS = ["#009296", "#8b5cf6", "#f59e0b", "#0074d9", "#ec4899", "#6366f1"];
+
+/** How the bank's documents split across its schemas — bank-wide, so it sits above the
+ *  list rather than inside one schema. */
+function SchemaShareCard({ schemas }: { schemas: KnowledgeSchema[] }) {
+  // Every schema carries the same bank total.
+  const bankTotal = schemas[0]?.bank_documents ?? 0;
+  const assigned = schemas.reduce((sum, s) => sum + (s.documents ?? 0), 0);
+  return (
+    <div className="mb-6 rounded-lg border border-border bg-card p-5">
+      <Distribution
+        title="Documents by schema"
+        items={[
+          ...schemas.map((s, index) => ({
+            name: s.schema_id,
+            value: s.documents ?? 0,
+            color: SCHEMA_COLORS[index % SCHEMA_COLORS.length],
+          })),
+          {
+            name: "No schema",
+            value: Math.max(0, bankTotal - assigned),
+            color: "var(--muted-foreground)",
+          },
+        ]}
+        emptyLabel="No documents in this bank yet."
+      />
+    </div>
+  );
+}
+
+/** How many of one schema's documents the extraction has filled. */
+function SchemaFillCard({ schema }: { schema: KnowledgeSchema }) {
+  const owned = schema.documents ?? 0;
+  const missing = owned - schema.documents_with_fields;
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-card p-5 space-y-3">
+      <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.08em]">
+        Filled by extraction
+      </h4>
+      <ProgressRow done={schema.documents_with_fields} total={owned} doneColor="#10b981" />
+      <p className="text-xs text-muted-foreground">
+        {owned === 0
+          ? "No document belongs to this schema yet."
+          : missing > 0
+            ? `${missing} document${missing === 1 ? " has" : "s have"} no values yet — Actions › Extract missing values fills them.`
+            : "Every document of this schema has its values."}
+      </p>
+    </div>
+  );
+}
+
 function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string }) {
   const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -1789,26 +1827,12 @@ function schemaCard(schema: KnowledgeSchema): ErdNode {
   };
 }
 
-const NEW_COLLECTION_DEFINITION = `{
-  "name": "Vendors",
-  "description": "One company we buy from",
-  "identity": "name",
-  "derive_on_write": false,
-  "fields": {
-    "name": { "type": "string", "description": "The company's name" },
-    "country": { "type": "string" }
-  }
-}`;
+type CollectionTab = "records" | "collections";
 
 function CollectionsPanel({ kbId }: { kbId: string }) {
   const [collections, setCollections] = useState<KnowledgeCollection[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ id: string; definition: string } | null>(null);
-  const [query, setQuery] = useState('{\n  "select": [{"count": "*", "as": "records"}]\n}');
-  const [result, setResult] = useState<QueryResult | null>(null);
-  const [records, setRecords] = useState<QueryResult | null>(null);
-  const [running, setRunning] = useState(false);
-  const [view, setView] = useState<"list" | "diagram">("list");
+  const [tab, setTab] = useState<CollectionTab>("records");
 
   const load = useCallback(async () => {
     const response = await kbFetch<{ items: KnowledgeCollection[] }>(
@@ -1822,68 +1846,104 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
     load().catch((e) => toast.error((e as Error).message));
   }, [load]);
 
-  const current = collections?.find((c) => c.collection_id === selected) ?? null;
+  if (!collections) return <Spinner />;
 
-  // The records are read through the query DSL rather than a list endpoint: the columns
-  // are the collection's own fields, which only the definition knows.
-  const loadRecords = useCallback(
-    async (collection: KnowledgeCollection) => {
-      try {
-        setRecords(
-          await kbFetch<QueryResult>(
-            `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collection.collection_id)}/query`,
-            {
-              method: "POST",
-              body: {
-                select: [
-                  { field: "record_id", as: "record_id" },
-                  // Aliased to the field name: an unaliased select column comes back as
-                  // "column_2", which is not a heading anyone can read.
-                  ...Object.keys(collection.fields).map((name) => ({ field: name, as: name })),
-                  { field: "doc_count", as: "documents" },
-                ],
-                order_by: [{ field: "updated_at", direction: "desc" }],
-                limit: 50,
-              },
-            }
-          )
-        );
-      } catch (e) {
-        toast.error((e as Error).message);
-        setRecords(null);
-      }
-    },
-    [kbId]
+  const tabs: { id: CollectionTab; label: string }[] = [
+    { id: "records", label: "Records" },
+    { id: "collections", label: "Collections" },
+  ];
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2 text-foreground">Collections</h1>
+        <p className="text-muted-foreground">
+          A collection is a kind of thing the documents talk about; each record folds together what
+          every document said about one of them.
+        </p>
+      </div>
+      <div className="border-b border-border mb-5 flex">
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setTab(item.id)}
+            className={`px-6 py-3 font-semibold text-sm transition-all relative ${
+              tab === item.id ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {item.label}
+            {tab === item.id && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "collections" ? (
+        <CollectionDefinitions
+          kbId={kbId}
+          collections={collections}
+          selected={selected}
+          onSelect={setSelected}
+          onChanged={load}
+        />
+      ) : (
+        <CollectionRecords kbId={kbId} collections={collections} />
+      )}
+    </div>
   );
+}
 
-  useEffect(() => {
-    if (current) loadRecords(current);
-    else setRecords(null);
-  }, [current, loadRecords]);
+const NEW_COLLECTION_DEFINITION_TEMPLATE = `{
+  "name": "Vendors",
+  "description": "One company we buy from",
+  "identity": "name",
+  "derive_on_write": false,
+  "fields": {
+    "name": { "type": "string", "description": "The company's name" },
+    "country": { "type": "string" }
+  }
+}`;
 
-  const run = async () => {
-    if (!selected) return;
-    let body: unknown;
-    try {
-      body = JSON.parse(query);
-    } catch {
-      toast.error("That is not valid JSON");
-      return;
-    }
-    setRunning(true);
-    try {
-      setResult(
-        await kbFetch<QueryResult>(
-          `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(selected)}/query`,
-          { method: "POST", body }
-        )
-      );
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setRunning(false);
-    }
-  };
+/** The collections themselves, in the layout the schemas use: the list on the left, the
+ *  selected one on the right, and the whole set as a diagram when that reads better. */
+function CollectionDefinitions({
+  kbId,
+  collections,
+  selected,
+  onSelect,
+  onChanged,
+}: {
+  kbId: string;
+  collections: KnowledgeCollection[];
+  selected: string | null;
+  onSelect: (id: string) => void;
+  onChanged: () => Promise<void> | void;
+}) {
+  const [view, setView] = useState<"list" | "diagram">("list");
+  const [editing, setEditing] = useState<{ id: string; definition: string } | null>(null);
+
+  const current = collections.find((c) => c.collection_id === selected) ?? null;
+
+  const openEditor = (collection?: KnowledgeCollection) =>
+    setEditing(
+      collection
+        ? {
+            id: collection.collection_id,
+            definition: JSON.stringify(
+              {
+                name: collection.name,
+                description: collection.description,
+                identity: collection.identity,
+                derive_on_write: collection.derive_on_write ?? false,
+                fields: collection.fields,
+              },
+              null,
+              2
+            ),
+          }
+        : { id: "", definition: NEW_COLLECTION_DEFINITION_TEMPLATE }
+    );
 
   const saveDefinition = async () => {
     if (!editing) return;
@@ -1903,8 +1963,20 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
       });
       toast.success("Saved. Derive to fill it from the documents.");
       setEditing(null);
-      setSelected(id);
-      await load();
+      onSelect(id);
+      await onChanged();
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
+  const derive = async (collectionId: string) => {
+    try {
+      await kbFetch(
+        `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/derive`,
+        { method: "POST", body: {} }
+      );
+      toast.success("Deriving in the background — watch it in Settings.");
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -1918,216 +1990,128 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
           method: "DELETE",
         }
       );
-      setSelected(null);
-      await load();
+      await onChanged();
     } catch (e) {
       toast.error((e as Error).message);
     }
   };
 
-  const derive = async (collectionId: string) => {
-    try {
-      await kbFetch(
-        `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/derive`,
-        { method: "POST", body: {} }
-      );
-      toast.success("Deriving in the background — watch it in Operations.");
-    } catch (e) {
-      toast.error((e as Error).message);
-    }
-  };
-
-  const openEditor = (collection?: KnowledgeCollection) =>
-    setEditing(
-      collection
-        ? {
-            id: collection.collection_id,
-            definition: JSON.stringify(
-              {
-                name: collection.name,
-                description: collection.description,
-                identity: collection.identity,
-                derive_on_write: collection.derive_on_write ?? false,
-                fields: collection.fields,
-              },
-              null,
-              2
-            ),
-          }
-        : { id: "", definition: NEW_COLLECTION_DEFINITION }
-    );
-
-  if (!collections) return <Spinner />;
   return (
-    <div className="space-y-8">
-      <Section
-        title="Collections"
-        description="A collection is a kind of thing the documents talk about; each record folds together what every document said about one of them."
-        action={
+    <>
+      <div className="mb-6 flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          {collections.length} collection{collections.length === 1 ? "" : "s"}
+        </div>
+        <div className="flex items-center gap-2">
+          <ViewToggle value={view} onChange={setView} />
           <Button size="sm" variant="outline" onClick={() => openEditor()}>
             <Plus className="w-4 h-4 mr-1" /> New collection
           </Button>
-        }
-      >
-        <div className="mb-6 flex items-center justify-between">
-          <div className="text-sm text-muted-foreground">
-            {collections.length} collection{collections.length === 1 ? "" : "s"}
-          </div>
-          <ViewToggle value={view} onChange={setView} />
         </div>
-        {view === "diagram" && collections.length > 0 && (
-          <ErdDiagram
-            nodes={collections.map((collection) => ({
-              id: collection.collection_id,
-              title: collection.collection_id,
-              badge: "collection",
-              fields: Object.entries(collection.fields).map(([name, spec]) => ({
-                name,
-                // A relationship field holds another collection's record id, so its
-                // "type" is that collection — which is also where its line goes.
-                type: spec.collection ?? spec.type ?? "string",
-                primary: collection.identity === name,
-                relation: Boolean(spec.collection),
-              })),
-            }))}
-            edges={collections.flatMap((collection) =>
-              Object.entries(collection.fields)
-                .filter(([, spec]) => spec.collection)
-                .map(([name, spec]) => ({
-                  from: collection.collection_id,
-                  fromField: name,
-                  to: String(spec.collection),
-                }))
-            )}
-            selected={selected}
-            onSelect={setSelected}
-          />
-        )}
+      </div>
 
-        {view === "diagram" && collections.length > 0 ? null : collections.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No collections yet. Define one — its fields are what an LLM reads out of each document,
-            and the identity field is what makes the same thing found twice one record.
-          </p>
-        ) : (
-          <TableFrame>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Collection</TableHead>
-                  <TableHead>Identity</TableHead>
-                  <TableHead>Fields</TableHead>
-                  <TableHead className="text-right">Records</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {collections.map((collection) => (
-                  <TableRow
-                    key={collection.collection_id}
-                    onClick={() => setSelected(collection.collection_id)}
-                    className={`cursor-pointer ${
-                      collection.collection_id === selected ? "bg-accent/40" : ""
-                    }`}
-                  >
-                    <TableCell className="font-mono text-xs">
-                      {collection.collection_id}
-                      {collection.name && (
-                        <div className="text-xs text-muted-foreground">{collection.name}</div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-xs">{collection.identity ?? "—"}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {Object.entries(collection.fields)
-                        .map(([name, spec]) =>
-                          spec.collection ? `${name} → ${spec.collection}` : name
-                        )
-                        .join(", ")}
-                    </TableCell>
-                    <TableCell className="text-right text-xs">{collection.records ?? 0}</TableCell>
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      <Button size="sm" variant="ghost" onClick={() => openEditor(collection)}>
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => derive(collection.collection_id)}
-                      >
-                        Derive
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        title="Delete"
-                        onClick={() => remove(collection.collection_id)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableFrame>
-        )}
-      </Section>
-
-      {current && (
-        <Section
-          title={`Records · ${current.collection_id}`}
-          sub
-          description="The 50 most recently updated records, with how many documents each one folds together."
-        >
-          {!records ? (
-            <Spinner />
-          ) : records.rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No records yet. Derive the collection to read them out of the documents.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <ResultTable result={records} />
-            </div>
+      {collections.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No collections yet. Define one — its fields are what an LLM reads out of each document,
+          and the identity field is what makes the same thing found twice one record.
+        </p>
+      ) : view === "diagram" ? (
+        <ErdDiagram
+          nodes={collections.map(collectionCard)}
+          edges={collections.flatMap((collection) =>
+            Object.entries(collection.fields)
+              .filter(([, spec]) => spec.collection)
+              .map(([name, spec]) => ({
+                from: collection.collection_id,
+                fromField: name,
+                to: String(spec.collection),
+              }))
           )}
-        </Section>
-      )}
-
-      {current && (
-        <Section
-          title="Query"
-          sub
-          description="The same language the documents use, over records — aggregates, grouping, and joins across relationship fields."
-        >
-          <div className="flex gap-2 items-center">
-            <select
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-              value={selected ?? ""}
-              onChange={(e) => setSelected(e.target.value)}
-            >
-              {collections.map((collection) => (
-                <option key={collection.collection_id} value={collection.collection_id}>
-                  {collection.collection_id}
-                </option>
-              ))}
-            </select>
-            <Button size="sm" onClick={run} disabled={running}>
-              {running ? <Spinner size="sm" /> : "Run query"}
-            </Button>
+          selected={selected}
+          onSelect={onSelect}
+        />
+      ) : (
+        <div className="grid gap-5 md:grid-cols-[minmax(200px,260px)_1fr] items-start">
+          <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+            {collections.map((collection) => (
+              <button
+                key={collection.collection_id}
+                onClick={() => onSelect(collection.collection_id)}
+                className={`w-full text-left px-3 py-2.5 transition-colors ${
+                  collection.collection_id === selected ? "bg-accent" : "hover:bg-muted/50"
+                }`}
+              >
+                <div className="font-mono text-xs">{collection.collection_id}</div>
+                {collection.name && (
+                  <div className="text-xs text-muted-foreground truncate">{collection.name}</div>
+                )}
+                <div className="text-[11px] text-muted-foreground mt-0.5">
+                  {Object.keys(collection.fields).length} fields · {collection.records ?? 0} records
+                </div>
+              </button>
+            ))}
           </div>
-          <Textarea
-            rows={10}
-            className="mt-2 font-mono text-xs"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            spellCheck={false}
-          />
-          {result && (
-            <div className="mt-4 overflow-x-auto">
-              <ResultTable result={result} />
-            </div>
-          )}
-        </Section>
+
+          <div>
+            {!current ? (
+              <p className="text-sm text-muted-foreground">Pick a collection to see its fields.</p>
+            ) : (
+              <>
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-mono text-sm font-semibold">{current.collection_id}</div>
+                    <p className="text-xs text-muted-foreground">
+                      {current.description || "Derive it to read its records out of the documents."}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <Button size="sm" variant="outline" onClick={() => openEditor(current)}>
+                      Edit
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          Actions
+                          <MoreVertical className="w-4 h-4 ml-2" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-56">
+                        <DropdownMenuItem onClick={() => derive(current.collection_id)}>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Derive from documents
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => remove(current.collection_id)}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete collection
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </div>
+
+                <StatStrip className="mb-4">
+                  <InlineStat
+                    icon={Table2}
+                    label="Fields"
+                    value={Object.keys(current.fields).length}
+                  />
+                  <InlineStat icon={Layers} label="Records" value={current.records ?? 0} />
+                  <InlineStat
+                    icon={Link2}
+                    label="Relationships"
+                    value={Object.values(current.fields).filter((spec) => spec.collection).length}
+                  />
+                </StatStrip>
+
+                <ErdDiagram nodes={[collectionCard(current)]} edges={[]} />
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
@@ -2163,12 +2147,412 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  );
+}
+
+/** One collection as a diagram card. */
+function collectionCard(collection: KnowledgeCollection): ErdNode {
+  return {
+    id: collection.collection_id,
+    title: collection.collection_id,
+    badge: "collection",
+    fields: Object.entries(collection.fields).map(([name, spec]) => ({
+      name,
+      // A relationship field holds another collection's record id, so its "type" is that
+      // collection — which is also where its line goes.
+      type: spec.collection ?? spec.type ?? "string",
+      primary: collection.identity === name,
+      relation: Boolean(spec.collection),
+      values: spec.values as (string | number | boolean)[] | undefined,
+    })),
+  };
+}
+
+const RECORDS_PER_PAGE = 25;
+
+/** The records themselves: a page at a time, with the query language above them. A row
+ *  opens the record, because a folded record is only trustworthy with its evidence. */
+function CollectionRecords({
+  kbId,
+  collections,
+}: {
+  kbId: string;
+  collections: KnowledgeCollection[];
+}) {
+  const [collectionId, setCollectionId] = useState(collections[0]?.collection_id ?? "");
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
+  const [records, setRecords] = useState<{ items: KnowledgeRecord[]; total: number } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+
+  const [queryOpen, setQueryOpen] = useState(false);
+  const [query, setQuery] = useState('{\n  "select": [{"count": "*", "as": "records"}]\n}');
+  const [result, setResult] = useState<QueryResult | null>(null);
+  const [running, setRunning] = useState(false);
+
+  const collection = collections.find((c) => c.collection_id === collectionId) ?? null;
+
+  const load = useCallback(async () => {
+    if (!collectionId) return;
+    const params = new URLSearchParams({
+      limit: String(RECORDS_PER_PAGE),
+      offset: String(page * RECORDS_PER_PAGE),
+    });
+    if (search.trim()) params.set("q", search.trim());
+    try {
+      setRecords(
+        await kbFetch<{ items: KnowledgeRecord[]; total: number }>(
+          `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/records?${params}`
+        )
+      );
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  }, [kbId, collectionId, page, search]);
+
+  useEffect(() => {
+    const timer = setTimeout(load, search ? 250 : 0);
+    return () => clearTimeout(timer);
+  }, [load, search]);
+
+  const run = async () => {
+    if (!collectionId) return;
+    let body: unknown;
+    try {
+      body = JSON.parse(query);
+    } catch {
+      toast.error("That is not valid JSON");
+      return;
+    }
+    setRunning(true);
+    try {
+      setResult(
+        await kbFetch<QueryResult>(
+          `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/query`,
+          { method: "POST", body }
+        )
+      );
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  if (collections.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No collections yet — define one on the Collections tab, then derive it.
+      </p>
+    );
+  }
+
+  const columns = collection ? Object.keys(collection.fields) : [];
+  const total = records?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / RECORDS_PER_PAGE));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={collectionId}
+          onValueChange={(v) => {
+            setCollectionId(v);
+            setPage(0);
+            setResult(null);
+          }}
+        >
+          <SelectTrigger className="w-[200px] h-9" aria-label="Collection">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper">
+            {collections.map((c) => (
+              <SelectItem key={c.collection_id} value={c.collection_id}>
+                {c.collection_id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="relative min-w-[220px] flex-1">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Filter by record id or any value…"
+            className="pl-8 h-9"
+          />
+        </div>
+        <DisclosureButton open={queryOpen} onToggle={() => setQueryOpen((v) => !v)} label="Query" />
+      </div>
+
+      {queryOpen && (
+        <div className="space-y-2">
+          <Textarea
+            rows={8}
+            className="font-mono text-xs"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+          />
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={run} disabled={running}>
+              {running ? <Spinner size="sm" /> : "Run query"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              The same language the documents use, over records — aggregates, grouping, and joins
+              across relationship fields.
+            </p>
+          </div>
+          {result && (
+            <Tabs defaultValue="data" className="mt-2">
+              <TabsList className="grid w-full max-w-xs grid-cols-2">
+                <TabsTrigger value="data">Data</TabsTrigger>
+                <TabsTrigger value="json">JSON</TabsTrigger>
+              </TabsList>
+              <TabsContent value="data" className="mt-3">
+                <ResultTable
+                  result={result}
+                  onRowClick={(row) => {
+                    // A result that carries record_id is a set of records, so a row is a
+                    // record and opens as one.
+                    const index = result.columns.indexOf("record_id");
+                    if (index >= 0 && row[index]) setOpen(String(row[index]));
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="json" className="mt-3">
+                <pre className="max-h-[600px] overflow-auto rounded-lg border border-border bg-muted/30 p-4 text-xs leading-relaxed">
+                  {JSON.stringify(result, null, 2)}
+                </pre>
+              </TabsContent>
+            </Tabs>
+          )}
+        </div>
+      )}
+
+      {!records ? (
+        <Spinner />
+      ) : records.items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {search ? "No records match that filter." : "No records yet. Derive the collection."}
+        </p>
+      ) : (
+        <>
+          <TableFrame>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-56">Record</TableHead>
+                  {columns.map((name) => (
+                    <TableHead key={name}>{name}</TableHead>
+                  ))}
+                  <TableHead className="w-28 text-right">Documents</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {records.items.map((record) => (
+                  <TableRow
+                    key={record.record_id}
+                    className="cursor-pointer"
+                    onClick={() => setOpen(record.record_id)}
+                  >
+                    <TableCell className="font-mono text-xs">{record.record_id}</TableCell>
+                    {columns.map((name) => (
+                      <TableCell key={name} className="text-xs">
+                        {formatFieldValue(record.values?.[name])}
+                      </TableCell>
+                    ))}
+                    <TableCell className="text-right text-xs">
+                      {record.doc_ids?.length ?? 0}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableFrame>
+
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              {total.toLocaleString()} record{total === 1 ? "" : "s"}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page === 0}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                Previous
+              </Button>
+              <span className="tabular-nums">
+                {page + 1} / {pages}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page + 1 >= pages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+
+      <RecordDetail
+        kbId={kbId}
+        collectionId={collectionId}
+        recordId={open}
+        onClose={() => setOpen(null)}
+        onChanged={load}
+      />
     </div>
   );
 }
 
-/** Rows of a query result, whatever its columns turn out to be. */
-function ResultTable({ result }: { result: QueryResult }) {
+/** One record: what it says, where each value came from, and the documents behind it. */
+function RecordDetail({
+  kbId,
+  collectionId,
+  recordId,
+  onClose,
+  onChanged,
+}: {
+  kbId: string;
+  collectionId: string;
+  recordId: string | null;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [record, setRecord] = useState<KnowledgeRecordDetail | null>(null);
+
+  useEffect(() => {
+    if (!recordId) {
+      setRecord(null);
+      return;
+    }
+    let live = true;
+    kbFetch<KnowledgeRecordDetail>(
+      `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/records/${encodeURIComponent(recordId)}`
+    )
+      .then((r) => live && setRecord(r))
+      .catch((e) => toast.error((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [kbId, collectionId, recordId]);
+
+  const remove = async () => {
+    if (!recordId) return;
+    try {
+      await kbFetch(
+        `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(collectionId)}/records/${encodeURIComponent(recordId)}`,
+        { method: "DELETE" }
+      );
+      onClose();
+      onChanged();
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
+  return (
+    <Dialog open={recordId !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-base">{recordId}</DialogTitle>
+          <DialogDescription>
+            Folded from {record?.doc_ids?.length ?? 0} document
+            {(record?.doc_ids?.length ?? 0) === 1 ? "" : "s"} in {collectionId}.
+          </DialogDescription>
+        </DialogHeader>
+
+        {!record ? (
+          <Spinner />
+        ) : (
+          <div className="space-y-4">
+            <InfoCard title="Values" icon={<Table2 className="w-3.5 h-3.5" />}>
+              {Object.entries(record.values ?? {}).map(([name, value]) => (
+                <MetadataRow
+                  key={name}
+                  label={name}
+                  value={
+                    <span className="flex items-center gap-2">
+                      {formatFieldValue(value)}
+                      {record.pinned && name in record.pinned && (
+                        <span className="rounded bg-amber-100 dark:bg-amber-500/20 px-1.5 py-0.5 text-[10px]">
+                          pinned
+                        </span>
+                      )}
+                    </span>
+                  }
+                />
+              ))}
+            </InfoCard>
+
+            {/* Evidence is what makes a folded value auditable: a total nobody can trace
+                is a claim, not data. */}
+            {record.evidence && Object.keys(record.evidence).length > 0 && (
+              <InfoCard title="Evidence" icon={<FileText className="w-3.5 h-3.5" />}>
+                {Object.entries(record.evidence).map(([name, quotes]) => (
+                  <MetadataRow
+                    key={name}
+                    label={name}
+                    value={
+                      <ul className="space-y-1">
+                        {(quotes ?? []).map((quote, i) => (
+                          <li key={i} className="text-xs text-muted-foreground">
+                            <span className="font-mono">{quote.doc_id}</span> —{" "}
+                            {/* A quote written straight through the records API is
+                                whatever the caller sent, so it is printed as text
+                                rather than assumed to be a string. */}
+                            “{formatFieldValue(quote.quote)}”
+                          </li>
+                        ))}
+                      </ul>
+                    }
+                  />
+                ))}
+              </InfoCard>
+            )}
+
+            <InfoCard title="Documents" icon={<FileText className="w-3.5 h-3.5" />}>
+              <div className="flex flex-wrap gap-1">
+                {(record.doc_ids ?? []).map((docId) => (
+                  <span
+                    key={docId}
+                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]"
+                  >
+                    {docId}
+                  </span>
+                ))}
+              </div>
+            </InfoCard>
+
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" className="text-destructive" onClick={remove}>
+                <Trash2 className="w-4 h-4 mr-1" /> Delete record
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ResultTable({
+  result,
+  onRowClick,
+}: {
+  result: QueryResult;
+  onRowClick?: (row: unknown[]) => void;
+}) {
   return (
     <TableFrame>
       <Table>
@@ -2181,7 +2565,11 @@ function ResultTable({ result }: { result: QueryResult }) {
         </TableHeader>
         <TableBody>
           {result.rows.map((row, i) => (
-            <TableRow key={i}>
+            <TableRow
+              key={i}
+              className={onRowClick ? "cursor-pointer" : undefined}
+              onClick={() => onRowClick?.(row)}
+            >
               {row.map((value, j) => (
                 <TableCell key={j} className="text-xs">
                   {value === null

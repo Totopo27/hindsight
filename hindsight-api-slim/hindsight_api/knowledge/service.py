@@ -723,6 +723,14 @@ class KnowledgeService:
                 return resolved
         return None
 
+    async def list_records(
+        self, bank_id: str, collection_id: str, limit: int, offset: int, query: str | None
+    ) -> dict[str, Any]:
+        """One page of a collection's records."""
+        await self.get_collection(bank_id, collection_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            return await collections_store.list_records(conn, bank_id, collection_id, limit, offset, query)
+
     async def get_record(self, bank_id: str, collection_id: str, record_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
