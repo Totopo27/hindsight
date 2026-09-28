@@ -64,7 +64,7 @@ export function NewKnowledgeBankDialog({
         </DialogHeader>
         <Input
           autoFocus
-          placeholder="contracts"
+          placeholder="product-docs"
           value={id}
           onChange={(e) => setId(e.target.value)}
           onKeyDown={(e) => {

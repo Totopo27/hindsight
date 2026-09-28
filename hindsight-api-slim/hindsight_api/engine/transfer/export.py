@@ -120,6 +120,18 @@ _SKIP_TABLES = frozenset(
         # instance, and failing the alias-vs-bank check on another. Add them to the
         # target deliberately, once it is the bank you mean to route to.
         "bank_aliases",
+        # A knowledge bank's tables. They are never populated for a memory bank, and a
+        # knowledge bank moves through its own transfer endpoints
+        # (``hindsight_api/knowledge/transfer.py``), which re-passage and re-embed on
+        # import rather than carrying vectors — this exporter would carry rows it has no
+        # way to rebuild.
+        "kb_documents",
+        "kb_passages",
+        "kb_schemas",
+        "kb_collections",
+        "kb_records",
+        "kb_record_contributions",
+        "kb_record_aliases",
     }
 )
 # Derived columns dropped from carried rows so the target regenerates them with

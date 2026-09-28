@@ -13,9 +13,11 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from ..config import get_config
 from ..extensions import OperationValidationError
 from ..models import RequestContext
 from .service import MAX_BATCH_DOCUMENTS, DocumentInput, KnowledgeBankError, KnowledgeService, UploadedFile
+from .transfer import KnowledgeTransferScope
 
 
 class CreateKnowledgeBank(BaseModel):
@@ -335,6 +337,66 @@ def build_router(get_request_context: Any) -> APIRouter:
     @router.delete("/{kb}/documents/{doc_id:path}", summary="Delete a document and its passages")
     async def delete_document(kb: str, doc_id: str, svc: KnowledgeService = Depends(service)):
         return await run(svc.delete_document(kb, doc_id))
+
+    @router.post(
+        "/{kb}/transfer/export",
+        status_code=202,
+        summary="Export a knowledge bank (async)",
+        description="Submit an async export as a ZIP archive. include_config carries the bank, its schemas "
+        "and its collection definitions — config alone is the template format, a bank someone else can start "
+        "from. include_data carries the documents (text, fields, metadata) and the records, as the "
+        "per-document contributions they were folded from. Passages and embeddings are never carried: the "
+        "import re-passages and re-embeds with the target bank's own settings. Returns an operation_id; poll "
+        "the bank's operations endpoint, then fetch the archive from the download_url in its result_metadata.",
+    )
+    async def transfer_export(
+        kb: str,
+        include_data: bool = Query(default=True, description="Carry the documents and the records"),
+        include_config: bool = Query(default=True, description="Carry the bank, its schemas and its collections"),
+        svc: KnowledgeService = Depends(service),
+    ):
+        if not get_config().enable_document_export_api:
+            raise HTTPException(
+                status_code=404,
+                detail="Export API is disabled. Set HINDSIGHT_API_ENABLE_DOCUMENT_EXPORT_API=true to enable.",
+            )
+        return await run(svc.submit_export(kb, scope=KnowledgeTransferScope(data=include_data, config=include_config)))
+
+    @router.post(
+        "/{kb}/transfer/import",
+        status_code=202,
+        summary="Import a knowledge bank (async)",
+        description="Submit an archive produced by the export endpoint. mode=restore (default) writes it into "
+        "target_bank_id, which must NOT exist; mode=merge folds it into an existing bank, which is how a "
+        "template is applied. The include flags narrow what is restored to a subset of what the archive "
+        "holds — they cannot add what the producer did not export. The operation is recorded against {kb}, "
+        "because in restore mode the target does not exist yet.",
+    )
+    async def transfer_import(
+        kb: str,
+        file: UploadFile = File(..., description="Knowledge transfer ZIP archive"),
+        mode: str = Query(default="restore", description="restore (into a fresh bank) | merge (into an existing one)"),
+        target_bank_id: str | None = Query(
+            default=None, description="The bank to write into; defaults to the archive's source bank"
+        ),
+        include_data: bool = Query(default=True, description="Restore the documents and the records"),
+        include_config: bool = Query(default=True, description="Restore the schemas and the collections"),
+        svc: KnowledgeService = Depends(service),
+    ):
+        if not get_config().enable_document_import_api:
+            raise HTTPException(
+                status_code=404,
+                detail="Import API is disabled. Set HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API=true to enable.",
+            )
+        return await run(
+            svc.submit_import(
+                kb,
+                await file.read(),
+                target_bank_id=target_bank_id,
+                mode=mode,
+                scope=KnowledgeTransferScope(data=include_data, config=include_config),
+            )
+        )
 
     @router.get("/{kb}/operations", summary="Write operations for this bank")
     async def list_operations(

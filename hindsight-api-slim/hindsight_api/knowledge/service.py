@@ -38,6 +38,7 @@ from .extraction import (
 from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
 from .identity import normalise
+from .transfer import KnowledgeTransferScope
 from .passages import split_into_passages
 from .query import CompiledQuery, Limits, compile_query, json_safe
 from .records_query import compile_record_query
@@ -439,6 +440,7 @@ class KnowledgeService:
         schema: dict[str, Any] | None,
         document: DocumentInput,
         passage_texts: list[tuple[int, str]],
+        extract: bool = True,
     ) -> ExtractedFields:
         """One document's metadata: what the write supplied, plus what is left to extract.
 
@@ -451,7 +453,10 @@ class KnowledgeService:
         supplied = self._validated_fields(schema, document)
         supplied_document, supplied_passages = supplied.document, supplied.passages
 
-        if schema is None:
+        # An import supplies every field the source had and must not spend a token
+        # filling one it did not, so it turns extraction off rather than relying on the
+        # supplied values happening to cover the schema.
+        if schema is None or not extract:
             return ExtractedFields(document=supplied_document, passages=supplied_passages)
 
         pending_document = extract_only(document_definition, document.fields)
@@ -1298,6 +1303,7 @@ class KnowledgeService:
             )
             for d in task["documents"]
         ]
+        extract = bool(task.get("extract", True))
         config = await self._config(bank_id, None)
         passage_size = int(config.kb_passage_size)
         overlap = min(int(config.kb_passage_overlap), max(passage_size - 1, 0))
@@ -1355,6 +1361,7 @@ class KnowledgeService:
                     schema=schema,
                     document=document,
                     passage_texts=[(passage.index, passage.text) for passage in passages],
+                    extract=extract,
                 )
 
             # Embed the title with the passage. A paragraph usually names its subject once,
@@ -1606,6 +1613,223 @@ class KnowledgeService:
         ordered = sorted(zip(keys, (float(s) for s in scores)), key=lambda pair: -pair[1])
         return ordered
 
+    # ---- moving a bank
+
+    async def submit_export(self, bank_id: str, *, scope: KnowledgeTransferScope) -> dict[str, Any]:
+        """Queue an export. Building and compressing an archive is not request work."""
+        await self._require_bank(bank_id)
+        if not (scope.data or scope.config):
+            raise KnowledgeBankError(400, "nothing to export: set include_data, include_config, or both")
+        result = await self.memory._submit_async_operation(
+            bank_id=bank_id,
+            operation_type="knowledge_export",
+            task_type="knowledge_export",
+            task_payload={"include_data": scope.data, "include_config": scope.config},
+        )
+        return {"operation_id": result["operation_id"], "status": "pending"}
+
+    async def run_export(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Worker side: stream the archive into file storage, hand back a download url."""
+        from .transfer import stream_export
+
+        bank_id = task["bank_id"]
+        scope = KnowledgeTransferScope(
+            data=bool(task.get("include_data", True)), config=bool(task.get("include_config", True))
+        )
+        from ..engine.memory_engine import ByteStreamCounter
+
+        stream = stream_export(await self._pool(), bank_id, scope=scope)
+        counter = ByteStreamCounter(stream)
+        storage_key = f"banks/{bank_id}/exports/{uuid.uuid4()}/knowledge.zip"
+        await self.memory._file_storage.store_stream(
+            key=storage_key,
+            stream=counter,
+            metadata={"content_type": "application/zip", "bank_id": bank_id},
+        )
+        result = {
+            "storage_key": storage_key,
+            "download_url": await self.memory._file_storage.get_download_url(storage_key),
+            "byte_size": counter.total_bytes,
+            "filename": f"{bank_id}-knowledge.zip",
+        }
+        await self._record_result(task.get("operation_id"), result)
+        return result
+
+    async def submit_import(
+        self,
+        bank_id: str,
+        archive_bytes: bytes,
+        *,
+        target_bank_id: str | None,
+        mode: str,
+        scope: KnowledgeTransferScope,
+    ) -> dict[str, Any]:
+        """Queue an import of this archive. The archive is parsed here, not in the worker.
+
+        ``bank_id`` is the bank the operation is recorded against — ``async_operations``
+        has a foreign key to ``banks``, and in restore mode the target does not exist yet.
+        """
+        from .transfer import KnowledgeArchiveError, parse_archive
+
+        await self._require_bank(bank_id)
+        if mode not in ("restore", "merge"):
+            raise KnowledgeBankError(400, f"invalid mode {mode!r} (expected restore|merge)")
+        try:
+            archive = parse_archive(archive_bytes)
+        except KnowledgeArchiveError as e:
+            raise KnowledgeBankError(400, str(e)) from e
+        target = target_bank_id or (bank_id if mode == "merge" else archive.source_bank_id)
+        async with acquire_with_retry(await self._pool()) as conn:
+            kind = await store.bank_kind(conn, target)
+        if mode == "restore" and kind is not None:
+            raise KnowledgeBankError(
+                409,
+                f"bank {target!r} already exists; a restore writes into a fresh bank. "
+                f"Use mode=merge to fold this archive into it, or choose another target.",
+            )
+        if mode == "merge" and kind != store.KNOWLEDGE_KIND:
+            raise KnowledgeBankError(404, f"knowledge bank {target!r} not found")
+
+        storage_key = f"banks/{bank_id}/imports/{uuid.uuid4()}/knowledge.zip"
+        await self.memory._file_storage.store(
+            file_data=archive_bytes,
+            key=storage_key,
+            metadata={"content_type": "application/zip", "bank_id": bank_id},
+        )
+        result = await self.memory._submit_async_operation(
+            bank_id=bank_id,
+            operation_type="knowledge_import",
+            task_type="knowledge_import",
+            task_payload={
+                "storage_key": storage_key,
+                "target_bank_id": target,
+                "mode": mode,
+                # An archive cannot be asked for what it does not carry, so the flags
+                # narrow what is restored rather than adding to it.
+                "include_data": scope.data and archive.has_data,
+                "include_config": scope.config and archive.has_config,
+            },
+            result_metadata={"target_bank_id": target, "documents": archive.document_count},
+        )
+        return {"operation_id": result["operation_id"], "target_bank_id": target, "status": "pending"}
+
+    async def run_import(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Worker side: create the target if needed, restore config, then data.
+
+        Config first, always: a document names the schema that gives its fields meaning,
+        and a record belongs to a collection that has to exist before it can be written.
+        """
+        from .transfer import parse_archive
+
+        target = task["target_bank_id"]
+        archive = parse_archive(await self.memory._file_storage.retrieve(task["storage_key"]))
+        counts = {"schemas": 0, "collections": 0, "documents": 0, "records": 0}
+
+        async with acquire_with_retry(await self._pool()) as conn:
+            if await store.bank_kind(conn, target) is None:
+                await store.create_bank(
+                    conn, target, archive.name or target, json.dumps(DEFAULT_DISPOSITION), uuid.uuid4()
+                )
+
+        if task.get("include_config"):
+            for schema in archive.schemas:
+                await self.put_schema(
+                    target,
+                    schema["schema_id"],
+                    name=schema.get("name"),
+                    description=schema.get("description"),
+                    document_fields=schema.get("document_fields") or {},
+                    passage_fields=schema.get("passage_fields") or {},
+                )
+                counts["schemas"] += 1
+            # Two passes: a relationship field names another collection, and
+            # put_collection refuses one that does not exist yet. The first pass writes
+            # every definition without its relationships, the second puts them back.
+            plain = [
+                {**c, "fields": {k: v for k, v in (c.get("fields") or {}).items() if not v.get("collection")}}
+                for c in archive.collections
+            ]
+            for definition in plain + archive.collections:
+                await self.put_collection(
+                    target,
+                    definition["collection_id"],
+                    name=definition.get("name"),
+                    description=definition.get("description"),
+                    fields=definition.get("fields") or {},
+                    identity=definition.get("identity"),
+                    derive_on_write=bool(definition.get("derive_on_write")),
+                )
+            counts["collections"] = len(archive.collections)
+
+        if task.get("include_data"):
+            documents = archive.documents()
+            for start in range(0, len(documents), MAX_BATCH_DOCUMENTS):
+                window = documents[start : start + MAX_BATCH_DOCUMENTS]
+                # extract=False: the archive carries the fields the source extracted, so
+                # an import costs no tokens and cannot invent a value the source never had.
+                written = await self.run_write_batch({"bank_id": target, "documents": window, "extract": False})
+                counts["documents"] += written["documents_written"]
+            counts["records"] = await self._restore_records(target, archive)
+
+        await self._record_result(task.get("operation_id"), counts)
+        try:
+            await self.memory._file_storage.delete(task["storage_key"])
+        except Exception:
+            logger.warning("knowledge import: failed to delete %s", task["storage_key"], exc_info=True)
+        logger.info("knowledge import bank=%s %s", target, counts)
+        return counts
+
+    async def _restore_records(self, target: str, archive: Any) -> int:
+        """Replay each record's contributions and fold them back into a record.
+
+        A record is written as the sum of what each document said about it, so restoring
+        the parts and re-materializing rebuilds the same row — including its evidence —
+        without trusting a folded copy that could disagree with them.
+        """
+        touched: set[tuple[str, str]] = set()
+        async with acquire_with_retry(await self._pool()) as conn:
+            for row in archive.contributions:
+                await collections_store.contribute(
+                    conn,
+                    target,
+                    row["collection_id"],
+                    row["record_id"],
+                    doc_id=row.get("doc_id") or "",
+                    values=row.get("values") or {},
+                    evidence=row.get("evidence") or {},
+                )
+                touched.add((row["collection_id"], row["record_id"]))
+            for row in archive.pinned:
+                await collections_store.pin_values(
+                    conn, target, row["collection_id"], row["record_id"], row.get("pinned") or {}
+                )
+                touched.add((row["collection_id"], row["record_id"]))
+            for collection_id, record_id in sorted(touched):
+                await collections_store.materialize(conn, target, collection_id, record_id)
+            for row in archive.aliases:
+                await collections_store.add_alias(
+                    conn,
+                    target,
+                    row["collection_id"],
+                    row["alias_key"],
+                    row["record_id"],
+                    source=row.get("source") or "merge",
+                )
+        return len(touched)
+
+    async def _record_result(self, operation_id: str | None, result: dict[str, Any]) -> None:
+        """Merge a finished transfer's counts into its operation row."""
+        if not operation_id:
+            return
+        async with acquire_with_retry(await self._pool()) as conn:
+            await conn.execute(
+                f"UPDATE {store.fq_table('async_operations')} "
+                "SET result_metadata = COALESCE(result_metadata, '{}'::jsonb) || $1::jsonb "
+                "WHERE operation_id = $2",
+                json.dumps(result),
+                uuid.UUID(operation_id),
+            )
+
 
 async def run_write_batch_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
     """Entry point the engine's task dispatch calls for ``knowledge_write_batch``."""
@@ -1627,12 +1851,24 @@ async def run_derive_records_task(memory: Any, task: dict[str, Any]) -> dict[str
     return await KnowledgeService(memory).run_derive_records(task)
 
 
+async def run_export_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Entry point the engine's task dispatch calls for ``knowledge_export``."""
+    return await KnowledgeService(memory).run_export(task)
+
+
+async def run_import_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Entry point the engine's task dispatch calls for ``knowledge_import``."""
+    return await KnowledgeService(memory).run_import(task)
+
+
 __all__ = [
     "DocumentInput",
     "KnowledgeBankError",
     "KnowledgeService",
     "SearchHit",
     "run_derive_records_task",
+    "run_export_task",
     "run_extract_fields_task",
+    "run_import_task",
     "run_write_batch_task",
 ]

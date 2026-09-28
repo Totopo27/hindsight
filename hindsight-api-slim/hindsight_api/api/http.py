@@ -9156,7 +9156,11 @@ def _register_routes(app: FastAPI):
             if file_info is None:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            headers = {"Content-Disposition": f'attachment; filename="{bank_id}-documents.zip"'}
+            # Named after what the key actually holds: this endpoint serves a knowledge
+            # bank's archive as well as a memory bank's, and a file called
+            # "<bank>-documents.zip" that is neither is a download nobody can place.
+            archive_name = parts[-1].rsplit(".", 1)[0] or "export"
+            headers = {"Content-Disposition": f'attachment; filename="{bank_id}-{archive_name}.zip"'}
             if file_info.size is not None:
                 headers["Content-Length"] = str(file_info.size)
 

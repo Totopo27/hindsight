@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
+  Download,
   FileText,
   Layers,
   List,
@@ -55,6 +56,7 @@ import {
 import { Constellation } from "@/components/constellation";
 import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
 import { CollectionsEditor } from "@/components/kb-collections-editor";
+import { KbExportDialog, KbImportDialog } from "@/components/kb-transfer";
 import { QueryBuilder } from "@/components/kb-query-builder";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
 import { InlineStat, StatStrip } from "@/components/ui/inline-stat";
@@ -2775,6 +2777,8 @@ const KB_OPERATION_TYPES = [
   "knowledge_file_convert",
   "knowledge_extract_fields",
   "knowledge_derive_records",
+  "knowledge_export",
+  "knowledge_import",
 ] as const;
 
 type SettingsTab = "general" | "configuration" | "llm-requests";
@@ -3075,8 +3079,11 @@ function SettingsActions({ kbId }: { kbId: string }) {
   const router = useRouter();
   const { features } = useFeatures();
   const [showHealth, setShowHealth] = useState(false);
+  const [transfer, setTransfer] = useState<"export" | "import" | null>(null);
   const [confirm, setConfirm] = useState<"delete" | "reset" | null>(null);
   const [busy, setBusy] = useState(false);
+  const canExport = features?.document_export_api ?? false;
+  const canImport = features?.document_import_api ?? false;
 
   const run = async () => {
     setBusy(true);
@@ -3118,6 +3125,25 @@ function SettingsActions({ kbId }: { kbId: string }) {
             </>
           )}
           <DropdownMenuItem
+            onClick={() => setTransfer("export")}
+            disabled={!canExport}
+            title={!canExport ? "The export API is disabled on this server" : undefined}
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Export bank
+            {!canExport && <span className="ml-auto text-xs text-muted-foreground">Off</span>}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => setTransfer("import")}
+            disabled={!canImport}
+            title={!canImport ? "The import API is disabled on this server" : undefined}
+          >
+            <Upload className="w-4 h-4 mr-2" />
+            Import archive
+            {!canImport && <span className="ml-auto text-xs text-muted-foreground">Off</span>}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
             onClick={() => setConfirm("reset")}
             disabled={!features?.bank_config_api}
             className="text-amber-600 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-300"
@@ -3137,6 +3163,16 @@ function SettingsActions({ kbId }: { kbId: string }) {
       </DropdownMenu>
 
       <LlmHealthDialog bankId={kbId} open={showHealth} onOpenChange={setShowHealth} />
+      <KbExportDialog
+        kbId={kbId}
+        open={transfer === "export"}
+        onOpenChange={(open) => !open && setTransfer(null)}
+      />
+      <KbImportDialog
+        kbId={kbId}
+        open={transfer === "import"}
+        onOpenChange={(open) => !open && setTransfer(null)}
+      />
 
       <AlertDialog open={confirm !== null} onOpenChange={(open) => !open && setConfirm(null)}>
         <AlertDialogContent>
