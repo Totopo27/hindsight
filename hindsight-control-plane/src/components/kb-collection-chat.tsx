@@ -27,32 +27,6 @@ interface Turn {
   dismissed?: boolean;
 }
 
-/** The order a set of changes can be applied in: a collection nothing points at first,
- *  its referrers after it, deletes last. Same rule the staged editor uses, because the
- *  API validates a relationship against what exists at the time of the call. */
-function applyOrder(proposals: CollectionProposal[]): CollectionProposal[] {
-  const writes = proposals.filter((p) => p.action !== "delete");
-  const deletes = proposals.filter((p) => p.action === "delete");
-  const placed = new Set<string>();
-  const ordered: CollectionProposal[] = [];
-  let remaining = [...writes];
-  while (remaining.length > 0) {
-    const ready = remaining.filter((p) =>
-      Object.values(p.definition?.fields ?? {})
-        .map((spec) => spec.collection)
-        .filter((target): target is string => Boolean(target) && target !== p.collection_id)
-        .every((target) => placed.has(target) || !writes.some((w) => w.collection_id === target))
-    );
-    const batch = ready.length > 0 ? ready : remaining;
-    for (const p of batch) {
-      ordered.push(p);
-      placed.add(p.collection_id);
-    }
-    remaining = remaining.filter((p) => !batch.includes(p));
-  }
-  return [...ordered, ...deletes];
-}
-
 function summarise(proposal: CollectionProposal): string {
   if (proposal.action === "delete") return "remove this collection";
   const fields = Object.keys(proposal.definition?.fields ?? {});
@@ -61,16 +35,20 @@ function summarise(proposal: CollectionProposal): string {
 
 export function CollectionChat({
   kbId,
-  onApplied,
+  onStage,
+  currentCollections,
 }: {
   kbId: string;
-  /** Called after an approval lands, so the page re-reads what changed. */
-  onApplied: () => Promise<void> | void;
+  /** Stage the proposals into the draft the dialog is holding. The chat never writes:
+   *  the dialog shows what the changes will do and applies them with everything else. */
+  onStage: (proposals: CollectionProposal[]) => void;
+  /** The draft's collections, so the agent is told what the person has already staged
+   *  rather than only what is saved. */
+  currentCollections?: string;
 }) {
   const [turns, setTurns] = React.useState<Turn[]>([]);
   const [draft, setDraft] = React.useState("");
   const [thinking, setThinking] = React.useState(false);
-  const [applying, setApplying] = React.useState(false);
   const bottom = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -95,7 +73,17 @@ export function CollectionChat({
         // Only the text goes back: a proposal is a fact about this conversation, and the
         // bank's real state is read server-side on every turn anyway.
         body: {
-          messages: next.map((turn) => ({ role: turn.role, content: turn.content })),
+          messages: [
+            ...(currentCollections
+              ? [
+                  {
+                    role: "user" as const,
+                    content: `For reference, this is what I have staged but not yet applied:\n${currentCollections}`,
+                  },
+                ]
+              : []),
+            ...next.map((turn) => ({ role: turn.role, content: turn.content })),
+          ],
           sample_documents: 8,
         },
       });
@@ -120,24 +108,11 @@ export function CollectionChat({
     }
   };
 
-  const approve = async (index: number) => {
+  const stage = (index: number) => {
     const proposals = turns[index]?.proposals;
     if (!proposals) return;
-    setApplying(true);
-    try {
-      for (const proposal of applyOrder(proposals)) {
-        const path = `/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(proposal.collection_id)}`;
-        if (proposal.action === "delete") await kbFetch(path, { method: "DELETE" });
-        else await kbFetch(path, { method: "PUT", body: proposal.definition });
-      }
-      setTurns((prev) => prev.map((turn, i) => (i === index ? { ...turn, applied: true } : turn)));
-      toast.success("Applied. Derive the collections to fill them from the documents.");
-      await onApplied();
-    } catch (e) {
-      toast.error(`${(e as Error).message} — earlier changes were applied.`);
-    } finally {
-      setApplying(false);
-    }
+    onStage(proposals);
+    setTurns((prev) => prev.map((turn, i) => (i === index ? { ...turn, applied: true } : turn)));
   };
 
   return (
@@ -150,7 +125,8 @@ export function CollectionChat({
             </p>
             <p>
               It reads the collections you have and a sample of your documents. It can answer, or
-              propose changes — which it cannot apply. You approve them here.
+              propose changes — which it cannot apply. Staging one puts it in the draft on the left,
+              where you review it and Apply with everything else.
             </p>
             <p className="mt-2 text-xs">
               Try: “what should I be extracting from these documents?” · “split vendors into vendors
@@ -199,15 +175,16 @@ export function CollectionChat({
 
                 {turn.applied ? (
                   <p className="text-xs text-muted-foreground">
-                    <Check className="mr-1 inline h-3 w-3" /> Applied.
+                    <Check className="mr-1 inline h-3 w-3" /> Staged — review it on the left, then
+                    Apply.
                   </p>
                 ) : turn.dismissed ? (
                   <p className="text-xs text-muted-foreground">Dismissed.</p>
                 ) : (
                   <div className="flex gap-2">
-                    <Button size="sm" disabled={applying} onClick={() => approve(index)}>
-                      {applying ? <Spinner size="sm" /> : <Check className="h-4 w-4 mr-1" />}
-                      Approve and apply
+                    <Button size="sm" onClick={() => stage(index)}>
+                      <Check className="h-4 w-4 mr-1" />
+                      Stage these changes
                     </Button>
                     <Button
                       size="sm"

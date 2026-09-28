@@ -26,7 +26,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { kbFetch, type KnowledgeCollection } from "@/components/knowledge-bank-api";
+import {
+  kbFetch,
+  type CollectionProposal,
+  type KnowledgeCollection,
+} from "@/components/knowledge-bank-api";
+import { CollectionChat } from "@/components/kb-collection-chat";
 import { cn } from "@/lib/utils";
 
 const FIELD_TYPES = [
@@ -239,6 +244,66 @@ export function CollectionsEditor({
     setSelectedKey(draft.key);
   };
 
+  /** Fold the assistant's proposals into the draft. They arrive as edits like any
+   *  other — marked new or changed, applied by the same Apply — so a suggestion is
+   *  reviewed in the same place as what you typed. */
+  const stageProposals = (proposals: CollectionProposal[]) => {
+    // The key to select is decided here, not inside the updater: setting another
+    // component's state from a state updater is a render-phase update, and React may
+    // run the updater twice.
+    let lastStaged: number | null = null;
+    setDrafts((prev) => {
+      const next = [...prev];
+      for (const proposal of proposals) {
+        const index = next.findIndex((d) => d.id === proposal.collection_id);
+        if (proposal.action === "delete") {
+          if (index >= 0) next[index] = { ...next[index], deleted: true };
+          continue;
+        }
+        const definition = proposal.definition;
+        if (!definition) continue;
+        const staged: DraftCollection = {
+          key: index >= 0 ? next[index].key : nextKey++,
+          id: proposal.collection_id,
+          originalId: index >= 0 ? next[index].originalId : null,
+          name: definition.name ?? "",
+          description: definition.description ?? "",
+          identity: definition.identity ?? "",
+          deriveOnWrite: index >= 0 ? next[index].deriveOnWrite : false,
+          deleted: false,
+          fields: Object.entries(definition.fields ?? {}).map(([name, spec]) => ({
+            key: nextKey++,
+            name,
+            type: spec.collection ? "relationship" : (spec.type ?? "string"),
+            collection: spec.collection ?? "",
+            values: Array.isArray(spec.values) ? spec.values.map(String).join(", ") : "",
+            description: spec.description ?? "",
+          })),
+        };
+        if (index >= 0) next[index] = staged;
+        else next.push(staged);
+        lastStaged = staged.key;
+      }
+      return next;
+    });
+    if (lastStaged !== null) setSelectedKey(lastStaged);
+  };
+
+  /** The draft in words, so the assistant answers about what is staged rather than only
+   *  about what is saved. */
+  const draftSummary = drafts
+    .filter((d) => !d.deleted && d.id.trim())
+    .map((d) => {
+      const fields = d.fields
+        .filter((f) => f.name.trim())
+        .map(
+          (f) => `${f.name}${f.type === "relationship" ? ` -> ${f.collection}` : ` (${f.type})`}`
+        )
+        .join(", ");
+      return `- ${d.id}: identity=${d.identity || "none"}; fields: ${fields || "none"}`;
+    })
+    .join("\n");
+
   /** What is wrong with the draft, in words, or nothing. */
   const problems = (): string[] => {
     const out: string[] = [];
@@ -309,7 +374,7 @@ export function CollectionsEditor({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid flex-1 gap-5 overflow-hidden md:grid-cols-[minmax(200px,260px)_1fr]">
+        <div className="grid flex-1 gap-5 overflow-hidden md:grid-cols-[minmax(180px,220px)_1fr] xl:grid-cols-[minmax(180px,220px)_1fr_minmax(320px,380px)]">
           <div className="flex flex-col gap-2 overflow-y-auto">
             <div className="rounded-lg border border-border divide-y divide-border">
               {drafts.map((draft) => {
@@ -580,6 +645,16 @@ export function CollectionsEditor({
                 </Button>
               </div>
             )}
+          </div>
+
+          {/* The assistant stages into this same draft: it proposes, the draft shows what
+              the proposal will do, and Apply is still the person's. */}
+          <div className="hidden xl:flex xl:flex-col xl:overflow-hidden xl:border-l xl:border-border xl:pl-5">
+            <CollectionChat
+              kbId={kbId}
+              onStage={stageProposals}
+              currentCollections={draftSummary}
+            />
           </div>
         </div>
 

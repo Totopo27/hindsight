@@ -54,7 +54,6 @@ import {
 } from "@/components/form-layout";
 import { Constellation } from "@/components/constellation";
 import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
-import { CollectionChat } from "@/components/kb-collection-chat";
 import { CollectionsEditor } from "@/components/kb-collections-editor";
 import { QueryBuilder } from "@/components/kb-query-builder";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
@@ -1758,8 +1757,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                   />
                 </div>
 
-                <div className="mt-8">
-                  <h2 className="text-lg font-semibold text-foreground mb-3">Documents</h2>
+                <div className="mt-6">
                   <SchemaDocuments
                     kbId={kbId}
                     schemaId={current.schema_id}
@@ -1996,7 +1994,7 @@ function schemaCard(schema: KnowledgeSchema): ErdNode {
   };
 }
 
-type CollectionTab = "records" | "collections" | "assistant";
+type CollectionTab = "records" | "collections";
 
 function CollectionsPanel({ kbId }: { kbId: string }) {
   const [collections, setCollections] = useState<KnowledgeCollection[] | null>(null);
@@ -2020,7 +2018,6 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
   const tabs: { id: CollectionTab; label: string }[] = [
     { id: "records", label: "Records" },
     { id: "collections", label: "Collections" },
-    { id: "assistant", label: "Assistant" },
   ];
 
   return (
@@ -2049,11 +2046,7 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
         ))}
       </div>
 
-      {tab === "assistant" ? (
-        <div className="h-[calc(100vh-22rem)] min-h-[420px]">
-          <CollectionChat kbId={kbId} onApplied={load} />
-        </div>
-      ) : tab === "collections" ? (
+      {tab === "collections" ? (
         <CollectionDefinitions
           kbId={kbId}
           collections={collections}
