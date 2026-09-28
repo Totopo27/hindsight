@@ -4270,6 +4270,10 @@ class MemoryEngine(MemoryEngineInterface):
                     from ..knowledge.service import run_derive_records_task
 
                     await run_derive_records_task(self, task_dict)
+                elif task_type == "knowledge_file_convert":
+                    from ..knowledge.service import run_file_convert_task
+
+                    await run_file_convert_task(self, task_dict)
                 elif task_type == "webhook_delivery":
                     await self._handle_webhook_delivery(task_dict)
                 else:

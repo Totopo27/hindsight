@@ -20,8 +20,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from ..config import get_config
 from ..engine.db_utils import acquire_with_retry
+from ..engine.llm_wrapper import sanitize_llm_output
 from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
+from ..engine.storage import bank_storage_prefix
 from . import collections as collections_store
 from . import store
 from .extraction import classify_schema, derive_records, extract_document, extract_passages
@@ -62,6 +65,21 @@ class DocumentInput:
     passage_fields: dict[int, dict[str, Any]] | None = None
     #: Which schema fills this document's fields. Omitted, a bank with exactly one schema
     #: uses it; a bank with several extracts nothing rather than guessing.
+    schema_id: str | None = None
+
+
+@dataclass(frozen=True)
+class UploadedFile:
+    """One file on its way into a knowledge bank, read into memory by the route."""
+
+    doc_id: str
+    filename: str
+    content: bytes
+    content_type: str
+    parser: list[str]
+    title: str | None = None
+    tags: list[str] | None = None
+    metadata: dict[str, Any] | None = None
     schema_id: str | None = None
 
 
@@ -974,6 +992,136 @@ class KnowledgeService:
         )
         return {"operation_id": result["operation_id"], "documents": len(payload_docs), "status": "pending"}
 
+    # ---- writing a file
+
+    async def submit_file_write(self, bank_id: str, files: list[UploadedFile], request_context: Any) -> dict[str, Any]:
+        """Store these files and queue one conversion operation each.
+
+        Conversion is where a PDF costs seconds and a scanned one costs an OCR pass, so it
+        does not happen in the request — each file becomes a ``knowledge_file_convert``
+        operation that converts it and then queues the ordinary write. Two operations per
+        file, the same shape the memory banks' file retain uses.
+        """
+        await self._require_bank(bank_id)
+        config = get_config()
+        if not config.enable_file_upload_api:
+            raise KnowledgeBankError(
+                404, "File upload API is disabled. Set HINDSIGHT_API_ENABLE_FILE_UPLOAD_API=true to enable."
+            )
+        if len(files) > config.file_conversion_max_batch_size:
+            raise KnowledgeBankError(400, f"at most {config.file_conversion_max_batch_size} files per request")
+        total = sum(len(f.content) for f in files)
+        if total > config.file_conversion_max_batch_size_bytes:
+            raise KnowledgeBankError(
+                400,
+                f"total batch size ({total / (1024 * 1024):.1f}MB) exceeds "
+                f"{config.file_conversion_max_batch_size_mb}MB",
+            )
+
+        operation_ids = []
+        for file in files:
+            # The key carries a uuid rather than the filename or the document id: two files
+            # in one batch may share both, and the storage backend would overwrite one with
+            # the other (the same defect #3226 fixed on the memory side).
+            storage_key = f"{bank_storage_prefix(bank_id)}files/{uuid.uuid4()}/{file.filename}"
+            await self.memory._file_storage.store(
+                file_data=file.content,
+                key=storage_key,
+                metadata={
+                    "content_type": file.content_type,
+                    "original_filename": file.filename,
+                    "bank_id": bank_id,
+                    "document_id": file.doc_id,
+                },
+            )
+            payload: dict[str, Any] = {
+                "doc_id": file.doc_id,
+                "storage_key": storage_key,
+                "original_filename": file.filename,
+                "content_type": file.content_type,
+                "parser": file.parser,
+                "title": file.title,
+                "tags": file.tags,
+                "metadata": file.metadata,
+                "schema_id": file.schema_id,
+            }
+            if request_context is not None and getattr(request_context, "tenant_id", None):
+                payload["_tenant_id"] = request_context.tenant_id
+            if request_context is not None and getattr(request_context, "api_key_id", None):
+                payload["_api_key_id"] = request_context.api_key_id
+            result = await self.memory._submit_async_operation(
+                bank_id=bank_id,
+                operation_type="knowledge_file_convert",
+                task_type="knowledge_file_convert",
+                task_payload=payload,
+                result_metadata={"original_filename": file.filename, "document_id": file.doc_id},
+                dedupe_by_bank=False,
+            )
+            operation_ids.append(result["operation_id"])
+        return {"operation_ids": operation_ids, "files": len(files)}
+
+    async def run_file_convert(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Worker side of a file write: convert to markdown, then queue the write."""
+        bank_id = task["bank_id"]
+        filename = task.get("original_filename") or "unknown"
+        file_data = await self.memory._file_storage.retrieve(task["storage_key"])
+        parsers = task.get("parser") or get_config().file_parser
+        try:
+            converted = await self.memory._parser_registry.convert_with_fallback(
+                parsers=parsers,
+                file_data=file_data,
+                filename=filename,
+                content_type=task.get("content_type"),
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse file {filename!r}: {e}") from e
+        text = sanitize_llm_output(converted.content) or ""
+
+        # The same hook the memory side fires, and for the same reason: a deployment bills
+        # conversions, and a knowledge bank's conversions are conversions.
+        validator = getattr(self.memory, "_operation_validator", None)
+        if validator is not None:
+            try:
+                from ..extensions.operation_validator import FileConvertResult
+                from ..models import RequestContext
+
+                await validator.on_file_convert_complete(
+                    FileConvertResult(
+                        bank_id=bank_id,
+                        parser_name=converted.parser_name,
+                        filename=filename,
+                        output_chars=len(text),
+                        output_text=text,
+                        request_context=RequestContext(
+                            internal=True,
+                            user_initiated=True,
+                            tenant_id=task.get("_tenant_id"),
+                            api_key_id=task.get("_api_key_id"),
+                        ),
+                    )
+                )
+            except Exception as e:
+                logger.warning("knowledge file convert: on_file_convert_complete failed: %s", e)
+
+        metadata = dict(task.get("metadata") or {})
+        metadata.setdefault("file_original_name", filename)
+        metadata.setdefault("file_content_type", task.get("content_type"))
+        metadata.setdefault("file_storage_key", task["storage_key"])
+        write = await self.submit_write(
+            bank_id,
+            [
+                DocumentInput(
+                    doc_id=task["doc_id"],
+                    text=text,
+                    title=task.get("title") or filename,
+                    tags=task.get("tags") or [],
+                    metadata=metadata,
+                    schema_id=task.get("schema_id"),
+                )
+            ],
+        )
+        return {"chars": len(text), "parser": converted.parser_name, "write_operation_id": write["operation_id"]}
+
     def _validated_fields(self, schema: dict[str, Any] | None, document: DocumentInput) -> ExtractedFields:
         """The field values this write supplied, coerced against the schema."""
         definition = schema or {"document_fields": {}, "passage_fields": {}}
@@ -1298,6 +1446,11 @@ async def run_write_batch_task(memory: Any, task: dict[str, Any]) -> dict[str, A
 async def run_extract_fields_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
     """Entry point the engine's task dispatch calls for ``knowledge_extract_fields``."""
     return await KnowledgeService(memory).run_extract_fields(task)
+
+
+async def run_file_convert_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Entry point the engine's task dispatch calls for ``knowledge_file_convert``."""
+    return await KnowledgeService(memory).run_file_convert(task)
 
 
 async def run_derive_records_task(memory: Any, task: dict[str, Any]) -> dict[str, Any]:

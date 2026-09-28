@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Trash2, Search, X, Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -11,6 +11,8 @@ import { useBank, type BankInfo } from "@/lib/bank-context";
 import { bankRoute } from "@/lib/bank-url";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
+import { BankKindSwitch, type BankKind } from "@/components/bank-kind-switch";
+import { KnowledgeBanksList } from "@/components/knowledge-banks-list";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -86,6 +88,7 @@ export function BanksOverview() {
   const tCommon = useTranslations("common");
   const tNavBank = useTranslations("nav.bank");
   const router = useRouter();
+  const searchParams = useSearchParams();
   // The overview pages discretely while the header selector scrolls infinitely, so it
   // cannot share the selector's cumulative list — it fetches its own page. `loadBanks`
   // is still used to keep that selector in sync after a bulk delete.
@@ -97,6 +100,12 @@ export function BanksOverview() {
   const [page, setPage] = React.useState(1);
   const [search, setSearch] = React.useState("");
   const [searchDraft, setSearchDraft] = React.useState("");
+
+  // Both kinds of bank are listed here, chosen by the switch beside the search box, so
+  // knowledge banks are not a second page with its own navigation.
+  const [kind, setKind] = React.useState<BankKind>(
+    searchParams.get("kind") === "knowledge" ? "knowledge" : "memory"
+  );
 
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = React.useState(false);
@@ -224,7 +233,7 @@ export function BanksOverview() {
   // A server with no banks at all gets the greeting it had before this page existed —
   // a search box and an empty table say nothing to someone who has yet to create one.
   // A search that matches nothing still shows the table UI, so the query can be edited.
-  if (!loading && total === 0 && !search) {
+  if (!loading && total === 0 && !search && kind === "memory") {
     return (
       <div className="flex items-center justify-center h-[calc(100vh-80px)] bg-muted/20">
         <div className="max-w-md rounded-lg border-2 border-border bg-card p-10 text-center shadow-lg">
@@ -245,19 +254,30 @@ export function BanksOverview() {
     <div className="mx-auto w-full max-w-6xl px-6 py-8">
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">{t("title")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t("subtitle")}</p>
+          {/* The knowledge strings are not translated: the knowledge-bank pages they lead
+              to are English throughout, and a German heading over an English page reads
+              worse than an English one. */}
+          <h1 className="text-2xl font-bold text-foreground">
+            {kind === "knowledge" ? "Knowledge banks" : t("title")}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {kind === "knowledge"
+              ? "Documents, split into passages and searchable. Fields extracted from them, records derived out of them — no memory extraction."
+              : t("subtitle")}
+          </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          // The create dialog (with its template import) lives in the header selector;
-          // this asks that component to open it rather than shipping a second copy.
-          onClick={() => window.dispatchEvent(new CustomEvent("hindsight:create-bank"))}
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          {tNavBank("create")}
-        </Button>
+        {kind === "memory" && (
+          <Button
+            variant="outline"
+            size="sm"
+            // The create dialog (with its template import) lives in the header selector;
+            // this asks that component to open it rather than shipping a second copy.
+            onClick={() => window.dispatchEvent(new CustomEvent("hindsight:create-bank"))}
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            {tNavBank("create")}
+          </Button>
+        )}
       </div>
 
       <div className="mb-4 flex items-center gap-3">
@@ -270,7 +290,8 @@ export function BanksOverview() {
             className="pl-9"
           />
         </div>
-        {selected.size > 0 && (
+        <BankKindSwitch value={kind} onChange={setKind} />
+        {kind === "memory" && selected.size > 0 && (
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground tabular-nums">
               {t("selectedCount", { count: selected.size })}
@@ -296,7 +317,9 @@ export function BanksOverview() {
         )}
       </div>
 
-      {loading && banks.length === 0 ? (
+      {kind === "knowledge" ? (
+        <KnowledgeBanksList search={search} />
+      ) : loading && banks.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
           <Spinner size="sm" />
           <span>{tCommon("loading")}</span>

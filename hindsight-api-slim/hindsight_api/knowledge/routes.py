@@ -6,14 +6,15 @@ for documents, and sharing it would put a bank-kind check on every route.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from ..extensions import OperationValidationError
 from ..models import RequestContext
-from .service import MAX_BATCH_DOCUMENTS, DocumentInput, KnowledgeBankError, KnowledgeService
+from .service import MAX_BATCH_DOCUMENTS, DocumentInput, KnowledgeBankError, KnowledgeService, UploadedFile
 
 
 class CreateKnowledgeBank(BaseModel):
@@ -22,7 +23,15 @@ class CreateKnowledgeBank(BaseModel):
 
 
 class WriteDocument(BaseModel):
-    id: str = Field(min_length=1, max_length=512, description="Caller's document id; writing it again replaces it")
+    # Optional, like a retain: a document written without an id gets a uuid, because most
+    # callers have no id of their own and inventing one is the API's job, not theirs. An id
+    # that is supplied stays the handle that replaces this document on a later write.
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        description="Caller's document id; writing it again replaces it. Omit for a generated uuid.",
+    )
     # Empty text is accepted and stored with zero passages: real corpora carry records
     # whose body extracted to nothing, and one of them must not fail the whole batch.
     text: str
@@ -46,6 +55,17 @@ class WriteDocument(BaseModel):
 
 class WriteRequest(BaseModel):
     documents: list[WriteDocument] = Field(min_length=1, max_length=MAX_BATCH_DOCUMENTS)
+
+
+class FileWriteOptions(BaseModel):
+    """What to apply to every file in one upload; the ids are generated per file."""
+
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    schema_id: str | None = None
+    parser: str | list[str] | None = Field(
+        default=None, description="Parser name, or an ordered fallback chain; omit for the server default"
+    )
 
 
 class SchemaRequest(BaseModel):
@@ -208,7 +228,7 @@ def build_router(get_request_context: Any) -> APIRouter:
     async def write_documents(kb: str, body: WriteRequest, svc: KnowledgeService = Depends(service)):
         documents = [
             DocumentInput(
-                doc_id=d.id,
+                doc_id=d.id or str(uuid.uuid4()),
                 text=d.text,
                 title=d.title,
                 tags=d.tags,
@@ -220,6 +240,43 @@ def build_router(get_request_context: Any) -> APIRouter:
             for d in body.documents
         ]
         return await run(svc.submit_write(kb, documents))
+
+    @router.post(
+        "/{kb}/files",
+        summary="Write files as documents (async)",
+        description="Upload files (PDF, DOCX, …). Each one is converted to markdown by a "
+        "knowledge_file_convert operation, which then queues the ordinary write. Track both through "
+        "the bank's operations endpoints. Requires HINDSIGHT_API_ENABLE_FILE_UPLOAD_API.",
+        status_code=202,
+    )
+    async def write_files(
+        kb: str,
+        files: list[UploadFile] = File(..., description="Files to convert and write"),
+        request: str | None = Form(default=None, description="JSON: {tags, metadata, schema_id, parser}"),
+        svc: KnowledgeService = Depends(service),
+        ctx: RequestContext = Depends(get_request_context),
+    ):
+        try:
+            options = FileWriteOptions.model_validate_json(request) if request else FileWriteOptions()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid request JSON: {e}")
+        uploads = [
+            UploadedFile(
+                doc_id=str(uuid.uuid4()),
+                filename=upload.filename or "upload",
+                content=await upload.read(),
+                content_type=upload.content_type or "application/octet-stream",
+                # A list is an ordered fallback chain; empty means the server default, which
+                # the worker resolves rather than this route, so a config change applies to
+                # files already queued.
+                parser=[options.parser] if isinstance(options.parser, str) else list(options.parser or []),
+                tags=options.tags,
+                metadata=options.metadata,
+                schema_id=options.schema_id,
+            )
+            for upload in files
+        ]
+        return await run(svc.submit_file_write(kb, uploads, ctx))
 
     @router.get("/{kb}/documents", summary="List documents")
     async def list_documents(

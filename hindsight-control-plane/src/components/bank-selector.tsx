@@ -18,6 +18,8 @@ import {
   type ComposerBlock,
 } from "@/components/content-composer";
 
+import { BankKindSwitch, type BankKind } from "@/components/bank-kind-switch";
+import { kbFetch, type KnowledgeBank } from "@/components/knowledge-bank-api";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { Button } from "@/components/ui/button";
 import {
@@ -122,6 +124,10 @@ function BankSelectorInner() {
   const { theme, toggleTheme } = useTheme();
   const { features } = useFeatures();
   const [open, setOpen] = React.useState(false);
+  // The selector lists both kinds of bank. Knowledge banks are a different resource with
+  // their own list endpoint, so they are fetched here rather than through the bank context.
+  const [kind, setKind] = React.useState<BankKind>("memory");
+  const [knowledgeBanks, setKnowledgeBanks] = React.useState<KnowledgeBank[] | null>(null);
   // One-shot spin of the header logo, fired by sidebar navigation (see the
   // "hindsight:logo-spin" listener below). Reset on animationEnd so it can replay.
   const [logoSpinning, setLogoSpinning] = React.useState(false);
@@ -243,6 +249,20 @@ function BankSelectorInner() {
     const timer = setTimeout(() => searchBanks(searchDraft), 250);
     return () => clearTimeout(timer);
   }, [open, searchDraft, bankSearch, searchBanks]);
+
+  // The knowledge list is fetched here, filtered by the same box, and only while its tab
+  // is open — a memory-bank user never pays for it.
+  React.useEffect(() => {
+    if (!open || kind !== "knowledge") return;
+    let live = true;
+    const params = searchDraft.trim() ? `?q=${encodeURIComponent(searchDraft.trim())}` : "";
+    kbFetch<{ items: KnowledgeBank[] }>(params)
+      .then((page) => live && setKnowledgeBanks(page.items))
+      .catch(() => live && setKnowledgeBanks([]));
+    return () => {
+      live = false;
+    };
+  }, [open, kind, searchDraft]);
 
   // Infinite scroll: fetch the next page once the end of the list scrolls into view.
   // The nodes are tracked as state via callback refs, not useRef: the popover content
@@ -621,177 +641,218 @@ function BankSelectorInner() {
             {/* shouldFilter={false}: matching is done by the server so search reaches
                 banks that haven't been paged in yet. */}
             <Command shouldFilter={false}>
+              <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+                <BankKindSwitch value={kind} onChange={setKind} size="sm" />
+                <span className="text-[11px] text-muted-foreground">
+                  {kind === "knowledge" ? "documents · passages" : "memories"}
+                </span>
+              </div>
               <CommandInput
                 placeholder={tNavBank("search")}
                 value={searchDraft}
                 onValueChange={setSearchDraft}
               />
-              <CommandList
-                ref={setListEl}
-                // cmdk keeps --cmdk-list-height in sync with the rendered rows, so the
-                // popover eases down to the filtered set instead of snapping shut.
-                className="h-[min(300px,var(--cmdk-list-height,300px))] transition-[height] duration-200 ease-out motion-reduce:transition-none"
-              >
-                <CommandEmpty>
-                  {banksLoading ? (
-                    <div className="flex items-center justify-center gap-2 py-2">
+              {kind === "knowledge" ? (
+                <div className="max-h-[300px] overflow-y-auto p-1">
+                  {!knowledgeBanks ? (
+                    <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
                       <Spinner size="sm" />
                       <span>{tCommon("loading")}</span>
                     </div>
-                  ) : bankSearch ? (
-                    tNavBank("noSearchResults")
+                  ) : knowledgeBanks.length === 0 ? (
+                    <div className="py-4 text-center text-sm text-muted-foreground">
+                      No knowledge banks yet.
+                    </div>
                   ) : (
-                    tNavBank("empty")
-                  )}
-                </CommandEmpty>
-                {/* The previous results stay put and dim while a search is in flight —
-                    blanking the list first makes every keystroke flash. */}
-                <CommandGroup
-                  className={cn(
-                    "transition-opacity duration-150 motion-reduce:transition-none",
-                    banksLoading && bankInfos.length > 0 && "opacity-40"
-                  )}
-                >
-                  {orderedBanks.map((bank, index) => {
-                    const barPct = (bank.fact_count / maxFactCount) * 100;
-                    const isSelected = currentBank === bank.bank_id;
-                    // Last write, not last ingestion: appends to an existing document
-                    // bump last_write_at only.
-                    const lastWriteAt = bank.last_write_at || bank.last_document_at;
-                    return (
-                      <CommandItem
+                    knowledgeBanks.map((bank) => (
+                      <button
                         key={bank.bank_id}
-                        value={bank.bank_id}
-                        onSelect={(value) => {
-                          setCurrentBank(value);
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent"
+                        onClick={() => {
                           setOpen(false);
-                          const view = searchParams.get("view") || "data";
-                          const subTab = searchParams.get("subTab");
-                          const queryString = subTab
-                            ? `?view=${view}&subTab=${subTab}`
-                            : `?view=${view}`;
-                          router.push(bankRoute(value, queryString));
-                        }}
-                        // Only rows that actually mount animate: React keeps the pages
-                        // already on screen, so appending page 2 flows in without
-                        // replaying page 1. The stagger restarts per page and is capped
-                        // so the tail of a 50-row page doesn't crawl in.
-                        className={cn(
-                          "relative overflow-hidden py-2.5 mb-0.5 group animate-list-row-enter",
-                          // Not bg-accent: cmdk paints the keyboard-active row with
-                          // data-[selected=true]:bg-accent, so reusing it here would
-                          // make two rows look active at once while arrowing down.
-                          isSelected && "ring-1 ring-inset ring-primary/50"
-                        )}
-                        style={{
-                          animationDelay: `${Math.min(index % BANKS_PAGE_SIZE, 10) * 18}ms`,
+                          router.push(`/knowledge-banks/${encodeURIComponent(bank.bank_id)}`);
                         }}
                       >
-                        {/* Background bar — proportional to memory count */}
-                        <div
-                          className="absolute inset-y-0 left-0 bg-primary/15 dark:bg-primary/20 rounded-[inherit] transition-all"
-                          style={{ width: `${barPct}%` }}
-                        />
-                        <div className="relative flex items-center w-full gap-2">
-                          <Check
-                            className={cn(
-                              "h-4 w-4 shrink-0",
-                              isSelected ? "opacity-100 text-primary" : "opacity-0"
-                            )}
+                        <span className="flex-1 truncate font-medium">{bank.bank_id}</span>
+                        <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/70">
+                          {bank.documents} · {bank.passages}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : (
+                <CommandList
+                  ref={setListEl}
+                  // cmdk keeps --cmdk-list-height in sync with the rendered rows, so the
+                  // popover eases down to the filtered set instead of snapping shut.
+                  className="h-[min(300px,var(--cmdk-list-height,300px))] transition-[height] duration-200 ease-out motion-reduce:transition-none"
+                >
+                  <CommandEmpty>
+                    {banksLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-2">
+                        <Spinner size="sm" />
+                        <span>{tCommon("loading")}</span>
+                      </div>
+                    ) : bankSearch ? (
+                      tNavBank("noSearchResults")
+                    ) : (
+                      tNavBank("empty")
+                    )}
+                  </CommandEmpty>
+                  {/* The previous results stay put and dim while a search is in flight —
+                    blanking the list first makes every keystroke flash. */}
+                  <CommandGroup
+                    className={cn(
+                      "transition-opacity duration-150 motion-reduce:transition-none",
+                      banksLoading && bankInfos.length > 0 && "opacity-40"
+                    )}
+                  >
+                    {orderedBanks.map((bank, index) => {
+                      const barPct = (bank.fact_count / maxFactCount) * 100;
+                      const isSelected = currentBank === bank.bank_id;
+                      // Last write, not last ingestion: appends to an existing document
+                      // bump last_write_at only.
+                      const lastWriteAt = bank.last_write_at || bank.last_document_at;
+                      return (
+                        <CommandItem
+                          key={bank.bank_id}
+                          value={bank.bank_id}
+                          onSelect={(value) => {
+                            setCurrentBank(value);
+                            setOpen(false);
+                            const view = searchParams.get("view") || "data";
+                            const subTab = searchParams.get("subTab");
+                            const queryString = subTab
+                              ? `?view=${view}&subTab=${subTab}`
+                              : `?view=${view}`;
+                            router.push(bankRoute(value, queryString));
+                          }}
+                          // Only rows that actually mount animate: React keeps the pages
+                          // already on screen, so appending page 2 flows in without
+                          // replaying page 1. The stagger restarts per page and is capped
+                          // so the tail of a 50-row page doesn't crawl in.
+                          className={cn(
+                            "relative overflow-hidden py-2.5 mb-0.5 group animate-list-row-enter",
+                            // Not bg-accent: cmdk paints the keyboard-active row with
+                            // data-[selected=true]:bg-accent, so reusing it here would
+                            // make two rows look active at once while arrowing down.
+                            isSelected && "ring-1 ring-inset ring-primary/50"
+                          )}
+                          style={{
+                            animationDelay: `${Math.min(index % BANKS_PAGE_SIZE, 10) * 18}ms`,
+                          }}
+                        >
+                          {/* Background bar — proportional to memory count */}
+                          <div
+                            className="absolute inset-y-0 left-0 bg-primary/15 dark:bg-primary/20 rounded-[inherit] transition-all"
+                            style={{ width: `${barPct}%` }}
                           />
-                          <span
-                            className={cn(
-                              "truncate flex-1",
-                              isSelected ? "font-semibold" : "font-medium"
-                            )}
-                            title={bank.display_alias || bank.name || bank.bank_id}
-                          >
-                            {/* display_alias outranks name: `name` is a deprecated
+                          <div className="relative flex items-center w-full gap-2">
+                            <Check
+                              className={cn(
+                                "h-4 w-4 shrink-0",
+                                isSelected ? "opacity-100 text-primary" : "opacity-0"
+                              )}
+                            />
+                            <span
+                              className={cn(
+                                "truncate flex-1",
+                                isSelected ? "font-semibold" : "font-medium"
+                              )}
+                              title={bank.display_alias || bank.name || bank.bank_id}
+                            >
+                              {/* display_alias outranks name: `name` is a deprecated
                                 free-text label, while a promoted alias is a real id
                                 the operator chose to present the bank under. */}
-                            {bank.display_alias || bank.name || bank.bank_id}
-                          </span>
-                          {/* The real id stays visible whenever it is not what is
-                              shown — the display is a convenience, never a disguise. */}
-                          {bank.display_alias && (
-                            <span
-                              className="shrink-0 truncate max-w-[35%] font-mono text-[11px] text-muted-foreground/60"
-                              title={bank.bank_id}
-                            >
-                              {bank.bank_id}
+                              {bank.display_alias || bank.name || bank.bank_id}
                             </span>
-                          )}
-                          {/* Only set when the search matched an alias rather than this
+                            {/* The real id stays visible whenever it is not what is
+                              shown — the display is a convenience, never a disguise. */}
+                            {bank.display_alias && (
+                              <span
+                                className="shrink-0 truncate max-w-[35%] font-mono text-[11px] text-muted-foreground/60"
+                                title={bank.bank_id}
+                              >
+                                {bank.bank_id}
+                              </span>
+                            )}
+                            {/* Only set when the search matched an alias rather than this
                               bank's own id or name, which is exactly when the row would
                               otherwise look like it does not match what was typed. */}
-                          {bank.matched_aliases.length > 0 && (
-                            <span
-                              className="shrink-0 truncate max-w-[40%] font-mono text-[11px] text-muted-foreground/70"
-                              title={tNavBank("viaAlias", {
-                                aliases: bank.matched_aliases.join(", "),
-                              })}
-                            >
-                              {tNavBank("viaAlias", { aliases: bank.matched_aliases.join(", ") })}
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            aria-label={tNavBank("copyName")}
-                            title={tNavBank("copyName")}
-                            className="inline-flex h-6 w-6 items-center justify-center rounded hover:bg-accent-foreground/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
-                            onMouseDown={(e) => {
-                              // Stop cmdk from intercepting before onClick fires.
-                              e.stopPropagation();
-                              e.preventDefault();
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              navigator.clipboard.writeText(bank.bank_id).then(
-                                () => toast.success(tNavBank("copied")),
-                                () => toast.error(tNavBank("copied"))
-                              );
-                            }}
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                          </button>
-                          <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/70">
-                            {bank.fact_count > 0 ? (
-                              <>
-                                {formatCompact(bank.fact_count)}
-                                <span className="ml-1.5 text-muted-foreground/40">
-                                  {lastWriteAt ? formatTimeAgo(lastWriteAt) : ""}
-                                </span>
-                              </>
-                            ) : (
-                              <span className="italic text-muted-foreground/40">empty</span>
+                            {bank.matched_aliases.length > 0 && (
+                              <span
+                                className="shrink-0 truncate max-w-[40%] font-mono text-[11px] text-muted-foreground/70"
+                                title={tNavBank("viaAlias", {
+                                  aliases: bank.matched_aliases.join(", "),
+                                })}
+                              >
+                                {tNavBank("viaAlias", { aliases: bank.matched_aliases.join(", ") })}
+                              </span>
                             )}
-                          </span>
-                        </div>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-                {hasMoreBanks && (
-                  <div ref={setSentinelEl} className="flex items-center justify-center py-2">
-                    {banksLoadingMore && (
-                      <span className="animate-soft-fade-in">
-                        <Spinner size="sm" />
-                      </span>
-                    )}
-                  </div>
-                )}
-              </CommandList>
+                            <button
+                              type="button"
+                              aria-label={tNavBank("copyName")}
+                              title={tNavBank("copyName")}
+                              className="inline-flex h-6 w-6 items-center justify-center rounded hover:bg-accent-foreground/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+                              onMouseDown={(e) => {
+                                // Stop cmdk from intercepting before onClick fires.
+                                e.stopPropagation();
+                                e.preventDefault();
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigator.clipboard.writeText(bank.bank_id).then(
+                                  () => toast.success(tNavBank("copied")),
+                                  () => toast.error(tNavBank("copied"))
+                                );
+                              }}
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/70">
+                              {bank.fact_count > 0 ? (
+                                <>
+                                  {formatCompact(bank.fact_count)}
+                                  <span className="ml-1.5 text-muted-foreground/40">
+                                    {lastWriteAt ? formatTimeAgo(lastWriteAt) : ""}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="italic text-muted-foreground/40">empty</span>
+                              )}
+                            </span>
+                          </div>
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                  {hasMoreBanks && (
+                    <div ref={setSentinelEl} className="flex items-center justify-center py-2">
+                      {banksLoadingMore && (
+                        <span className="animate-soft-fade-in">
+                          <Spinner size="sm" />
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </CommandList>
+              )}
               {/* Footer: Create new bank */}
               <div className="border-t border-border p-1">
                 <button
                   className="w-full flex items-center gap-2 px-2 py-2 text-sm rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
                   onClick={() => {
                     setOpen(false);
-                    setCreateDialogOpen(true);
+                    // A knowledge bank is created where the knowledge list lives, so there
+                    // is one create dialog per kind rather than two copies of each.
+                    if (kind === "knowledge") router.push("/dashboard?kind=knowledge");
+                    else setCreateDialogOpen(true);
                   }}
                 >
                   <Plus className="h-4 w-4" />
-                  <span>{tNavBank("create")}</span>
+                  <span>{kind === "knowledge" ? "New knowledge bank" : tNavBank("create")}</span>
                 </button>
               </div>
             </Command>

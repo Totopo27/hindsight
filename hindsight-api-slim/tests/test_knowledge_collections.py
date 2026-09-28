@@ -335,3 +335,28 @@ async def test_records_of_one_bank_are_invisible_to_another(kb_client, bank):
     assert mine == [{"n": 3}] and theirs == [{"n": 1}]
     record = (await kb_client.get(f"/v1/default/knowledge-banks/{other}/collections/vendors/records/acme")).json()
     assert record["values"]["country"] == "fr", "same record id, different bank, different row"
+
+
+def test_the_record_schema_never_asks_for_a_free_form_dict():
+    """No ``additionalProperties`` anywhere in the schema sent to a provider.
+
+    The Gemini Developer API refuses any schema containing it ("additionalProperties is
+    only supported in Gemini Enterprise Agent Platform mode"), and the evidence map used
+    to be a ``dict[str, str]`` — so every derivation failed on that provider while the
+    tests, which mock the call, passed.
+    """
+    import json
+
+    from pydantic import BaseModel, Field, create_model
+
+    from hindsight_api.knowledge.extraction import _FieldEvidence
+    from hindsight_api.knowledge.fields import extraction_model
+
+    values = extraction_model({"name": {"type": "string"}, "value": {"type": "number"}}, name="RecordValues")
+    record = create_model(
+        "Record",
+        values=(values, Field(description="x")),
+        evidence=(list[_FieldEvidence], Field(default_factory=list)),
+    )
+    batch: type[BaseModel] = create_model("Records", records=(list[record], Field(default_factory=list)))  # type: ignore[valid-type]
+    assert "additionalProperties" not in json.dumps(batch.model_json_schema())

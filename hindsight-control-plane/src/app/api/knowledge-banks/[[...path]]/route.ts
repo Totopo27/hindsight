@@ -8,10 +8,21 @@ async function forward(request: NextRequest, { params }: { params: Promise<{ pat
   const { path = [] } = await params;
   const suffix = path.map(encodeURIComponent).join("/");
   const url = `${DATAPLANE_URL}/v1/default/knowledge-banks${suffix ? `/${suffix}` : ""}${request.nextUrl.search}`;
-  const body = ["GET", "DELETE"].includes(request.method) ? undefined : await request.text();
+  const contentType = request.headers.get("content-type") || "";
+  // A file upload is multipart: forward the parts and let fetch build its own boundary,
+  // because re-declaring Content-Type here would send the browser's boundary with a
+  // differently-encoded body.
+  const multipart = contentType.startsWith("multipart/form-data");
+  const body = ["GET", "DELETE"].includes(request.method)
+    ? undefined
+    : multipart
+      ? await request.formData()
+      : await request.text();
   const response = await fetch(url, {
     method: request.method,
-    headers: getDataplaneHeaders({ "Content-Type": "application/json" }),
+    headers: multipart
+      ? getDataplaneHeaders()
+      : getDataplaneHeaders({ "Content-Type": "application/json" }),
     body,
   });
   const text = await response.text();

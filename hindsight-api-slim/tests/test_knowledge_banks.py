@@ -5,6 +5,7 @@ The write path is the real one — a `knowledge_write_batch` operation goes thro
 tests), so this covers the operation record as well as the chunking and the search.
 """
 
+import json
 import uuid
 
 import httpx
@@ -362,3 +363,45 @@ async def test_a_tenant_extension_can_refuse_a_knowledge_bank(kb_client, memory)
         assert "not yours" in refused["error"]
     finally:
         memory._operation_validator = None
+
+
+@pytest.mark.asyncio
+async def test_a_document_written_without_an_id_gets_one(kb_client):
+    """An id is the caller's handle for replacing a document, not a thing they must invent."""
+    kb = await _bank(kb_client)
+    response = await kb_client.post(
+        f"/v1/default/knowledge-banks/{kb}/documents",
+        json={"documents": [{"text": "Genoa is a port city in Liguria."}]},
+    )
+    assert response.status_code == 202
+    documents = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents")).json()["items"]
+    assert len(documents) == 1
+    uuid.UUID(documents[0]["doc_id"])  # a uuid, not an empty string or the title
+
+
+@pytest.mark.asyncio
+async def test_an_uploaded_file_becomes_a_searchable_document(kb_client):
+    """A file is converted and then written, so it lands as an ordinary document.
+
+    Two operations, like the memory side: the conversion, then the write it queues.
+    """
+    kb = await _bank(kb_client)
+    response = await kb_client.post(
+        f"/v1/default/knowledge-banks/{kb}/files",
+        files={"files": ("liguria.txt", b"Genoa is the capital of Liguria and its largest port.", "text/plain")},
+        data={"request": json.dumps({"tags": ["uploaded"]})},
+    )
+    assert response.status_code == 202, response.text
+    assert len(response.json()["operation_ids"]) == 1
+
+    documents = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents")).json()["items"]
+    assert len(documents) == 1
+    assert documents[0]["title"] == "liguria.txt"
+    assert documents[0]["tags"] == ["uploaded"]
+    # The file it came from stays on the document, which is the only way back to the bytes.
+    assert documents[0]["metadata"]["file_original_name"] == "liguria.txt"
+
+    hits = (await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "port of Liguria"})).json()[
+        "results"
+    ]
+    assert hits[0]["document_id"] == documents[0]["doc_id"]

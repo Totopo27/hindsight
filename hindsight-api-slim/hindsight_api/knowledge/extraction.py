@@ -175,6 +175,26 @@ _RECORDS_SYSTEM = (
 )
 
 
+class _FieldEvidence(BaseModel):
+    """One field of a record, and the sentence the model read it from."""
+
+    field: str
+    quote: str
+
+
+def _evidence_map(evidence: Any) -> dict[str, str]:
+    """The evidence list as {field: quote}, tolerating a model that returned a dict."""
+    if isinstance(evidence, dict):
+        return {str(k): str(v) for k, v in evidence.items()}
+    out: dict[str, str] = {}
+    for item in evidence or []:
+        if isinstance(item, BaseModel):
+            out[item.field] = item.quote
+        elif isinstance(item, dict) and item.get("field"):
+            out[str(item["field"])] = str(item.get("quote") or "")
+    return out
+
+
 async def derive_records(
     llm: Any,
     fields: dict[str, dict[str, Any]],
@@ -198,7 +218,15 @@ async def derive_records(
     record_model = create_model(
         "Record",
         values=(value_model, Field(description="The record's fields")),
-        evidence=(dict[str, str], Field(default_factory=dict, description="field name -> the sentence it came from")),
+        # A list of pairs rather than a dict: a free-form dict becomes
+        # `additionalProperties` in the JSON schema, and the Gemini Developer API refuses
+        # any schema containing it ("additionalProperties is only supported in Gemini
+        # Enterprise Agent Platform mode"), which failed every derivation on that provider.
+        # A closed shape every provider accepts costs one comprehension to fold back.
+        evidence=(
+            list[_FieldEvidence],
+            Field(default_factory=list, description="For each field filled, the sentence it came from"),
+        ),
     )
     # list[record_model] is a type built at runtime, which the checker cannot follow: the
     # element type only exists once the collection's fields are known.
@@ -227,9 +255,9 @@ async def derive_records(
     out: list[dict[str, Any]] = []
     for record in records:
         if isinstance(record, BaseModel):
-            values, evidence = jsonable(record.values.model_dump()), dict(record.evidence or {})
+            values, evidence = jsonable(record.values.model_dump()), _evidence_map(record.evidence)
         elif isinstance(record, dict):
-            values, evidence = jsonable(record.get("values") or {}), dict(record.get("evidence") or {})
+            values, evidence = jsonable(record.get("values") or {}), _evidence_map(record.get("evidence"))
         else:
             continue
         if values:

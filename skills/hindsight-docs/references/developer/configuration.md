@@ -1512,7 +1512,7 @@ For advanced authentication (JWT, OAuth, multi-tenant schemas), implement a cust
 | `HINDSIGHT_API_LOOP_LAG_REPORT_SECONDS` | Diagnostic: log event-loop lag percentiles (`[loop-lag]`) every N seconds (minimum 1), to tell a slow await from an oversubscribed loop. `0` disables the probe. | `0` |
 | `HINDSIGHT_API_LOOP_LAG_METRIC` | Record every event-loop lag sample in the `hindsight_event_loop_lag_seconds` histogram (sampled every 50 ms), independent of the log reports above. A loop that is busy but never blocked shows up here and nowhere else: the recall phase timers stay fast while requests wait for the loop. | `false` |
 | `HINDSIGHT_API_METRICS_WORKER_LABEL` | With `--workers N` every worker is its own process with its own metrics, but they share one port, so a scrape of `/metrics` reaches one worker at random: counters jump between processes (a rate over them reads every switch as a reset) and a saturated worker is invisible. When on, each worker publishes a snapshot of its metrics every 5 s and `/metrics` returns every live worker's series, each labelled `api_worker="<slot>"` (slot `0..N-1`). One port and one scrape target; the extra label is the only visible change. | `false` |
-| `HINDSIGHT_API_TOKENIZER_ENCODING` | Vocabulary used for every token count and chunk boundary (recall budgets, chunk sizes, prompt fitting, embedding truncation). `o200k_base` matches current OpenAI models and counts non-Latin text far closer to what they actually charge; `cl100k_base` reproduces the counts Hindsight produced before this default changed. Server-level: token budgets are only comparable between banks if they are all counted the same way. Other bundled vocabulary: `o200k_harmony`. | `o200k_base` |
+| `HINDSIGHT_API_TOKENIZER_ENCODING` | Vocabulary used for every token count and chunk boundary (recall budgets, passage sizes, prompt fitting, embedding truncation). `o200k_base` matches current OpenAI models and counts non-Latin text far closer to what they actually charge; `cl100k_base` reproduces the counts Hindsight produced before this default changed. Server-level: token budgets are only comparable between banks if they are all counted the same way. Other bundled vocabulary: `o200k_harmony`. | `o200k_base` |
 | `HINDSIGHT_API_MODEL_INIT_TIMEOUT` | Wall-clock cap (seconds) on startup model/connection initialization. If embeddings, the cross-encoder, or LLM verification block (e.g. an offline model download or an unreachable provider), the server fails fast with a clear error instead of hanging forever. Increase if a legitimate first-time model download needs more time. | `300` |
 | `HINDSIGHT_API_STARTUP_WAIT_SECONDS` | **Docker image only.** How long the container waits for the API to answer `/health` before it stops and restarts. Raising `HINDSIGHT_API_MODEL_INIT_TIMEOUT` above the default raises this wait too, so a slow first-time model download is not cut short; set this to override the wait on its own. | `300`, or `HINDSIGHT_API_MODEL_INIT_TIMEOUT` + 30s when that is longer |
 
@@ -1674,6 +1674,324 @@ The trade-off is the point of the product: no extracted facts, entities, or link
 graph or temporal structure to retrieve, and no mental models to reflect over. Use it for
 banks that are genuinely plain retrieval — or to benchmark Hindsight against a baseline
 vector store on equal terms — not as a general latency fix.
+
+### Knowledge Banks
+
+A knowledge bank (`kind: knowledge`) chunks and embeds documents and answers hybrid
+searches over the chunks — no facts, no LLM on either path. These settings control it. All
+are hierarchical — overridable per bank via the [config API](#hierarchical-configuration),
+so two banks on one server can chunk differently.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `HINDSIGHT_API_KB_PASSAGE_SIZE` | Passage size in tokens. Chunks are cut on paragraph, then sentence, then word boundaries, so a chunk is at most this many tokens and usually close to it. | `512` |
+| `HINDSIGHT_API_KB_PASSAGE_OVERLAP` | Tokens of the previous chunk repeated at the start of the next, so a passage split across a boundary is still findable from either side. | `64` |
+| `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
+| `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
+| `HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY` | Trigram prefilter for matching a misspelled record name to an existing one; an edit-distance check decides. `0` turns typo matching off, leaving exact keys and explicit merges. See [which record is which](#knowledge-bank-identity). | `0.45` |
+| `HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION` | With several schemas in a bank and no `schema_id` on the write, ask the LLM which schema the document is. Off means no fields rather than the wrong ones. | `true` |
+| `HINDSIGHT_API_KB_FIELD_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
+| `HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
+| `HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY` | Chunk-level extraction is one LLM call per chunk; this many run at once per document. | `4` |
+| `HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT` | Weight of the vector arm in the fusion; the keyword arm gets the rest (`1 - weight`). `0.5` is an even split. The keyword arm ORs every word of the query, so paragraph-length queries do better with more weight on the vector arm. Ignored for single-arm searches (`mode: vector` / `keyword`). | `0.5` |
+
+#### Metadata extraction {#knowledge-bank-metadata}
+
+A knowledge bank can carry a *metadata schema*: the properties an LLM should fill in for
+every document, and for every chunk. Writes extract them, and search filters on them.
+
+```bash
+# What the LLM extracts from every document, and from every chunk. A property is
+# {type, description?, values?, items?}; `values` is a fixed set, which is how
+# classification is expressed - the model picks one of them or leaves it out.
+curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/schemas/contract" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "document_fields": {
+      "doc_type":  {"type": "string", "values": ["invoice", "contract", "memo"]},
+      "vendor":    {"type": "string", "description": "The counterparty"},
+      "total":     {"type": "number"},
+      "signed_on": {"type": "date"},
+      "parties":   {"type": "array", "items": "string"},
+      "terms":     {"type": "object"}
+    },
+    "passage_fields": {
+      "clause": {"type": "string", "values": ["payment", "termination", "liability"]}
+    }
+  }'
+```
+
+Field types: `string`, `integer`, `number`, `boolean`, `date`, `datetime`, `array` (of any
+of those, via `items`) and `object` for anything the flat types cannot say. Two flags say
+what a field is *for*:
+
+- **`filterable`** (default `true`) — search may filter on it. A field the schema defines
+  but does not expose is refused with a 400 rather than silently matching nothing.
+- **`indexed`** (default `false`) — the value joins the text that gets embedded, as
+  `name: value`, so a passage becomes findable by something its own words never say (its
+  region, its counterparty). Off by default because every indexed field dilutes the
+  passage's own meaning in the vector.
+
+A bank may hold **several schemas**, one per kind of document (`PUT …/schemas/{id}`). A
+write names its schema with `schema_id`; with exactly one schema in the bank that is
+implied, and with several and no name the LLM classifies the document — or, with
+classification off, the document is stored with no fields.
+
+```bash
+# Filter a search on the extracted values (or on metadata written with the document)
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "late payment penalty",
+    "fields": {"doc_type": "contract", "total": {"$gte": 10000}, "clause": "payment"}
+  }'
+```
+
+Filter operators: a bare value for equality, `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`,
+`$in`, `$nin`, `$contains` (an array holds the value, or a string contains it) and
+`$exists`. A property name resolves against the chunk's extracted values first, then the
+document's, then the metadata supplied with the document — so filtering works the same
+whether a value was extracted per chunk, per document, or written by the caller.
+
+The schema takes effect on the next write. Documents already in the bank are re-extracted
+on request, as a background operation, because re-reading a corpus costs LLM calls:
+
+```bash
+# Re-extract documents already in the bank after changing the schema
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/fields/extract" \
+  -H "Content-Type: application/json" -d '{"only_missing": true}'
+```
+
+`GET /v1/default/knowledge-banks/{kb}/metadata-values/{property}` returns the counts per
+value (`?level=chunks` for a chunk property). Extraction uses the bank's own LLM, so a bank
+can extract on a cheaper model than the one the rest of the server runs.
+
+##### Values the write supplies
+
+A property's `source` says who fills it: `extract` (the LLM reads the document — the
+default) or `request` (the caller sends it on write). Either way it lands in the same
+object, so a filter and a query cannot tell them apart. A write may also supply a value for
+an `extract` property, which overrides it for that document:
+
+```bash
+# A property whose source is "request" is never sent to the LLM: the write supplies it.
+# A write may also supply a value for an "extract" property, which skips the call for that
+# document - so a corpus whose properties are all known costs no LLM call at all.
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/documents" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [{
+      "id": "inv-1",
+      "text": "Acme invoice for 1200 EUR, payable in 30 days.",
+      "fields": {"doc_type": "invoice", "vendor": "Acme", "total": 1200},
+      "passage_fields": {"0": {"clause": "payment"}}
+    }]
+  }'
+```
+
+A document whose supplied values cover the schema costs no LLM call, which is how a corpus
+with known metadata is loaded without model spend.
+
+##### Querying the metadata {#knowledge-bank-query}
+
+`POST …/query` aggregates and filters over documents and chunks. It is a JSON DSL with
+SQL's shape — projection, filtering, grouping, aggregates, arithmetic and functions over
+aggregates, `having`, `order_by`, paging — and no SQL crosses the wire: every identifier is
+matched against a fixed column list or bound as a parameter, and every literal is a bind
+parameter.
+
+```bash
+# Aggregate over the corpus: the same filter DSL in `where`, aggregates and arithmetic over
+# them in `select`, and `having` over the columns select names.
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "chunks",
+    "select": [
+      {"field": "fields.doc_type", "as": "doc_type"},
+      {"count": "*", "as": "chunks"},
+      {"count_distinct": "doc_id", "as": "documents"},
+      {"sum": "metadata.total", "as": "total"},
+      {"round": [{"divide": [{"sum": "fields.total"}, {"count_distinct": "doc_id"}]}, 2],
+       "as": "per_document"}
+    ],
+    "where": {"clause": "payment"},
+    "group_by": ["fields.doc_type"],
+    "having": {"documents": {"$gte": 1}},
+    "order_by": [{"field": "total", "direction": "desc"}],
+    "limit": 50
+  }'
+```
+
+- **`from`**: `chunks` (joined to its document, so document properties group too) or `documents`.
+- **Fields**: `doc_id`, `title`, `tags`, `chunk_count`, `text_length`, `created_at`,
+  `updated_at`, plus `chunk_index`, `token_count`, `chunk_text_length`, `heading` on chunks,
+  and `metadata.<property>` (or `doc_metadata.` / `chunk_metadata.` to pin the level).
+- **Aggregates**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`.
+- **Arithmetic**: `add`, `subtract`, `multiply`, `divide` — over fields *or* aggregates.
+- **Functions**: `round`, `abs`, `ceil`, `floor`, `length`, `lower`, `upper`, `coalesce`,
+  `date_trunc`, `extract`.
+- **Limits** (a structure from a caller is a cost the server pays): 32 select items, 8
+  group-by and order-by items, expression depth 8, 400 bound values, 500 `$in` values,
+  `limit` 1000.
+
+A metadata property is stored as JSON, so a numeric one is compared and ordered as a number
+and a non-numeric value aggregates to `NULL` rather than failing the query. `min`/`max` on a
+metadata property are numeric for the same reason — wrap the field in `lower()` to get the
+text extreme instead.
+
+#### Collections and records {#knowledge-bank-collections}
+
+A **collection** is a structured dataset derived from a bank's documents — vendors,
+contracts, invoices — and a **record** is one row of it: one real-world thing, gathered
+across every document that mentions it rather than one row per file.
+
+```bash
+# A collection is a structured dataset derived from the documents. `identity` is the field
+# that makes the same real-world thing found in two documents one record, and a field with
+# `collection` is a relationship the query endpoint can join on.
+curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Vendors", "identity": "name",
+    "fields": {
+      "name":    {"type": "string"},
+      "country": {"type": "string", "values": ["de", "fr", "it", "us"]},
+      "tier":    {"type": "string", "values": ["gold", "silver"]}
+    }
+  }'
+echo
+
+curl -X PUT "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/contracts" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Contracts", "identity": "reference",
+    "fields": {
+      "reference": {"type": "string"},
+      "value":     {"type": "number"},
+      "status":    {"type": "string", "values": ["active", "expired"]},
+      "vendor":    {"collection": "vendors", "description": "The vendor this contract is with"}
+    }
+  }'
+```
+
+- **`identity`** is the field that decides which record a value belongs to, so the same
+  vendor found in ten documents is one row that ten documents filled in.
+- A field with **`collection`** is a *relationship*: its value is a record id in that
+  collection, and it is what a query joins on.
+
+Records arrive two ways, and both land in the same table — derived by the LLM from the
+documents, with the sentence behind each value kept as evidence:
+
+```bash
+# Fill the collection from the documents already in the bank (a background operation)
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors/derive" \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+or written directly, when the caller already has the data (no LLM, which is also how a
+corpus is set up for testing):
+
+```bash
+# Or write records yourself, when you already have the data: same rows, no LLM
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors/records" \
+  -H "Content-Type: application/json" \
+  -d '{"records": [{"values": {"name": "acme", "country": "de", "tier": "gold"}}]}'
+```
+
+**A record is the fold of its contributions** — one per document, plus whatever a human
+pinned — rather than a row that writes merge into. That is what makes the rest behave:
+
+- a second document fills the gaps in a record without duplicating it, and both documents
+  are credited;
+- re-deriving a document *replaces* what it said before instead of adding to it, so a
+  corrected document corrects the record;
+- deleting a document takes back exactly what it contributed, and the record goes only if
+  nothing else was behind it;
+- `PUT …/records/{id}/pins` outranks every document, before and after, and keeps a record
+  alive even when its last document is deleted;
+- `DELETE …/records/{id}` removes a record and everything that fed it.
+
+`GET …/records/{id}` returns the values, the documents behind them, and the quote for each
+value — including the competing quotes when two documents disagree (the later one wins the
+value). The record keeps the 20 most recent quotes per field; the contributions keep all.
+
+**Changing a collection's definition is a migration**, and the response says what it did:
+`added`, `removed`, `retyped`, `identity_changed` and how many records were pruned. A
+dropped or retyped field's values leave the records — a column the schema no longer has
+must not survive in the rows, and prose is not silently kept as a number. A new field is
+empty until something fills it, which is what `?reprocess=true` queues: a re-derivation of
+the documents already in the bank. `derive_on_write: true` on a collection keeps it current
+with the corpus without anyone running a job.
+
+Because a collection knows its fields, a query naming one it does not have is a 400 rather
+than a column of nulls — including a field of a joined collection, and including a join to
+a collection that has since been deleted.
+
+##### Which record is which {#knowledge-bank-identity}
+
+Documents do not agree on how to write a name, so the identity field is resolved before it
+decides a record, in three steps — each one auditable, and each one more willing to guess
+than the last:
+
+1. **Normalisation** (exact, never guesses): case, accents, punctuation, spacing, and the
+   trailing legal form. `Apple`, `Apple Inc.`, `APPLE, INC.` are one vendor; `Nestlé` and
+   `Nestle` are one; `Acme Ltd` and `Acme Limited` are one. What it will *not* do is drop a
+   word — `Apple` and `Apple Bank` stay two companies, because "Bank" is exactly what
+   distinguishes them.
+2. **Aliases**: a merge someone performed. This is the only step that can know something no
+   string comparison could — that "Big Blue" is IBM.
+3. **Typo matching**: a trigram prefilter (indexed) followed by an edit-distance check.
+   Both stages are needed: measured here, a transposition in `Vandelay Industries` scores
+   0.600 on trigrams while `Apple` against `Apple Bank` scores 0.545, so no trigram
+   threshold separates them — edit distance does, because a typo is a small change to a
+   name of nearly the same length. It never runs on names under 12 characters, where one
+   character is the difference between `BP` and `HP`.
+   `HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY=0` turns this step off, leaving exact keys
+   and explicit merges — the right setting where a wrong merge is expensive.
+
+A record's id is its normalised identity, but callers never have to know that: fetching,
+pinning, deleting and merging resolve the id they pass the same way a write does, so
+`records/c-1` finds the record stored as `c 1`, and a link saved before a merge still lands
+on the record that now holds the data.
+
+When resolution is wrong, a person fixes it:
+
+```bash
+# Two records that are the same thing. The loser folds into the winner, and its id becomes
+# an alias, so the next document naming it lands on the merged record.
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/vendors/records/big%20blue/merge" \
+  -H "Content-Type: application/json" -d '{"into": "ibm"}'
+```
+
+The merge moves every contribution, keeps both sides' evidence and pins, repoints anything
+that referenced the losing record (a contract whose vendor was merged still has a vendor),
+and records the alias — so re-deriving the documents does not undo it.
+
+**Querying records** uses the same DSL as documents and passages, plus `join`:
+
+```bash
+# Query records with the same DSL, joining a relationship field
+curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/collections/contracts/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "join": [{"on": "vendor", "as": "vendor"}],
+    "select": [
+      {"field": "vendor.country", "as": "country"},
+      {"count": "*", "as": "contracts"},
+      {"sum": "value", "as": "total"}
+    ],
+    "where": {"status": "active", "vendor.tier": "gold"},
+    "group_by": ["vendor.country"],
+    "having": {"contracts": {"$gte": 1}},
+    "order_by": [{"field": "total", "direction": "desc"}]
+  }'
+```
+
+`on` names a relationship field of the collection being queried; the joined collection's
+fields are then `<alias>.<field>`, in `select`, `where`, `group_by` and `order_by` alike.
+Joins are LEFT joins — a contract with no vendor is still a contract and still counts — and
+a query is capped at four of them.
 
 ### Retain
 

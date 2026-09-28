@@ -428,6 +428,73 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/files": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Write files as documents (async)",
+        "description": "Upload files (PDF, DOCX, \u2026). Each one is converted to markdown by a knowledge_file_convert operation, which then queues the ordinary write. Track both through the bank's operations endpoints. Requires HINDSIGHT_API_ENABLE_FILE_UPLOAD_API.",
+        "operationId": "write_files_v1_default_knowledge_banks__kb__files_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_write_files_v1_default_knowledge_banks__kb__files_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/documents/{doc_id}": {
       "get": {
         "tags": [
@@ -11957,6 +12024,36 @@
         ],
         "title": "Body_import_documents"
       },
+      "Body_write_files_v1_default_knowledge_banks__kb__files_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "format": "binary"
+            },
+            "type": "array",
+            "title": "Files",
+            "description": "Files to convert and write"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request",
+            "description": "JSON: {tags, metadata, schema_id, parser}"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_write_files_v1_default_knowledge_banks__kb__files_post"
+      },
       "Budget": {
         "type": "string",
         "enum": [
@@ -22145,11 +22242,18 @@
       "WriteDocument": {
         "properties": {
           "id": {
-            "type": "string",
-            "maxLength": 512,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Id",
-            "description": "Caller's document id; writing it again replaces it"
+            "description": "Caller's document id; writing it again replaces it. Omit for a generated uuid."
           },
           "text": {
             "type": "string",
@@ -22209,7 +22313,6 @@
         },
         "type": "object",
         "required": [
-          "id",
           "text"
         ],
         "title": "WriteDocument"
