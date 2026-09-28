@@ -50,6 +50,7 @@ import {
 } from "@/components/form-layout";
 import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
+import { InlineStat, StatStrip } from "@/components/ui/inline-stat";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -1265,14 +1266,17 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
       tab
       description="A schema is the fields one kind of document has. A bank with several lets the LLM classify which one a document is."
       action={
-        <div className="flex items-center gap-2">
-          <ViewToggle value={view} onChange={setView} />
-          <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
-            <Plus className="w-4 h-4 mr-1" /> New schema
-          </Button>
-        </div>
+        <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
+          <Plus className="w-4 h-4 mr-1" /> New schema
+        </Button>
       }
     >
+      <div className="mb-6 flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          {schemas.length} schema{schemas.length === 1 ? "" : "s"}
+        </div>
+        <ViewToggle value={view} onChange={setView} />
+      </div>
       {view === "diagram" && schemas.length > 0 && (
         <div className="mb-6">
           <ErdDiagram
@@ -1366,6 +1370,27 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                   </div>
                 </div>
 
+                <StatStrip className="mb-4">
+                  <InlineStat
+                    icon={Tags}
+                    label="Fields"
+                    value={
+                      Object.keys(current.document_fields).length +
+                      Object.keys(current.passage_fields).length
+                    }
+                  />
+                  <InlineStat
+                    icon={FileText}
+                    label="Documents filled"
+                    value={current.documents_with_fields}
+                  />
+                  <InlineStat
+                    icon={Layers}
+                    label="Passages filled"
+                    value={current.passages_with_fields}
+                  />
+                </StatStrip>
+
                 {/* Its definition, and what that definition actually caught. */}
                 <div className="border-b border-border mb-4 flex">
                   {(["schema", "data"] as const).map((item) => (
@@ -1403,15 +1428,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                     onSave={(next: SchemaDraft) => setPendingSave(next)}
                   />
                 ) : (
-                  <div className="space-y-3">
-                    <ErdDiagram nodes={[schemaCard(current)]} edges={[]} />
-                    <p className="text-xs text-muted-foreground">
-                      Filled on {current.documents_with_fields} document
-                      {current.documents_with_fields === 1 ? "" : "s"} and{" "}
-                      {current.passages_with_fields} passage
-                      {current.passages_with_fields === 1 ? "" : "s"}.
-                    </p>
-                  </div>
+                  <ErdDiagram nodes={[schemaCard(current)]} edges={[]} />
                 )}
               </>
             )}
@@ -1740,14 +1757,17 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
         title="Collections"
         description="A collection is a kind of thing the documents talk about; each record folds together what every document said about one of them."
         action={
-          <div className="flex items-center gap-2">
-            <ViewToggle value={view} onChange={setView} />
-            <Button size="sm" variant="outline" onClick={() => openEditor()}>
-              <Plus className="w-4 h-4 mr-1" /> New collection
-            </Button>
-          </div>
+          <Button size="sm" variant="outline" onClick={() => openEditor()}>
+            <Plus className="w-4 h-4 mr-1" /> New collection
+          </Button>
         }
       >
+        <div className="mb-6 flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            {collections.length} collection{collections.length === 1 ? "" : "s"}
+          </div>
+          <ViewToggle value={view} onChange={setView} />
+        </div>
         {view === "diagram" && collections.length > 0 && (
           <ErdDiagram
             nodes={collections.map((collection) => ({

@@ -47,6 +47,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import type { TooltipContentProps } from "recharts";
+import { CompactNumber, InlineStat, formatCompact } from "@/components/ui/inline-stat";
 
 export interface BankStats {
   bank_id: string;
@@ -153,28 +154,6 @@ const FACT_META: Record<FactKey, { label: string; color: string }> = {
   experience: { label: "Experience", color: CHART_COLORS.experience },
   observation: { label: "Observations", color: CHART_COLORS.observation },
 };
-
-function formatCompact(n: number): string {
-  if (n < 1000) return n.toString();
-  if (n < 1_000_000) {
-    const k = n / 1000;
-    return `${k >= 10 ? k.toFixed(0) : k.toFixed(1).replace(/\.0$/, "")}k`;
-  }
-  if (n < 1_000_000_000) {
-    const m = n / 1_000_000;
-    return `${m >= 10 ? m.toFixed(0) : m.toFixed(1).replace(/\.0$/, "")}M`;
-  }
-  const b = n / 1_000_000_000;
-  return `${b >= 10 ? b.toFixed(0) : b.toFixed(1).replace(/\.0$/, "")}B`;
-}
-
-function CompactNumber({ value, className }: { value: number; className?: string }) {
-  return (
-    <span className={className} title={value.toLocaleString()}>
-      {formatCompact(value)}
-    </span>
-  );
-}
 
 // Custom tooltip — clean shadow card, no harsh borders, tabular numbers.
 // Recharts' content prop can be rendered without all the normally-required
@@ -364,31 +343,6 @@ function Distribution({
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function InlineStat({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Database;
-  label: string;
-  value: number;
-}) {
-  return (
-    <div className="flex items-center gap-3 p-4">
-      <div className="p-2 rounded-md bg-muted">
-        <Icon className="w-4 h-4 text-muted-foreground" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-xs text-muted-foreground font-medium">{label}</p>
-        <CompactNumber
-          value={value}
-          className="text-2xl font-semibold text-foreground leading-tight tabular-nums block"
-        />
-      </div>
     </div>
   );
 }
