@@ -15,6 +15,10 @@ import type { SchemaField } from "@/components/knowledge-bank-api";
 
 export interface FilterableField {
   name: string;
+  /** Which schema defines it — two schemas may each define "total", and they are not
+   *  the same field to a reader even though the filter matches on the name. */
+  schemaId: string;
+  level: "document" | "passage";
   spec: SchemaField;
 }
 
@@ -83,9 +87,16 @@ function toFilter(conditions: Condition[], fields: FilterableField[]): Record<st
 
 export function FilterBuilder({
   fields,
+  schemas,
+  schemaId,
+  onSchemaChange,
   onChange,
 }: {
   fields: FilterableField[];
+  /** The bank's schema ids, for scoping the search to one kind of document. */
+  schemas: string[];
+  schemaId: string | null;
+  onSchemaChange: (schemaId: string | null) => void;
   /** The filter as the API takes it, or null when nothing is set. */
   onChange: (filter: Record<string, unknown> | null) => void;
 }) {
@@ -94,25 +105,19 @@ export function FilterBuilder({
   const [json, setJson] = React.useState("");
   const [jsonError, setJsonError] = React.useState<string | null>(null);
 
-  const emit = (next: Condition[]) => {
+  // The new list is computed from the current one and both the state and the parent are
+  // told about it here — never from inside a setState updater, which React may run
+  // during a render, where setting a parent's state is a warning and a lost update.
+  const apply = (next: Condition[]) => {
+    setConditions(next);
     const filter = toFilter(next, fields);
     onChange(Object.keys(filter).length > 0 ? filter : null);
   };
 
-  const update = (id: number, change: Partial<Condition>) => {
-    setConditions((prev) => {
-      const next = prev.map((c) => (c.id === id ? { ...c, ...change } : c));
-      emit(next);
-      return next;
-    });
-  };
+  const update = (id: number, change: Partial<Condition>) =>
+    apply(conditions.map((c) => (c.id === id ? { ...c, ...change } : c)));
 
-  const remove = (id: number) =>
-    setConditions((prev) => {
-      const next = prev.filter((c) => c.id !== id);
-      emit(next);
-      return next;
-    });
+  const remove = (id: number) => apply(conditions.filter((c) => c.id !== id));
 
   const showJson = () => {
     setJson(JSON.stringify(toFilter(conditions, fields), null, 2));
@@ -151,7 +156,7 @@ export function FilterBuilder({
                   // The form cannot express every filter the JSON can, so it keeps the
                   // conditions it had rather than trying to read arbitrary JSON back.
                   setView("form");
-                  emit(conditions);
+                  apply(conditions);
                 }
               }}
               className={`px-3 py-1 text-xs font-medium rounded-[5px] transition-colors ${
@@ -166,6 +171,27 @@ export function FilterBuilder({
         </div>
         {jsonError && <span className="text-xs text-destructive">{jsonError}</span>}
       </div>
+
+      {view === "form" && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground w-20">Schema</span>
+          <select
+            className="h-9 w-56 rounded-md border border-input bg-background px-2 text-sm"
+            value={schemaId ?? ""}
+            onChange={(e) => onSchemaChange(e.target.value || null)}
+          >
+            <option value="">Any schema</option>
+            {schemas.map((schema) => (
+              <option key={schema} value={schema}>
+                {schema}
+              </option>
+            ))}
+            {/* Not a missing filter: the documents no schema applied to are the ones
+                nothing was extracted from, and finding them is the point. */}
+            <option value="none">No schema</option>
+          </select>
+        </div>
+      )}
 
       {view === "json" ? (
         <Textarea
@@ -183,17 +209,30 @@ export function FilterBuilder({
             return (
               <div key={condition.id} className="flex items-center gap-2">
                 <select
-                  className="h-9 w-48 rounded-md border border-input bg-background px-2 text-sm"
+                  className="h-9 w-56 rounded-md border border-input bg-background px-2 text-sm"
                   value={condition.field}
                   onChange={(e) => update(condition.id, { field: e.target.value })}
                 >
                   <option value="">Field…</option>
-                  {fields.map((field) => (
-                    <option key={field.name} value={field.name}>
-                      {field.name}
-                    </option>
+                  {Array.from(new Set(fields.map((f) => f.schemaId))).map((schema) => (
+                    <optgroup key={schema} label={schema}>
+                      {fields
+                        .filter((f) => f.schemaId === schema)
+                        .map((field) => (
+                          <option key={`${schema}.${field.name}`} value={field.name}>
+                            {field.name}
+                            {field.level === "passage" ? " (passage)" : ""}
+                          </option>
+                        ))}
+                    </optgroup>
                   ))}
                 </select>
+                {spec && (
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    {spec.type}
+                    {spec.type === "array" && spec.items ? ` of ${spec.items}` : ""}
+                  </span>
+                )}
                 <select
                   className="h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
                   value={condition.operator}
@@ -253,10 +292,7 @@ export function FilterBuilder({
               size="sm"
               disabled={fields.length === 0}
               onClick={() =>
-                setConditions((prev) => [
-                  ...prev,
-                  { id: nextId++, field: "", operator: "eq", value: "" },
-                ])
+                apply([...conditions, { id: nextId++, field: "", operator: "eq", value: "" }])
               }
             >
               <Plus className="h-4 w-4 mr-1" /> Add condition

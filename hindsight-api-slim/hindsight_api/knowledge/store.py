@@ -21,7 +21,6 @@ KNOWLEDGE_KIND = "knowledge"
 class DocumentRow:
     doc_id: str
     title: str | None
-    tags: list[str]
     metadata: dict[str, Any]
     passage_count: int
     chars: int
@@ -254,7 +253,6 @@ async def upsert_document(
     *,
     text: str,
     title: str | None,
-    tags: list[str],
     metadata: dict[str, Any],
     content_hash: str,
     passage_count: int,
@@ -264,10 +262,10 @@ async def upsert_document(
     await conn.execute(
         f"""
         INSERT INTO {fq_table("kb_documents")}
-            (bank_id, doc_id, text, title, tags, metadata, content_hash, passage_count, fields, schema_id)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9::jsonb, $10)
+            (bank_id, doc_id, text, title, metadata, content_hash, passage_count, fields, schema_id)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9)
         ON CONFLICT (bank_id, doc_id) DO UPDATE SET
-            text = EXCLUDED.text, title = EXCLUDED.title, tags = EXCLUDED.tags,
+            text = EXCLUDED.text, title = EXCLUDED.title,
             metadata = EXCLUDED.metadata, content_hash = EXCLUDED.content_hash,
             passage_count = EXCLUDED.passage_count, fields = EXCLUDED.fields,
             schema_id = EXCLUDED.schema_id, updated_at = now()
@@ -276,7 +274,6 @@ async def upsert_document(
         doc_id,
         text,
         title,
-        tags,
         json.dumps(metadata),
         content_hash,
         passage_count,
@@ -316,16 +313,26 @@ async def replace_passages(conn: Any, bank_id: str, doc_id: str, rows: list[tupl
         )
 
 
-async def list_documents(conn: Any, bank_id: str, limit: int, offset: int, query: str | None) -> dict[str, Any]:
+async def list_documents(
+    conn: Any, bank_id: str, limit: int, offset: int, query: str | None, schema_id: str | None = None
+) -> dict[str, Any]:
     where = "bank_id = $1"
     params: list[Any] = [bank_id]
     if query:
         params.append(f"%{query}%")
         where += f" AND (doc_id ILIKE ${len(params)} OR title ILIKE ${len(params)})"
+    if schema_id is not None:
+        # "none" is a real answer: the documents no schema applied to are the ones worth
+        # finding, because nothing was extracted from them.
+        if schema_id == "none":
+            where += " AND schema_id IS NULL"
+        else:
+            params.append(schema_id)
+            where += f" AND schema_id = ${len(params)}"
     total = await conn.fetchval(f"SELECT count(*) FROM {fq_table('kb_documents')} WHERE {where}", *params)
     rows = await conn.fetch(
         f"""
-        SELECT doc_id, title, tags, metadata, fields, schema_id, passage_count,
+        SELECT doc_id, title, metadata, fields, schema_id, passage_count,
                length(text) AS chars, created_at, updated_at
         FROM {fq_table("kb_documents")}
         WHERE {where}
@@ -347,7 +354,7 @@ async def list_documents(conn: Any, bank_id: str, limit: int, offset: int, query
 async def get_document(conn: Any, bank_id: str, doc_id: str) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         f"""
-        SELECT doc_id, title, tags, metadata, fields, schema_id, text, passage_count, created_at, updated_at
+        SELECT doc_id, title, metadata, fields, schema_id, text, passage_count, created_at, updated_at
         FROM {fq_table("kb_documents")} WHERE bank_id = $1 AND doc_id = $2
         """,
         bank_id,
@@ -376,19 +383,28 @@ async def delete_document(conn: Any, bank_id: str, doc_id: str) -> bool:
     return deleted is not None
 
 
-def _scope(tags: list[str] | None, fields: dict[str, Any] | None, params: list[Any]) -> SearchScope:
-    """The JOIN and the WHERE additions for tag and metadata filters.
+def _scope(
+    fields: dict[str, Any] | None,
+    params: list[Any],
+    schema_id: str | None = None,
+) -> SearchScope:
+    """The JOIN and the WHERE additions for the schema and field filters.
 
-    Metadata filters read the document row, so they need it joined rather than probed with
-    EXISTS; tags then come off the same join instead of a second subquery.
+    Field filters read the document row, so they need it joined rather than probed with
+    EXISTS; the schema then comes off the same join instead of another subquery.
     """
-    if not tags and not fields:
+    if not fields and schema_id is None:
         return SearchScope(join="", where="")
     join = f" JOIN {fq_table('kb_documents')} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id"
     where = ""
-    if tags:
-        params.append(tags)
-        where += f" AND d.tags && ${len(params)}::text[]"
+    if schema_id is not None:
+        # "none" is a real answer, not a missing filter: it selects the documents no
+        # schema applied to, which is how you find what was never extracted.
+        if schema_id == "none":
+            where += " AND d.schema_id IS NULL"
+        else:
+            params.append(schema_id)
+            where += f" AND d.schema_id = ${len(params)}"
     where += compile_filters(fields, params)
     return SearchScope(join=join, where=where)
 
@@ -398,11 +414,11 @@ async def search_semantic(
     bank_id: str,
     query_vector: list[float],
     limit: int,
-    tags: list[str] | None,
     fields: dict[str, Any] | None = None,
+    schema_id: str | None = None,
 ) -> list[PassageHit]:
     params: list[Any] = [bank_id]
-    scope = _scope(tags, fields, params)
+    scope = _scope(fields, params, schema_id)
     params.append(vector_literal(query_vector))
     rows = await conn.fetch(
         f"""
@@ -422,14 +438,14 @@ async def search_keyword(
     bank_id: str,
     terms: list[str],
     limit: int,
-    tags: list[str] | None,
     fields: dict[str, Any] | None = None,
+    schema_id: str | None = None,
 ) -> list[PassageHit]:
     """Keyword arm. Terms are OR-ed: a question rarely has every word in one passage."""
     if not terms:
         return []
     params: list[Any] = [bank_id]
-    scope = _scope(tags, fields, params)
+    scope = _scope(fields, params, schema_id)
     params.append(" | ".join(terms))
     rows = await conn.fetch(
         f"""

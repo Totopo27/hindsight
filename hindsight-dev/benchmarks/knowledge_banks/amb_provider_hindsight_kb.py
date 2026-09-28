@@ -84,7 +84,8 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
                     # ids are opaque numbers and slugs, and prepending one to every chunk
                     # poisons its embedding.
                     "title": doc.context if _SEND_TITLE else None,
-                    "tags": [f"user:{doc.user_id}"] if doc.user_id else [],
+                    # The per-user scope is a metadata value, filtered with the same
+                    # field filter a schema field uses — knowledge banks have no tags.
                     "metadata": {"user_id": doc.user_id} if doc.user_id else {},
                 }
                 for doc in documents[start : start + _WRITE_BATCH]
@@ -120,7 +121,7 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
     ) -> tuple[list[Document], dict | None]:
         body: dict = {"query": query, "top_k": k, "mode": self._mode, "collapse_documents": True}
         if user_id:
-            body["tags"] = [f"user:{user_id}"]
+            body["fields"] = {"user_id": user_id}
         if self._rerank is not None:
             body["rerank"] = self._rerank
         response = self._http.post(self._kb("/search"), json=body)

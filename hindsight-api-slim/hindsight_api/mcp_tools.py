@@ -4720,7 +4720,7 @@ def _register_search_knowledge_bank(mcp: FastMCP, memory: MemoryEngine, config: 
         query: str,
         top_k: int = 10,
         mode: str = "hybrid",
-        tags: list[str] | None = None,
+        schema_id: str | None = None,
         fields: dict[str, Any] | None = None,
         collapse_documents: bool = False,
     ) -> dict:
@@ -4732,7 +4732,8 @@ def _register_search_knowledge_bank(mcp: FastMCP, memory: MemoryEngine, config: 
             query: Natural-language query
             top_k: Maximum passages to return (default: 10)
             mode: 'hybrid' (default), 'vector' or 'keyword'
-            tags: Only documents carrying all of these tags
+            schema_id: Only documents read with this schema; 'none' for the ones no schema
+                applied to. Use list_knowledge_schemas to see them.
             fields: Filter on filterable fields, e.g. {"year": {"$gte": 2024}, "vendor": "Apple"}.
                 Operators: $gte, $gt, $lte, $lt, $ne, $in, $contains, $exists
             collapse_documents: Best passage per document, so top_k means k distinct documents
@@ -4744,7 +4745,7 @@ def _register_search_knowledge_bank(mcp: FastMCP, memory: MemoryEngine, config: 
                 query,
                 top_k=top_k,
                 mode=mode,
-                tags=tags,
+                schema_id=schema_id,
                 fields=fields,
                 collapse_documents=collapse_documents,
                 request_context=_get_request_context(config),

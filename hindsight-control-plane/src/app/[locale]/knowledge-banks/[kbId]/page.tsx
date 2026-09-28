@@ -6,12 +6,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { FileText, Plus, Search as SearchIcon, Table2, Trash2, Upload, X } from "lucide-react";
+import {
+  FileText,
+  Layers,
+  MoreVertical,
+  Plus,
+  RefreshCw,
+  Search as SearchIcon,
+  Settings as SettingsIcon,
+  Table2,
+  Tags,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { BankSelector } from "@/components/bank-selector";
 import { KnowledgeBankSidebar, type KbSection } from "@/components/knowledge-bank-sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -313,7 +333,7 @@ function Documents({
   const [total, setTotal] = useState(0);
   const [adding, setAdding] = useState(false);
   const [tab, setTab] = useState<"text" | "upload">("text");
-  const [form, setForm] = useState({ id: "", title: "", text: "", tags: "" });
+  const [form, setForm] = useState({ id: "", title: "", text: "" });
   const [files, setFiles] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -334,16 +354,10 @@ function Documents({
     load();
   }, [load]);
 
-  const tagList = () =>
-    form.tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-
   const done = (message: string) => {
     toast.success(message);
     setAdding(false);
-    setForm({ id: "", title: "", text: "", tags: "" });
+    setForm({ id: "", title: "", text: "" });
     setFiles([]);
     // The write runs in the background, so the list is re-read a moment later rather
     // than immediately, when it would still show the bank as it was.
@@ -368,7 +382,6 @@ function Documents({
                 ...(form.id.trim() ? { id: form.id.trim() } : {}),
                 text: form.text,
                 title: form.title || null,
-                tags: tagList(),
               },
             ],
           },
@@ -385,7 +398,7 @@ function Documents({
   const upload = async () => {
     setSaving(true);
     try {
-      const result = await kbUpload(kbId, files, { tags: tagList() });
+      const result = await kbUpload(kbId, files);
       done(
         `Uploaded ${files.length} file(s) — each is converted and written in the background ` +
           `(${result.operation_ids.length} operation(s))`
@@ -455,11 +468,8 @@ function Documents({
                       <span className="text-muted-foreground">none</span>
                     )}
                   </TableCell>
-                  <TableCell>
-                    <FieldChips values={doc.fields} limit={3} />
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {doc.tags.join(", ")}
+                  <TableCell className="text-sm text-muted-foreground">
+                    {new Date(doc.updated_at).toLocaleString()}
                   </TableCell>
                   <TableCell className="text-right">{doc.passage_count}</TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
@@ -568,12 +578,6 @@ function Documents({
             </TabsContent>
           </Tabs>
 
-          <Input
-            placeholder="tags, comma separated"
-            value={form.tags}
-            onChange={(e) => setForm({ ...form, tags: e.target.value })}
-          />
-
           <DialogFooter>
             {tab === "text" ? (
               <Button onClick={write} disabled={saving || !form.text.trim()}>
@@ -670,58 +674,98 @@ function DocumentDetail({
 
   return (
     <Dialog open={docId !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="font-mono text-base">{docId}</DialogTitle>
-          <DialogDescription>
-            {document?.title ? `${document.title} · ` : ""}
-            {document?.schema_id ? (
-              <>
-                read with schema <span className="font-mono">{document.schema_id}</span>
-              </>
-            ) : (
-              "no schema — nothing was extracted for this document"
-            )}
-          </DialogDescription>
+      <DialogContent className="w-[95vw] max-w-[95vw] h-[92vh] sm:max-w-[95vw] flex flex-col overflow-hidden">
+        <DialogHeader className="pr-10">
+          <DialogTitle className="truncate font-mono text-sm">{docId}</DialogTitle>
         </DialogHeader>
 
         {!document ? (
-          <Spinner />
+          <div className="flex flex-1 items-center justify-center">
+            <Spinner size="xl" variant="jump" />
+          </div>
         ) : (
-          <div className="space-y-5">
-            <FieldTable
-              title="Document fields"
-              definition={schema?.document_fields}
-              values={document.fields}
-            />
+          <Tabs defaultValue="general" className="flex-1 flex flex-col overflow-hidden">
+            <TabsList className="grid grid-cols-3 w-full max-w-md">
+              <TabsTrigger value="general" className="flex items-center gap-1.5">
+                <SettingsIcon className="w-3.5 h-3.5" /> General
+              </TabsTrigger>
+              <TabsTrigger value="fields" className="flex items-center gap-1.5">
+                <Tags className="w-3.5 h-3.5" /> Fields
+              </TabsTrigger>
+              <TabsTrigger value="passages" className="flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5" /> Passages ({document.passages.length})
+              </TabsTrigger>
+            </TabsList>
 
-            <div>
-              <div className="text-[13px] font-semibold mb-2">
-                Passages ({document.passages.length})
-              </div>
-              <div className="space-y-3">
-                {document.passages.map((passage) => (
-                  <div key={passage.passage_index} className="rounded-lg border border-border p-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs font-mono text-muted-foreground">
-                        #{passage.passage_index}
-                      </span>
-                      <FieldChips values={passage.fields} />
-                    </div>
-                    <p className="text-xs whitespace-pre-wrap text-muted-foreground">
-                      {passage.text}
-                    </p>
+            <TabsContent value="general" className="flex-1 overflow-y-auto mt-4 space-y-4">
+              <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                {[
+                  ["Document id", <span className="font-mono text-xs">{document.doc_id}</span>],
+                  ["Title", document.title || "—"],
+                  [
+                    "Schema",
+                    document.schema_id ? (
+                      <span className="font-mono text-xs">{document.schema_id}</span>
+                    ) : (
+                      "none — nothing was extracted for this document"
+                    ),
+                  ],
+                  ["Passages", document.passages.length],
+                  ["Characters", (document.text ?? "").length.toLocaleString()],
+                  ["Created", new Date(document.created_at).toLocaleString()],
+                  ["Updated", new Date(document.updated_at).toLocaleString()],
+                ].map(([label, value], i) => (
+                  <div key={i}>
+                    <dt className="text-xs text-muted-foreground">{label as string}</dt>
+                    <dd className="text-sm">{value as React.ReactNode}</dd>
                   </div>
                 ))}
+              </dl>
+              {Object.keys(document.metadata || {}).length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Metadata</div>
+                  <FieldChips values={document.metadata} />
+                </div>
+              )}
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Text</div>
+                <pre className="rounded-lg border border-border bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+                  {document.text}
+                </pre>
               </div>
+            </TabsContent>
+
+            <TabsContent value="fields" className="flex-1 overflow-y-auto mt-4 space-y-5">
+              <FieldTable
+                title="Document fields"
+                definition={schema?.document_fields}
+                values={document.fields}
+              />
               {schema && Object.keys(schema.passage_fields).length > 0 && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  This schema asks each passage for:{" "}
+                <p className="text-xs text-muted-foreground">
+                  This schema also asks each passage for{" "}
                   <span className="font-mono">{Object.keys(schema.passage_fields).join(", ")}</span>
+                  ; the answers are on the Passages tab.
                 </p>
               )}
-            </div>
-          </div>
+            </TabsContent>
+
+            <TabsContent value="passages" className="flex-1 overflow-y-auto mt-4 space-y-3">
+              {document.passages.map((passage) => (
+                <div key={passage.passage_index} className="rounded-lg border border-border p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-mono text-muted-foreground">
+                      #{passage.passage_index}
+                    </span>
+                    <FieldChips values={passage.fields} />
+                  </div>
+                  <p className="text-xs whitespace-pre-wrap text-muted-foreground">
+                    {passage.text}
+                  </p>
+                </div>
+              ))}
+            </TabsContent>
+          </Tabs>
         )}
       </DialogContent>
     </Dialog>
@@ -802,6 +846,7 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"hybrid" | "vector" | "keyword">("hybrid");
   const [filter, setFilter] = useState<Record<string, unknown> | null>(null);
+  const [schemaId, setSchemaId] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -813,7 +858,13 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
         `/${encodeURIComponent(kbId)}/search`,
         {
           method: "POST",
-          body: { query, mode, top_k: 10, fields: filter ?? undefined },
+          body: {
+            query,
+            mode,
+            top_k: 10,
+            fields: filter ?? undefined,
+            schema_id: schemaId ?? undefined,
+          },
         }
       );
       setResults(response.results);
@@ -824,12 +875,26 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
     }
   };
 
-  // Only a filterable field can be filtered on, so those are the only ones offered.
-  const filterable = schemas.flatMap((schema) =>
-    [...Object.entries(schema.document_fields), ...Object.entries(schema.passage_fields)]
+  // Only a filterable field can be filtered on, so those are the only ones offered —
+  // each under the schema that defines it, because two schemas may name the same field.
+  const filterable = schemas.flatMap((schema) => [
+    ...Object.entries(schema.document_fields)
       .filter(([, spec]) => spec.filterable)
-      .map(([name, spec]) => ({ name, spec }))
-  );
+      .map(([name, spec]) => ({
+        name,
+        spec,
+        schemaId: schema.schema_id,
+        level: "document" as const,
+      })),
+    ...Object.entries(schema.passage_fields)
+      .filter(([, spec]) => spec.filterable)
+      .map(([name, spec]) => ({
+        name,
+        spec,
+        schemaId: schema.schema_id,
+        level: "passage" as const,
+      })),
+  ]);
 
   return (
     <Section title="Search" tab description="Hybrid vector + keyword search, reranked.">
@@ -866,39 +931,61 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
       </form>
 
       <div className="mt-4">
-        <FilterBuilder fields={filterable} onChange={setFilter} />
+        <FilterBuilder
+          fields={filterable}
+          schemas={schemas.map((schema) => schema.schema_id)}
+          schemaId={schemaId}
+          onSchemaChange={setSchemaId}
+          onChange={setFilter}
+        />
       </div>
 
       {results && (
-        <div className="mt-4 space-y-3">
-          {results.length === 0 && <p className="text-sm text-muted-foreground">Nothing found.</p>}
-          {results.map((hit, i) => (
-            <div
-              key={`${hit.document_id}#${hit.passage_index}`}
-              className="rounded-lg border border-border p-3"
-            >
-              <div className="flex items-center gap-2 text-sm mb-1">
-                <span className="text-muted-foreground">#{i + 1}</span>
-                <span className="font-mono">{hit.document_id}</span>
-                <span className="text-muted-foreground">passage {hit.passage_index}</span>
-                {hit.ranks.vector && (
-                  <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[11px]">
-                    vector #{hit.ranks.vector}
+        <Tabs defaultValue="data" className="mt-5">
+          <TabsList className="grid w-full max-w-xs grid-cols-2">
+            <TabsTrigger value="data">Data</TabsTrigger>
+            <TabsTrigger value="json">JSON</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="data" className="mt-3 space-y-3">
+            {results.length === 0 && (
+              <p className="text-sm text-muted-foreground">Nothing found.</p>
+            )}
+            {results.map((hit, i) => (
+              <div
+                key={`${hit.document_id}#${hit.passage_index}`}
+                className="rounded-lg border border-border p-3"
+              >
+                <div className="flex items-center gap-2 text-sm mb-1">
+                  <span className="text-muted-foreground">#{i + 1}</span>
+                  <span className="font-mono">{hit.document_id}</span>
+                  <span className="text-muted-foreground">passage {hit.passage_index}</span>
+                  {hit.ranks.vector && (
+                    <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[11px]">
+                      vector #{hit.ranks.vector}
+                    </span>
+                  )}
+                  {hit.ranks.keyword && (
+                    <span className="rounded bg-emerald-100 dark:bg-emerald-500/20 px-1.5 py-0.5 text-[11px]">
+                      keyword #{hit.ranks.keyword}
+                    </span>
+                  )}
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {hit.score.toFixed(4)}
                   </span>
-                )}
-                {hit.ranks.keyword && (
-                  <span className="rounded bg-emerald-100 dark:bg-emerald-500/20 px-1.5 py-0.5 text-[11px]">
-                    keyword #{hit.ranks.keyword}
-                  </span>
-                )}
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {hit.score.toFixed(4)}
-                </span>
+                </div>
+                <p className="text-sm whitespace-pre-wrap">{hit.text}</p>
               </div>
-              <p className="text-sm whitespace-pre-wrap">{hit.text}</p>
-            </div>
-          ))}
-        </div>
+            ))}
+          </TabsContent>
+
+          {/* The response as it came back — what a client would have to parse. */}
+          <TabsContent value="json" className="mt-3">
+            <pre className="max-h-[600px] overflow-auto rounded-lg border border-border bg-muted/30 p-4 text-xs leading-relaxed">
+              {JSON.stringify({ results }, null, 2)}
+            </pre>
+          </TabsContent>
+        </Tabs>
       )}
     </Section>
   );
@@ -913,6 +1000,10 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
   // A schema is read far more often than it is changed, so the right pane opens on the
   // fields and the form is one click away.
   const [editing, setEditing] = useState(false);
+  const [pane, setPane] = useState<"schema" | "data">("schema");
+  // A saved schema changes what the next write extracts; whether it also re-reads what
+  // is already stored costs LLM calls, so it is asked rather than assumed.
+  const [pendingSave, setPendingSave] = useState<SchemaDraft | null>(null);
 
   const load = useCallback(async () => {
     const response = await kbFetch<{ items: KnowledgeSchema[] }>(
@@ -928,15 +1019,26 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
 
   const current = schemas?.find((schema) => schema.schema_id === selected) ?? null;
 
-  const save = async (schemaId: string, body: unknown) => {
+  const save = async (schemaId: string, body: unknown, reprocess = false) => {
     setSaving(true);
     try {
       await kbFetch(`/${encodeURIComponent(kbId)}/schemas/${encodeURIComponent(schemaId)}`, {
         method: "PUT",
         body,
       });
-      toast.success("Saved. It applies to the next write.");
+      if (reprocess) {
+        // only_missing false: the point of asking was to re-read documents that already
+        // have values, because the schema that produced them just changed.
+        await kbFetch(`/${encodeURIComponent(kbId)}/fields/extract`, {
+          method: "POST",
+          body: { schema_id: schemaId, only_missing: false },
+        });
+        toast.success("Saved. Re-reading the documents in the background — see Settings.");
+      } else {
+        toast.success("Saved. It applies to the next write.");
+      }
       setSelected(schemaId);
+      setEditing(false);
       await load();
       onSaved?.();
     } catch (e) {
@@ -1005,6 +1107,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                 onClick={() => {
                   setSelected(schema.schema_id);
                   setEditing(false);
+                  setPane("schema");
                 }}
                 className={`w-full text-left px-3 py-2.5 transition-colors ${
                   schema.schema_id === selected ? "bg-accent" : "hover:bg-muted/50"
@@ -1037,24 +1140,59 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                     </p>
                   </div>
                   <div className="flex gap-2 shrink-0">
-                    <Button size="sm" variant="outline" onClick={() => setEditing((v) => !v)}>
-                      {editing ? "Done" : "Edit"}
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={extract}>
-                      Extract
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      title="Delete schema"
-                      onClick={() => remove(current.schema_id)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    {pane === "schema" && !editing && (
+                      <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                        Edit
+                      </Button>
+                    )}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          Actions
+                          <MoreVertical className="w-4 h-4 ml-2" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-56">
+                        <DropdownMenuItem onClick={extract}>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Extract missing values
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => remove(current.schema_id)}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete schema
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
 
-                {editing ? (
+                {/* Its definition, and what that definition actually caught. */}
+                <div className="border-b border-border mb-4 flex">
+                  {(["schema", "data"] as const).map((item) => (
+                    <button
+                      key={item}
+                      onClick={() => setPane(item)}
+                      className={`px-4 py-2 text-sm font-semibold transition-all relative capitalize ${
+                        pane === item
+                          ? "text-primary"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {item}
+                      {pane === item && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {pane === "data" ? (
+                  <SchemaDocuments kbId={kbId} schemaId={current.schema_id} />
+                ) : editing ? (
                   /* Remounted per schema, so switching never carries one schema's edits
                      into another's. */
                   <SchemaEditor
@@ -1066,7 +1204,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                       passage_fields: current.passage_fields,
                     }}
                     saving={saving}
-                    onSave={(next: SchemaDraft) => save(current.schema_id, next)}
+                    onSave={(next: SchemaDraft) => setPendingSave(next)}
                   />
                 ) : (
                   <div className="space-y-4">
@@ -1090,6 +1228,42 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
         </div>
       )}
 
+      <Dialog open={pendingSave !== null} onOpenChange={(open) => !open && setPendingSave(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Apply to the documents already stored?</DialogTitle>
+            <DialogDescription>
+              A saved schema is read on the next write either way. Re-reading what is already stored
+              fills the new fields on those documents too — one LLM call per document, run in the
+              background.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={saving}
+              onClick={() => {
+                const draft = pendingSave;
+                setPendingSave(null);
+                if (draft && current) save(current.schema_id, draft);
+              }}
+            >
+              Save only
+            </Button>
+            <Button
+              disabled={saving}
+              onClick={() => {
+                const draft = pendingSave;
+                setPendingSave(null);
+                if (draft && current) save(current.schema_id, draft, true);
+              }}
+            >
+              Save and re-read documents
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -1108,6 +1282,67 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
         </DialogContent>
       </Dialog>
     </Section>
+  );
+}
+
+/** The documents this schema was read with — what the definition actually caught. */
+function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string }) {
+  const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
+  const [total, setTotal] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    kbFetch<{ items: KnowledgeDocument[]; total: number }>(
+      `/${encodeURIComponent(kbId)}/documents?limit=100&schema_id=${encodeURIComponent(schemaId)}`
+    )
+      .then((page) => {
+        if (!live) return;
+        setDocuments(page.items);
+        setTotal(page.total);
+      })
+      .catch((e) => toast.error((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [kbId, schemaId]);
+
+  if (!documents) return <Spinner />;
+  if (documents.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">No documents were read with this schema yet.</p>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        {total} document{total === 1 ? "" : "s"} read with this schema.
+      </p>
+      <TableFrame>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Document</TableHead>
+              <TableHead>Fields</TableHead>
+              <TableHead className="text-right w-24">Passages</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {documents.map((doc) => (
+              <TableRow key={doc.doc_id}>
+                <TableCell className="font-mono text-xs">
+                  {doc.doc_id}
+                  {doc.title && <div className="text-xs text-muted-foreground">{doc.title}</div>}
+                </TableCell>
+                <TableCell>
+                  <FieldChips values={doc.fields} />
+                </TableCell>
+                <TableCell className="text-right text-xs">{doc.passage_count}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableFrame>
+    </div>
   );
 }
 

@@ -48,7 +48,6 @@ FUNCTIONS = ("round", "abs", "ceil", "floor", "length", "lower", "upper", "date_
 _DOCUMENT_COLUMNS: dict[str, str] = {
     "doc_id": "d.doc_id",
     "title": "d.title",
-    "tags": "d.tags",
     "passage_count": "d.passage_count",
     "text_length": "length(d.text)",
     "created_at": "d.created_at",

@@ -56,7 +56,6 @@ export interface QueryResult {
 export interface KnowledgeDocument {
   doc_id: string;
   title: string | null;
-  tags: string[];
   metadata: Record<string, unknown>;
   fields: Record<string, unknown>;
   /** Which schema's fields were read out of this document; null when none applied. */
@@ -107,17 +106,11 @@ export async function kbFetch<T>(
 export async function kbUpload(
   kbId: string,
   files: File[],
-  options: { tags?: string[]; schema_id?: string | null }
+  options: { schema_id?: string | null } = {}
 ): Promise<{ operation_ids: string[] }> {
   const form = new FormData();
   for (const file of files) form.append("files", file);
-  form.append(
-    "request",
-    JSON.stringify({
-      tags: options.tags ?? [],
-      ...(options.schema_id ? { schema_id: options.schema_id } : {}),
-    })
-  );
+  form.append("request", JSON.stringify(options.schema_id ? { schema_id: options.schema_id } : {}));
   // No Content-Type header: the browser sets it with the multipart boundary.
   const response = await fetch(
     withBasePath(`/api/knowledge-banks/${encodeURIComponent(kbId)}/files`),

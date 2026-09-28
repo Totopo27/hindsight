@@ -36,7 +36,6 @@ class WriteDocument(BaseModel):
     # whose body extracted to nothing, and one of them must not fail the whole batch.
     text: str
     title: str | None = None
-    tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict, description="Free-form metadata, stored as given")
     fields: dict[str, Any] = Field(
         default_factory=dict,
@@ -60,7 +59,6 @@ class WriteRequest(BaseModel):
 class FileWriteOptions(BaseModel):
     """What to apply to every file in one upload; the ids are generated per file."""
 
-    tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     schema_id: str | None = None
     parser: str | list[str] | None = Field(
@@ -153,13 +151,16 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=10, ge=1, le=200)
     mode: Literal["hybrid", "vector", "keyword"] = "hybrid"
-    tags: list[str] | None = None
     fields: dict[str, Any] | None = Field(
         default=None,
         description=(
             "Field filter: {field: value} or {field: {$gte: 1, $in: [...], $contains: x, $exists: true}}. "
             "Matches passage-level values, then document-level values, then metadata written with the document."
         ),
+    )
+    schema_id: str | None = Field(
+        default=None,
+        description="Only documents read with this schema; 'none' for the ones no schema applied to",
     )
     rerank: bool | None = Field(default=None, description="Override the bank's rerank setting")
     collapse_documents: bool = Field(
@@ -231,7 +232,6 @@ def build_router(get_request_context: Any) -> APIRouter:
                 doc_id=d.id or str(uuid.uuid4()),
                 text=d.text,
                 title=d.title,
-                tags=d.tags,
                 metadata=d.metadata,
                 fields=d.fields,
                 passage_fields=d.passage_fields,
@@ -252,7 +252,7 @@ def build_router(get_request_context: Any) -> APIRouter:
     async def write_files(
         kb: str,
         files: list[UploadFile] = File(..., description="Files to convert and write"),
-        request: str | None = Form(default=None, description="JSON: {tags, metadata, schema_id, parser}"),
+        request: str | None = Form(default=None, description="JSON: {metadata, schema_id, parser}"),
         svc: KnowledgeService = Depends(service),
         ctx: RequestContext = Depends(get_request_context),
     ):
@@ -270,7 +270,6 @@ def build_router(get_request_context: Any) -> APIRouter:
                 # the worker resolves rather than this route, so a config change applies to
                 # files already queued.
                 parser=[options.parser] if isinstance(options.parser, str) else list(options.parser or []),
-                tags=options.tags,
                 metadata=options.metadata,
                 schema_id=options.schema_id,
             )
@@ -284,9 +283,13 @@ def build_router(get_request_context: Any) -> APIRouter:
         limit: int = Query(default=50, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         q: str | None = Query(default=None, description="Filter by document id or title"),
+        schema_id: str | None = Query(
+            default=None,
+            description="Only documents read with this schema; 'none' for the ones no schema applied to",
+        ),
         svc: KnowledgeService = Depends(service),
     ):
-        return await run(svc.list_documents(kb, limit, offset, q))
+        return await run(svc.list_documents(kb, limit, offset, q, schema_id))
 
     @router.get("/{kb}/documents/{doc_id:path}", summary="One document with its passages")
     async def get_document(kb: str, doc_id: str, svc: KnowledgeService = Depends(service)):
@@ -585,8 +588,8 @@ def build_router(get_request_context: Any) -> APIRouter:
                 body.query,
                 top_k=body.top_k,
                 mode=body.mode,
-                tags=body.tags,
                 fields=body.fields,
+                schema_id=body.schema_id,
                 rerank=body.rerank,
                 collapse_documents=body.collapse_documents,
                 request_context=ctx,

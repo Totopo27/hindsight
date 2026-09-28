@@ -22,21 +22,19 @@ DOCS = [
         "text": "Milan is a city in northern Italy, the capital of Lombardy. "
         "It is known for fashion, design and the Duomo cathedral. "
         "The city hosts the Borsa Italiana, Italy's stock exchange.",
-        "tags": ["cities", "italy"],
     },
     {
         "id": "turin",
         "title": "Turin",
         "text": "Turin is a city in the Piedmont region of Italy. "
         "It was the first capital of unified Italy and is home to the Fiat car company.",
-        "tags": ["cities", "italy"],
     },
     {
         "id": "espresso",
         "title": "Espresso",
         "text": "Espresso is brewed by forcing hot water under pressure through finely ground coffee. "
         "It originated in Italy in the early twentieth century.",
-        "tags": ["food"],
+        "metadata": {"topic": "food"},
     },
 ]
 
@@ -97,10 +95,13 @@ async def test_write_batch_runs_as_an_operation_and_becomes_searchable(kb_client
     ).json()["results"]
     assert set(vector[0]["ranks"]) == {"vector"}
 
-    # Tags narrow the search to the documents that carry them.
+    # A field written with the document narrows the search to the documents that carry it.
+    # (Metadata is matched by the same filter as a schema field, so this works with no
+    # schema at all — which is what a document written with `metadata` gets.)
     food = (
         await kb_client.post(
-            f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Italy", "tags": ["food"], "top_k": 5}
+            f"/v1/default/knowledge-banks/{kb}/search",
+            json={"query": "Italy", "fields": {"topic": "food"}, "top_k": 5},
         )
     ).json()["results"]
     assert {h["document_id"] for h in food} == {"espresso"}
@@ -389,7 +390,7 @@ async def test_an_uploaded_file_becomes_a_searchable_document(kb_client):
     response = await kb_client.post(
         f"/v1/default/knowledge-banks/{kb}/files",
         files={"files": ("liguria.txt", b"Genoa is the capital of Liguria and its largest port.", "text/plain")},
-        data={"request": json.dumps({"tags": ["uploaded"]})},
+        data={"request": json.dumps({"metadata": {"source": "upload"}})},
     )
     assert response.status_code == 202, response.text
     assert len(response.json()["operation_ids"]) == 1
@@ -397,7 +398,7 @@ async def test_an_uploaded_file_becomes_a_searchable_document(kb_client):
     documents = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents")).json()["items"]
     assert len(documents) == 1
     assert documents[0]["title"] == "liguria.txt"
-    assert documents[0]["tags"] == ["uploaded"]
+    assert documents[0]["metadata"]["source"] == "upload"
     # The file it came from stays on the document, which is the only way back to the bytes.
     assert documents[0]["metadata"]["file_original_name"] == "liguria.txt"
 

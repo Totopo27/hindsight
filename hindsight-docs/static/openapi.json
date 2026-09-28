@@ -390,6 +390,24 @@
             "description": "Filter by document id or title"
           },
           {
+            "name": "schema_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only documents read with this schema; 'none' for the ones no schema applied to",
+              "title": "Schema Id"
+            },
+            "description": "Only documents read with this schema; 'none' for the ones no schema applied to"
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -12045,7 +12063,7 @@
               }
             ],
             "title": "Request",
-            "description": "JSON: {tags, metadata, schema_id, parser}"
+            "description": "JSON: {metadata, schema_id, parser}"
           }
         },
         "type": "object",
@@ -20873,20 +20891,6 @@
             "title": "Mode",
             "default": "hybrid"
           },
-          "tags": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tags"
-          },
           "fields": {
             "anyOf": [
               {
@@ -20899,6 +20903,18 @@
             ],
             "title": "Fields",
             "description": "Field filter: {field: value} or {field: {$gte: 1, $in: [...], $contains: x, $exists: true}}. Matches passage-level values, then document-level values, then metadata written with the document."
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id",
+            "description": "Only documents read with this schema; 'none' for the ones no schema applied to"
           },
           "rerank": {
             "anyOf": [
@@ -22269,13 +22285,6 @@
               }
             ],
             "title": "Title"
-          },
-          "tags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Tags"
           },
           "metadata": {
             "additionalProperties": true,

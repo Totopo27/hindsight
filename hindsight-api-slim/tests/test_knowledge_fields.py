@@ -295,3 +295,122 @@ async def test_a_failing_extraction_does_not_fail_the_write(kb_client, memory):
         await kb_client.post(f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Acme invoice", "top_k": 3})
     ).json()["results"]
     assert [hit["document_id"] for hit in hits] == ["d1"]
+
+
+@pytest.mark.asyncio
+async def test_documents_can_be_listed_by_the_schema_they_were_read_with(kb_client):
+    """A schema is only as good as what it filled, so its documents have to be findable.
+
+    'none' is a real filter value, not a missing one: the documents no schema applied to
+    are the ones worth finding, because nothing was extracted from them.
+    """
+    bank = await _bank(kb_client)
+    for schema_id, fields in [("invoice", {"vendor": {"type": "string"}}), ("memo", {"topic": {"type": "string"}})]:
+        response = await kb_client.put(
+            f"/v1/default/knowledge-banks/{bank}/schemas/{schema_id}",
+            json={"document_fields": fields, "passage_fields": {}},
+        )
+        assert response.status_code == 200, response.text
+    written = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={
+            "documents": [
+                {"id": "a", "text": "Acme invoice.", "schema_id": "invoice", "fields": {"vendor": "acme"}},
+                {"id": "b", "text": "Globex invoice.", "schema_id": "invoice", "fields": {"vendor": "globex"}},
+                {"id": "c", "text": "A memo.", "schema_id": "memo", "fields": {"topic": "hiring"}},
+            ]
+        },
+    )
+    assert written.status_code == 202, written.text
+
+    async def ids(schema_id: str) -> set[str]:
+        page = await kb_client.get(f"/v1/default/knowledge-banks/{bank}/documents", params={"schema_id": schema_id})
+        assert page.status_code == 200, page.text
+        return {d["doc_id"] for d in page.json()["items"]}
+
+    assert await ids("invoice") == {"a", "b"}
+    assert await ids("memo") == {"c"}
+    assert await ids("none") == set()
+
+
+@pytest.mark.asyncio
+async def test_search_can_be_scoped_to_one_schema(kb_client):
+    """Which schema read a document is a filter, not just a label.
+
+    A bank with several kinds of document is the case knowledge banks exist for, and
+    "search the invoices" is the first thing anyone asks of one.
+    """
+    bank = await _bank(kb_client)
+    for schema_id in ("invoice", "memo"):
+        response = await kb_client.put(
+            f"/v1/default/knowledge-banks/{bank}/schemas/{schema_id}",
+            json={"document_fields": {}, "passage_fields": {}},
+        )
+        assert response.status_code == 200, response.text
+    written = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={
+            "documents": [
+                {"id": "inv", "text": "Acme charged us for cloud hosting.", "schema_id": "invoice"},
+                {"id": "memo", "text": "Acme is our preferred cloud hosting vendor.", "schema_id": "memo"},
+                {"id": "loose", "text": "Cloud hosting costs are rising."},
+            ]
+        },
+    )
+    assert written.status_code == 202, written.text
+
+    async def hits(**body) -> set[str]:
+        response = await kb_client.post(
+            f"/v1/default/knowledge-banks/{bank}/search", json={"query": "cloud hosting", **body}
+        )
+        assert response.status_code == 200, response.text
+        return {hit["document_id"] for hit in response.json()["results"]}
+
+    assert await hits() == {"inv", "memo", "loose"}
+    assert await hits(schema_id="invoice") == {"inv"}
+    assert await hits(schema_id="memo") == {"memo"}
+    # The documents no schema applied to are findable too — that is what "none" is for.
+    assert await hits(schema_id="none") == {"loose"}
+
+
+@pytest.mark.asyncio
+async def test_re_extraction_leaves_another_schemas_documents_alone(kb_client, memory):
+    """Re-reading one schema must not re-read the whole bank with it.
+
+    A bank with several schemas is the case they exist for; extracting "invoice" over a
+    memo would overwrite the memo's fields with an invoice's, which no one asked for.
+    """
+    bank = await _bank(kb_client)
+    for schema_id, fields in [("invoice", {"vendor": {"type": "string"}}), ("memo", {"topic": {"type": "string"}})]:
+        response = await kb_client.put(
+            f"/v1/default/knowledge-banks/{bank}/schemas/{schema_id}",
+            json={"document_fields": fields, "passage_fields": {}},
+        )
+        assert response.status_code == 200, response.text
+    written = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={
+            "documents": [
+                {"id": "inv", "text": "Acme invoice.", "schema_id": "invoice", "fields": {"vendor": "acme"}},
+                {"id": "memo", "text": "A memo.", "schema_id": "memo", "fields": {"topic": "hiring"}},
+            ]
+        },
+    )
+    assert written.status_code == 202, written.text
+
+    _mock(memory, {"vendor": "re-read"})
+    extracted = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/fields/extract",
+        json={"schema_id": "invoice", "only_missing": False},
+    )
+    assert extracted.status_code == 202, extracted.text
+
+    async def document(doc_id: str) -> dict:
+        response = await kb_client.get(f"/v1/default/knowledge-banks/{bank}/documents/{doc_id}")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert (await document("inv"))["fields"]["vendor"] == "re-read"
+    memo = await document("memo")
+    assert memo["fields"] == {"topic": "hiring"}, "the memo kept what its own schema read"
+    assert memo["schema_id"] == "memo"

@@ -56,7 +56,6 @@ class DocumentInput:
     doc_id: str
     text: str
     title: str | None = None
-    tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
     #: Values for the schema's document fields, supplied instead of extracted. They land in
     #: the same object the LLM would have filled, and a field supplied here is not read by it.
@@ -78,7 +77,6 @@ class UploadedFile:
     content_type: str
     parser: list[str]
     title: str | None = None
-    tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
     schema_id: str | None = None
 
@@ -502,6 +500,13 @@ class KnowledgeService:
         if doc_ids:
             params.append(doc_ids)
             where += f" AND doc_id = ANY(${len(params)}::text[])"
+        elif schema is not None:
+            # Only this schema's documents, plus the ones no schema has claimed — a bank
+            # with several schemas must not have its memos re-read as invoices, and a
+            # document written before any schema existed is exactly what a first
+            # extraction is for.
+            params.append(schema["schema_id"])
+            where += f" AND (schema_id = ${len(params)} OR schema_id IS NULL)"
         if only_missing:
             where += " AND fields = '{}'::jsonb"
         async with acquire_with_retry(pool) as conn:
@@ -976,7 +981,6 @@ class KnowledgeService:
                     "doc_id": document.doc_id,
                     "text": document.text,
                     "title": document.title,
-                    "tags": document.tags or [],
                     "metadata": document.metadata or {},
                     "fields": document.fields or {},
                     "schema_id": document.schema_id,
@@ -1041,7 +1045,6 @@ class KnowledgeService:
                 "content_type": file.content_type,
                 "parser": file.parser,
                 "title": file.title,
-                "tags": file.tags,
                 "metadata": file.metadata,
                 "schema_id": file.schema_id,
             }
@@ -1114,7 +1117,6 @@ class KnowledgeService:
                     doc_id=task["doc_id"],
                     text=text,
                     title=task.get("title") or filename,
-                    tags=task.get("tags") or [],
                     metadata=metadata,
                     schema_id=task.get("schema_id"),
                 )
@@ -1141,7 +1143,7 @@ class KnowledgeService:
         bank_id = task["bank_id"]
         documents = [
             DocumentInput(
-                **{k: d.get(k) for k in ("doc_id", "text", "title", "tags", "metadata", "fields", "schema_id")},
+                **{k: d.get(k) for k in ("doc_id", "text", "title", "metadata", "fields", "schema_id")},
                 passage_fields={int(k): v for k, v in (d.get("passage_fields") or {}).items()},
             )
             for d in task["documents"]
@@ -1248,7 +1250,6 @@ class KnowledgeService:
                             document.doc_id,
                             text=document.text,
                             title=document.title,
-                            tags=document.tags or [],
                             metadata=document.metadata or {},
                             content_hash=content_hash,
                             passage_count=len(passages),
@@ -1309,10 +1310,12 @@ class KnowledgeService:
 
     # ---- reading
 
-    async def list_documents(self, bank_id: str, limit: int, offset: int, query: str | None) -> dict[str, Any]:
+    async def list_documents(
+        self, bank_id: str, limit: int, offset: int, query: str | None, schema_id: str | None = None
+    ) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            return await store.list_documents(conn, bank_id, limit, offset, query)
+            return await store.list_documents(conn, bank_id, limit, offset, query, schema_id)
 
     async def get_document(self, bank_id: str, doc_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
@@ -1343,8 +1346,8 @@ class KnowledgeService:
         *,
         top_k: int,
         mode: str = "hybrid",
-        tags: list[str] | None = None,
         fields: dict[str, Any] | None = None,
+        schema_id: str | None = None,
         rerank: bool | None = None,
         collapse_documents: bool = False,
         request_context: Any = None,
@@ -1362,10 +1365,10 @@ class KnowledgeService:
                 arms: dict[str, list[store.PassageHit]] = {}
                 if mode in ("hybrid", "vector"):
                     [vector] = await self.memory.embeddings.encode_query([query])
-                    arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, tags, fields)
+                    arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, fields, schema_id)
                 if mode in ("hybrid", "keyword"):
                     arms["keyword"] = await store.search_keyword(
-                        conn, bank_id, query_terms(query), candidates, tags, fields
+                        conn, bank_id, query_terms(query), candidates, fields, schema_id
                     )
         except FilterError as e:
             # A filter the caller cannot have meant is a 400, not a 500.
