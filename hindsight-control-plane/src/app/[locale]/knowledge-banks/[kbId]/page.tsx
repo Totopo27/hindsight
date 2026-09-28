@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import {
   FileText,
   Layers,
+  List,
+  Network,
   MoreVertical,
   Plus,
   RefreshCw,
@@ -24,6 +26,13 @@ import { BankSelector } from "@/components/bank-selector";
 import { KnowledgeBankSidebar, type KbSection } from "@/components/knowledge-bank-sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
@@ -39,6 +48,7 @@ import {
   Section as Section2,
   Segmented,
 } from "@/components/form-layout";
+import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -327,6 +337,38 @@ function DocumentsSection({
   );
 }
 
+/** List or diagram, the segmented control the entities and memories pages use. */
+function ViewToggle({
+  value,
+  onChange,
+}: {
+  value: "list" | "diagram";
+  onChange: (view: "list" | "diagram") => void;
+}) {
+  const options = [
+    { id: "list" as const, label: "List", Icon: List },
+    { id: "diagram" as const, label: "Diagram", Icon: Network },
+  ];
+  return (
+    <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+      {options.map(({ id, label, Icon }) => (
+        <button
+          key={id}
+          onClick={() => onChange(id)}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5 ${
+            value === id
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Icon className="w-4 h-4" />
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Documents({
   kbId,
   onChanged,
@@ -345,22 +387,30 @@ function Documents({
   const [files, setFiles] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [schemaFilter, setSchemaFilter] = useState("all");
 
+  // Both filters are the server's, as they are for a memory bank's documents: the list
+  // is paginated, so filtering the page in the browser would filter the wrong set.
   const load = useCallback(async () => {
     try {
+      const params = new URLSearchParams({ limit: "200" });
+      if (searchQuery.trim()) params.set("q", searchQuery.trim());
+      if (schemaFilter !== "all") params.set("schema_id", schemaFilter);
       const page = await kbFetch<{ items: KnowledgeDocument[]; total: number }>(
-        `/${encodeURIComponent(kbId)}/documents?limit=200`
+        `/${encodeURIComponent(kbId)}/documents?${params}`
       );
       setDocuments(page.items);
       setTotal(page.total);
     } catch (e) {
       toast.error((e as Error).message);
     }
-  }, [kbId]);
+  }, [kbId, searchQuery, schemaFilter]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    const timer = setTimeout(load, searchQuery ? 250 : 0);
+    return () => clearTimeout(timer);
+  }, [load, searchQuery]);
 
   const done = (message: string) => {
     toast.success(message);
@@ -434,17 +484,72 @@ function Documents({
     <Section
       title="Documents"
       tab
-      description={`${total} documents. Writes are queued as operations and run in the background.`}
+      description={`${total} document${total === 1 ? "" : "s"}. Writes are queued as operations and run in the background.`}
       action={
         <Button size="sm" onClick={() => setAdding(true)}>
           <Plus className="w-4 h-4 mr-1" /> Add document
         </Button>
       }
     >
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[220px] flex-1">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by document id or title…"
+            className="pl-8 pr-8 h-9"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        <Select value={schemaFilter} onValueChange={setSchemaFilter}>
+          <SelectTrigger className="w-[200px] h-9" aria-label="Filter by schema">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper">
+            <SelectItem value="all">Any schema</SelectItem>
+            {schemas.map((schema) => (
+              <SelectItem key={schema.schema_id} value={schema.schema_id}>
+                {schema.schema_id}
+              </SelectItem>
+            ))}
+            {/* Not a missing filter: these are the documents nothing was extracted from. */}
+            <SelectItem value="none">No schema</SelectItem>
+          </SelectContent>
+        </Select>
+        {(searchQuery || schemaFilter !== "all") && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 gap-1 text-xs shrink-0"
+            onClick={() => {
+              setSearchQuery("");
+              setSchemaFilter("all");
+            }}
+          >
+            <X className="h-3.5 w-3.5" />
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       {!documents ? (
         <Spinner />
       ) : documents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nothing written yet.</p>
+        <p className="text-sm text-muted-foreground">
+          {searchQuery || schemaFilter !== "all"
+            ? "No documents match these filters."
+            : "Nothing written yet."}
+        </p>
       ) : (
         <TableFrame>
           <Table>
@@ -1074,6 +1179,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
   // A saved schema changes what the next write extracts; whether it also re-reads what
   // is already stored costs LLM calls, so it is asked rather than assumed.
   const [pendingSave, setPendingSave] = useState<SchemaDraft | null>(null);
+  const [view, setView] = useState<"list" | "diagram">("list");
 
   const load = useCallback(async () => {
     const response = await kbFetch<{ items: KnowledgeSchema[] }>(
@@ -1157,16 +1263,34 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
       tab
       description="A schema is the fields one kind of document has. A bank with several lets the LLM classify which one a document is."
       action={
-        <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
-          <Plus className="w-4 h-4 mr-1" /> New schema
-        </Button>
+        <div className="flex items-center gap-2">
+          <ViewToggle value={view} onChange={setView} />
+          <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
+            <Plus className="w-4 h-4 mr-1" /> New schema
+          </Button>
+        </div>
       }
     >
+      {view === "diagram" && schemas.length > 0 && (
+        <div className="mb-6">
+          <ErdDiagram
+            nodes={schemas.map(schemaCard)}
+            edges={[]}
+            selected={selected}
+            onSelect={(id) => {
+              setSelected(id);
+              setEditing(false);
+              setPane("schema");
+            }}
+          />
+        </div>
+      )}
+
       {schemas.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No schemas yet. Create one to give documents fields that search and query can filter on.
         </p>
-      ) : (
+      ) : view === "diagram" ? null : (
         // List on the left, the schema itself on the right: picking one is a move of the
         // eye rather than a scroll past the table you were just reading.
         <div className="grid gap-5 md:grid-cols-[minmax(200px,260px)_1fr] items-start">
@@ -1277,19 +1401,14 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                     onSave={(next: SchemaDraft) => setPendingSave(next)}
                   />
                 ) : (
-                  <div className="space-y-4">
-                    <SchemaFields
-                      title="Document fields"
-                      fields={current.document_fields}
-                      filled={current.documents_with_fields}
-                      noun="document"
-                    />
-                    <SchemaFields
-                      title="Passage fields"
-                      fields={current.passage_fields}
-                      filled={current.passages_with_fields}
-                      noun="passage"
-                    />
+                  <div className="space-y-3">
+                    <ErdDiagram nodes={[schemaCard(current)]} edges={[]} />
+                    <p className="text-xs text-muted-foreground">
+                      Filled on {current.documents_with_fields} document
+                      {current.documents_with_fields === 1 ? "" : "s"} and{" "}
+                      {current.passages_with_fields} passage
+                      {current.passages_with_fields === 1 ? "" : "s"}.
+                    </p>
                   </div>
                 )}
               </>
@@ -1416,64 +1535,30 @@ function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string })
   );
 }
 
-/** A schema's fields, read rather than edited: one line each, with the flags and the
- *  allowed values that decide what a search can do with them. */
-function SchemaFields({
-  title,
-  fields,
-  filled,
-  noun,
-}: {
-  title: string;
-  fields: Record<string, SchemaField>;
-  filled: number;
-  noun: string;
-}) {
-  const entries = Object.entries(fields || {});
-  return (
-    <div>
-      <div className="flex items-baseline gap-2 mb-2">
-        <span className="text-sm font-semibold">{title}</span>
-        <span className="text-xs text-muted-foreground">
-          {entries.length} field{entries.length === 1 ? "" : "s"} · filled on {filled} {noun}
-          {filled === 1 ? "" : "s"}
-        </span>
-      </div>
-      {entries.length === 0 ? (
-        <p className="text-xs text-muted-foreground">None.</p>
-      ) : (
-        <div className="rounded-lg border border-border divide-y divide-border">
-          {entries.map(([name, spec]) => (
-            <div key={name} className="px-3 py-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <span className="font-mono text-xs">{name}</span>
-              <span className="text-[11px] text-muted-foreground">
-                {spec.type}
-                {spec.type === "array" && spec.items ? ` of ${spec.items}` : ""}
-              </span>
-              {spec.filterable && (
-                <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[10px]">
-                  filterable
-                </span>
-              )}
-              {spec.indexed && (
-                <span className="rounded bg-emerald-100 dark:bg-emerald-500/20 px-1.5 py-0.5 text-[10px]">
-                  indexed
-                </span>
-              )}
-              {spec.values && spec.values.length > 0 && (
-                <span className="text-[11px] text-muted-foreground">
-                  {spec.values.map(String).join(" · ")}
-                </span>
-              )}
-              {spec.description && (
-                <span className="w-full text-[11px] text-muted-foreground">{spec.description}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+/** One schema as a diagram card: its document fields, then its passage fields, with the
+ *  flags and allowed values that decide what a search can do with them. */
+function schemaCard(schema: KnowledgeSchema): ErdNode {
+  const field = (name: string, spec: SchemaField, passage: boolean): ErdField => ({
+    name: passage ? `${name} (passage)` : name,
+    type: spec.type + (spec.type === "array" && spec.items ? ` of ${spec.items}` : ""),
+    muted: passage,
+    badges: [spec.filterable ? "filterable" : null, spec.indexed ? "indexed" : null].filter(
+      Boolean
+    ) as string[],
+    values: spec.values,
+    description: spec.description,
+  });
+  return {
+    id: schema.schema_id,
+    title: schema.schema_id,
+    badge: "schema",
+    fields: [
+      ...Object.entries(schema.document_fields).map(([name, spec]) => field(name, spec, false)),
+      // A passage field is filled per passage, not per document, so it is marked rather
+      // than mixed in with the document's own.
+      ...Object.entries(schema.passage_fields).map(([name, spec]) => field(name, spec, true)),
+    ],
+  };
 }
 
 const NEW_COLLECTION_DEFINITION = `{
@@ -1495,6 +1580,7 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [records, setRecords] = useState<QueryResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [view, setView] = useState<"list" | "diagram">("list");
 
   const load = useCallback(async () => {
     const response = await kbFetch<{ items: KnowledgeCollection[] }>(
@@ -1650,12 +1736,44 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
         title="Collections"
         description="A collection is a kind of thing the documents talk about; each record folds together what every document said about one of them."
         action={
-          <Button size="sm" variant="outline" onClick={() => openEditor()}>
-            <Plus className="w-4 h-4 mr-1" /> New collection
-          </Button>
+          <div className="flex items-center gap-2">
+            <ViewToggle value={view} onChange={setView} />
+            <Button size="sm" variant="outline" onClick={() => openEditor()}>
+              <Plus className="w-4 h-4 mr-1" /> New collection
+            </Button>
+          </div>
         }
       >
-        {collections.length === 0 ? (
+        {view === "diagram" && collections.length > 0 && (
+          <ErdDiagram
+            nodes={collections.map((collection) => ({
+              id: collection.collection_id,
+              title: collection.collection_id,
+              badge: "collection",
+              fields: Object.entries(collection.fields).map(([name, spec]) => ({
+                name,
+                // A relationship field holds another collection's record id, so its
+                // "type" is that collection — which is also where its line goes.
+                type: spec.collection ?? spec.type ?? "string",
+                primary: collection.identity === name,
+                relation: Boolean(spec.collection),
+              })),
+            }))}
+            edges={collections.flatMap((collection) =>
+              Object.entries(collection.fields)
+                .filter(([, spec]) => spec.collection)
+                .map(([name, spec]) => ({
+                  from: collection.collection_id,
+                  fromField: name,
+                  to: String(spec.collection),
+                }))
+            )}
+            selected={selected}
+            onSelect={setSelected}
+          />
+        )}
+
+        {view === "diagram" && collections.length > 0 ? null : collections.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No collections yet. Define one — its fields are what an LLM reads out of each document,
             and the identity field is what makes the same thing found twice one record.
