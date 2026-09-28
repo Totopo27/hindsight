@@ -1539,9 +1539,11 @@ function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string })
  *  flags and allowed values that decide what a search can do with them. */
 function schemaCard(schema: KnowledgeSchema): ErdNode {
   const field = (name: string, spec: SchemaField, passage: boolean): ErdField => ({
-    name: passage ? `${name} (passage)` : name,
+    name,
     type: spec.type + (spec.type === "array" && spec.items ? ` of ${spec.items}` : ""),
-    muted: passage,
+    // The card groups by level rather than renaming the field: "clause" is the field's
+    // name, and "(passage)" tacked on was a label pretending to be one.
+    group: passage ? "passage" : "document",
     badges: [spec.filterable ? "filterable" : null, spec.indexed ? "indexed" : null].filter(
       Boolean
     ) as string[],

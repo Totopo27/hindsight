@@ -9,7 +9,7 @@
 // the laid-out DOM, so nothing has to be dragged and nothing can go stale.
 
 import * as React from "react";
-import { KeyRound, Link2, Lock } from "lucide-react";
+import { FileText, KeyRound, Layers, Link2, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface ErdField {
@@ -27,6 +27,9 @@ export interface ErdField {
   description?: string;
   /** A classification's allowed values. */
   values?: (string | number | boolean)[];
+  /** Fields with the same group are drawn together under one heading, e.g. the fields
+   *  filled per document and the ones filled per passage — the same card, two levels. */
+  group?: string;
 }
 
 export interface ErdNode {
@@ -181,48 +184,65 @@ export function ErdDiagram({
               {node.fields.length === 0 && (
                 <div className="px-3 py-2 text-xs text-muted-foreground">No fields</div>
               )}
-              {node.fields.map((field) => (
-                <div
-                  key={field.name}
-                  ref={(el) => {
-                    const key = `${node.id}.${field.name}`;
-                    if (el) rowRefs.current.set(key, el);
-                    else rowRefs.current.delete(key);
-                  }}
-                  className={cn("px-3 py-1.5 text-xs", field.muted && "text-muted-foreground")}
-                >
-                  <div className="flex items-center gap-2">
-                    {field.primary ? (
-                      <KeyRound className="h-3 w-3 shrink-0 text-amber-500" />
-                    ) : field.relation ? (
-                      <Link2 className="h-3 w-3 shrink-0 text-primary" />
-                    ) : field.muted ? (
-                      <Lock className="h-3 w-3 shrink-0 opacity-60" />
-                    ) : (
-                      <span className="w-3 shrink-0" />
+              {node.fields.map((field, index) => (
+                <React.Fragment key={field.name}>
+                  {field.group && field.group !== node.fields[index - 1]?.group && (
+                    <div className="flex items-center gap-1.5 bg-muted/30 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {field.group === "passage" ? (
+                        <Layers className="h-3 w-3" />
+                      ) : (
+                        <FileText className="h-3 w-3" />
+                      )}
+                      per {field.group}
+                    </div>
+                  )}
+                  <div
+                    ref={(el) => {
+                      const key = `${node.id}.${field.name}`;
+                      if (el) rowRefs.current.set(key, el);
+                      else rowRefs.current.delete(key);
+                    }}
+                    className={cn(
+                      "px-3 py-1.5 text-xs",
+                      // The tint is the level, not a state: a passage field is filled once
+                      // per passage, which is a different row in the store entirely.
+                      field.group === "passage" && "bg-muted/20",
+                      field.muted && "text-muted-foreground"
                     )}
-                    <span className="font-mono truncate">{field.name}</span>
-                    {field.badges?.map((badge) => (
-                      <span
-                        key={badge}
-                        className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
-                      >
-                        {badge}
-                      </span>
-                    ))}
-                    <span className="ml-auto shrink-0 text-muted-foreground">{field.type}</span>
+                  >
+                    <div className="flex items-center gap-2">
+                      {field.primary ? (
+                        <KeyRound className="h-3 w-3 shrink-0 text-amber-500" />
+                      ) : field.relation ? (
+                        <Link2 className="h-3 w-3 shrink-0 text-primary" />
+                      ) : field.muted ? (
+                        <Lock className="h-3 w-3 shrink-0 opacity-60" />
+                      ) : (
+                        <span className="w-3 shrink-0" />
+                      )}
+                      <span className="font-mono truncate">{field.name}</span>
+                      {field.badges?.map((badge) => (
+                        <span
+                          key={badge}
+                          className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
+                        >
+                          {badge}
+                        </span>
+                      ))}
+                      <span className="ml-auto shrink-0 text-muted-foreground">{field.type}</span>
+                    </div>
+                    {field.values && field.values.length > 0 && (
+                      <div className="pl-5 text-[10px] text-muted-foreground">
+                        {field.values.map(String).join(" · ")}
+                      </div>
+                    )}
+                    {field.description && (
+                      <div className="pl-5 text-[10px] text-muted-foreground">
+                        {field.description}
+                      </div>
+                    )}
                   </div>
-                  {field.values && field.values.length > 0 && (
-                    <div className="pl-5 text-[10px] text-muted-foreground">
-                      {field.values.map(String).join(" · ")}
-                    </div>
-                  )}
-                  {field.description && (
-                    <div className="pl-5 text-[10px] text-muted-foreground">
-                      {field.description}
-                    </div>
-                  )}
-                </div>
+                </React.Fragment>
               ))}
             </div>
           </div>
