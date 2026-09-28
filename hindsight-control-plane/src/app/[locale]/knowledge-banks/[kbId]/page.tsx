@@ -160,9 +160,11 @@ export default function KnowledgeBankPage() {
     loadBank();
   }, [loadBank]);
 
+  // Search first, and so the default: a bank is asked questions far more often than its
+  // document list is read.
   const rawDocTab = searchParams.get("docTab");
   const docTab = (
-    rawDocTab === "schemas" || rawDocTab === "search" ? rawDocTab : "documents"
+    rawDocTab === "schemas" || rawDocTab === "documents" ? rawDocTab : "search"
   ) as DocTab;
   const goDocTab = (next: DocTab) =>
     router.push(`/knowledge-banks/${encodeURIComponent(kbId)}?section=documents&docTab=${next}`);
@@ -299,8 +301,8 @@ function DocumentsSection({
   }, [loadSchemas]);
 
   const tabs: { id: DocTab; label: string }[] = [
-    { id: "documents", label: "Documents" },
     { id: "search", label: "Search" },
+    { id: "documents", label: "Documents" },
     { id: "schemas", label: "Schemas" },
   ];
   return (
