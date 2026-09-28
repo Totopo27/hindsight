@@ -42,35 +42,55 @@ import {
   type SchemaField,
   type SearchResult,
 } from "@/components/knowledge-bank-api";
+import { FilterBuilder } from "@/components/kb-filter-builder";
+import { SchemaEditor, type SchemaDraft } from "@/components/kb-schema-editor";
 import { withBasePath } from "@/lib/base-path";
 
 const SECTIONS: KbSection[] = ["overview", "documents", "collections", "settings"];
 
-function Card({
+/** A page header in the memory-bank shape: the view's name, what the view is for, and
+ *  its one action on the same row. No card chrome — the memory-bank views don't use any,
+ *  and a page of nested boxes reads as a different product. */
+function Section({
   title,
   description,
   action,
+  sub,
   children,
 }: {
   title: string;
   description?: string;
   action?: React.ReactNode;
+  /** A block within a view rather than the view itself: same shape, quieter heading,
+   *  so one page does not read as three pages stacked. */
+  sub?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-card border border-border rounded-[16px] overflow-hidden">
-      <div className="px-[21px] py-[16px] border-b border-border flex items-start justify-between gap-3">
+    <div>
+      <div className={`flex items-start justify-between gap-4 ${sub ? "mb-3" : "mb-6"}`}>
         <div>
-          <div className="text-[14px] font-semibold leading-[18px]">{title}</div>
+          {sub ? (
+            <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+          ) : (
+            <h1 className="text-3xl font-bold mb-2 text-foreground">{title}</h1>
+          )}
           {description && (
-            <p className="text-[12px] text-muted-foreground mt-[4px]">{description}</p>
+            <p className={sub ? "text-sm text-muted-foreground" : "text-muted-foreground"}>
+              {description}
+            </p>
           )}
         </div>
         {action}
       </div>
-      <div className="p-[21px]">{children}</div>
+      {children}
     </div>
   );
+}
+
+/** A table's frame, as the memory-bank views draw it. */
+function TableFrame({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-lg border border-border overflow-hidden">{children}</div>;
 }
 
 export default function KnowledgeBankPage() {
@@ -138,15 +158,7 @@ export default function KnowledgeBankPage() {
               <Spinner />
             ) : (
               <>
-                <div className="mt-3 mb-5 flex items-center gap-3">
-                  <h1 className="text-[28px] font-semibold leading-[34px] tracking-[-0.4px] truncate">
-                    {bank.bank_id}
-                  </h1>
-                  <span className="text-[12px] text-muted-foreground">
-                    {bank.documents} documents · {bank.passages} passages
-                  </span>
-                </div>
-                <div className="space-y-5">
+                <div>
                   {section === "overview" && <Overview bank={bank} onGo={go} />}
                   {section === "documents" && (
                     <DocumentsSection
@@ -177,7 +189,7 @@ export default function KnowledgeBankPage() {
 
 /** The bank's numbers. Shown on Overview and again under Settings > General, which is
  *  where the memory banks put theirs. */
-function Stats({ bank }: { bank: KnowledgeBank }) {
+function Stats({ bank, sub }: { bank: KnowledgeBank; sub?: boolean }) {
   const stats = [
     ["Documents", bank.documents],
     ["Passages", bank.passages],
@@ -185,7 +197,7 @@ function Stats({ bank }: { bank: KnowledgeBank }) {
     ["Last write", bank.last_write_at ? new Date(bank.last_write_at).toLocaleString() : "—"],
   ] as const;
   return (
-    <Card title="Overview" description="What is in this bank right now.">
+    <Section title="Overview" sub={sub} description="What is in this bank right now.">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {stats.map(([label, value]) => (
           <div key={label}>
@@ -194,13 +206,13 @@ function Stats({ bank }: { bank: KnowledgeBank }) {
           </div>
         ))}
       </div>
-    </Card>
+    </Section>
   );
 }
 
 function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) => void }) {
   return (
-    <>
+    <div className="space-y-6">
       <Stats bank={bank} />
       <div className="flex gap-2">
         <Button size="sm" variant="outline" onClick={() => onGo("documents")}>
@@ -210,7 +222,7 @@ function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) =>
           <Table2 className="w-4 h-4 mr-1" /> Collections
         </Button>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -271,7 +283,7 @@ function DocumentsSection({
       {tab === "documents" && (
         <Documents kbId={kbId} onChanged={onChanged} schemas={schemas ?? []} />
       )}
-      {tab === "search" && <SearchPanel kbId={kbId} />}
+      {tab === "search" && <SearchPanel kbId={kbId} schemas={schemas ?? []} />}
       {tab === "schemas" && <SchemaPanel kbId={kbId} onSaved={loadSchemas} />}
     </div>
   );
@@ -388,7 +400,7 @@ function Documents({
   };
 
   return (
-    <Card
+    <Section
       title="Documents"
       description={`${total} documents. Writes are queued as operations and run in the background.`}
       action={
@@ -402,56 +414,58 @@ function Documents({
       ) : documents.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing written yet.</p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Document</TableHead>
-              <TableHead className="w-40">Schema</TableHead>
-              <TableHead>Fields</TableHead>
-              <TableHead>Tags</TableHead>
-              <TableHead className="text-right w-24">Passages</TableHead>
-              <TableHead className="w-12" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {documents.map((doc) => (
-              <TableRow
-                key={doc.doc_id}
-                className="cursor-pointer"
-                onClick={() => setOpen(doc.doc_id)}
-              >
-                <TableCell className="font-mono text-sm">
-                  {doc.doc_id}
-                  {doc.title && <div className="text-xs text-muted-foreground">{doc.title}</div>}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {doc.schema_id ? (
-                    <span className="font-mono">{doc.schema_id}</span>
-                  ) : (
-                    <span className="text-muted-foreground">none</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <FieldChips values={doc.fields} limit={3} />
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {doc.tags.join(", ")}
-                </TableCell>
-                <TableCell className="text-right">{doc.passage_count}</TableCell>
-                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    title="Delete"
-                    onClick={() => remove(doc.doc_id)}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </TableCell>
+        <TableFrame>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Document</TableHead>
+                <TableHead className="w-40">Schema</TableHead>
+                <TableHead>Fields</TableHead>
+                <TableHead>Tags</TableHead>
+                <TableHead className="text-right w-24">Passages</TableHead>
+                <TableHead className="w-12" />
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {documents.map((doc) => (
+                <TableRow
+                  key={doc.doc_id}
+                  className="cursor-pointer"
+                  onClick={() => setOpen(doc.doc_id)}
+                >
+                  <TableCell className="font-mono text-sm">
+                    {doc.doc_id}
+                    {doc.title && <div className="text-xs text-muted-foreground">{doc.title}</div>}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {doc.schema_id ? (
+                      <span className="font-mono">{doc.schema_id}</span>
+                    ) : (
+                      <span className="text-muted-foreground">none</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <FieldChips values={doc.fields} limit={3} />
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {doc.tags.join(", ")}
+                  </TableCell>
+                  <TableCell className="text-right">{doc.passage_count}</TableCell>
+                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title="Delete"
+                      onClick={() => remove(doc.doc_id)}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
       )}
 
       <DocumentDetail kbId={kbId} docId={open} schemas={schemas} onClose={() => setOpen(null)} />
@@ -562,7 +576,7 @@ function Documents({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </Section>
   );
 }
 
@@ -724,78 +738,71 @@ function FieldTable({
           No fields. Define a schema to give this kind of document fields.
         </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-56">Field</TableHead>
-              <TableHead className="w-32">Type</TableHead>
-              <TableHead>Value</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {names.map((name) => {
-              const spec = definition?.[name];
-              return (
-                <TableRow key={name}>
-                  <TableCell className="font-mono text-xs">
-                    {name}
-                    {spec?.filterable && (
-                      <span className="ml-1 text-[10px] text-muted-foreground">filterable</span>
-                    )}
-                    {spec?.indexed && (
-                      <span className="ml-1 text-[10px] text-muted-foreground">indexed</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {spec?.type ?? "—"}
-                    {/* A fixed value list IS the classification, so it belongs next to
-                        the type: it says what an answer may be, not just its shape. */}
-                    {spec?.values && spec.values.length > 0 && (
-                      <div className="text-[10px]">{spec.values.join(" · ")}</div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {name in values ? (
-                      formatFieldValue(values[name])
-                    ) : (
-                      <span className="text-muted-foreground">not filled</span>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+        <TableFrame>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-56">Field</TableHead>
+                <TableHead className="w-32">Type</TableHead>
+                <TableHead>Value</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {names.map((name) => {
+                const spec = definition?.[name];
+                return (
+                  <TableRow key={name}>
+                    <TableCell className="font-mono text-xs">
+                      {name}
+                      {spec?.filterable && (
+                        <span className="ml-1 text-[10px] text-muted-foreground">filterable</span>
+                      )}
+                      {spec?.indexed && (
+                        <span className="ml-1 text-[10px] text-muted-foreground">indexed</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {spec?.type ?? "—"}
+                      {/* A fixed value list IS the classification, so it belongs next to
+                          the type: it says what an answer may be, not just its shape. */}
+                      {spec?.values && spec.values.length > 0 && (
+                        <div className="text-[10px]">{spec.values.join(" · ")}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {name in values ? (
+                        formatFieldValue(values[name])
+                      ) : (
+                        <span className="text-muted-foreground">not filled</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </TableFrame>
       )}
     </div>
   );
 }
 
-function SearchPanel({ kbId }: { kbId: string }) {
+function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema[] }) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"hybrid" | "vector" | "keyword">("hybrid");
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState<Record<string, unknown> | null>(null);
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     if (!query.trim()) return;
-    let filterValue: unknown = undefined;
-    if (filter.trim()) {
-      try {
-        filterValue = JSON.parse(filter);
-      } catch {
-        toast.error("The field filter is not valid JSON");
-        return;
-      }
-    }
     setLoading(true);
     try {
       const response = await kbFetch<{ results: SearchResult[] }>(
         `/${encodeURIComponent(kbId)}/search`,
         {
           method: "POST",
-          body: { query, mode, top_k: 10, fields: filterValue },
+          body: { query, mode, top_k: 10, fields: filter ?? undefined },
         }
       );
       setResults(response.results);
@@ -806,8 +813,15 @@ function SearchPanel({ kbId }: { kbId: string }) {
     }
   };
 
+  // Only a filterable field can be filtered on, so those are the only ones offered.
+  const filterable = schemas.flatMap((schema) =>
+    [...Object.entries(schema.document_fields), ...Object.entries(schema.passage_fields)]
+      .filter(([, spec]) => spec.filterable)
+      .map(([name, spec]) => ({ name, spec }))
+  );
+
   return (
-    <Card title="Search" description="Hybrid vector + keyword search, reranked.">
+    <Section title="Search" description="Hybrid vector + keyword search, reranked.">
       <form
         className="flex gap-2"
         onSubmit={(e) => {
@@ -821,13 +835,15 @@ function SearchPanel({ kbId }: { kbId: string }) {
           placeholder="Ask something…"
           autoFocus
         />
-        <div className="flex rounded-md border border-input overflow-hidden text-sm">
+        <div className="flex shrink-0 rounded-md border border-input overflow-hidden text-sm">
           {(["hybrid", "vector", "keyword"] as const).map((m) => (
             <button
               type="button"
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 capitalize ${mode === m ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+              className={`whitespace-nowrap px-3 capitalize ${
+                mode === m ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+              }`}
             >
               {m}
             </button>
@@ -838,12 +854,9 @@ function SearchPanel({ kbId }: { kbId: string }) {
         </Button>
       </form>
 
-      <Input
-        className="mt-2 font-mono text-xs"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder={'Field filter, e.g. {"doc_type": "invoice", "total": {"$gte": 1000}}'}
-      />
+      <div className="mt-4">
+        <FilterBuilder fields={filterable} onChange={setFilter} />
+      </div>
 
       {results && (
         <div className="mt-4 space-y-3">
@@ -876,14 +889,13 @@ function SearchPanel({ kbId }: { kbId: string }) {
           ))}
         </div>
       )}
-    </Card>
+    </Section>
   );
 }
 
 function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) {
   const [schemas, setSchemas] = useState<KnowledgeSchema[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [newId, setNewId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -900,24 +912,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
     load().catch((e) => toast.error((e as Error).message));
   }, [load]);
 
-  // The editor follows the selection: the JSON is the schema's own definition, so
-  // switching schemas has to reload it rather than keep the previous one's text.
   const current = schemas?.find((schema) => schema.schema_id === selected) ?? null;
-  useEffect(() => {
-    if (!current) return;
-    setDraft(
-      JSON.stringify(
-        {
-          name: current.name,
-          description: current.description,
-          document_fields: current.document_fields,
-          passage_fields: current.passage_fields,
-        },
-        null,
-        2
-      )
-    );
-  }, [current]);
 
   const save = async (schemaId: string, body: unknown) => {
     setSaving(true);
@@ -935,18 +930,6 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
     } finally {
       setSaving(false);
     }
-  };
-
-  const saveCurrent = () => {
-    if (!selected) return;
-    let body: unknown;
-    try {
-      body = JSON.parse(draft);
-    } catch {
-      toast.error("That is not valid JSON");
-      return;
-    }
-    save(selected, body);
   };
 
   const create = async () => {
@@ -983,7 +966,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
 
   if (!schemas) return <Spinner />;
   return (
-    <Card
+    <Section
       title="Schemas"
       description="A schema is the fields one kind of document has. A bank with several lets the LLM classify which one a document is."
       action={
@@ -998,79 +981,82 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
         </p>
       ) : (
         <>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Schema</TableHead>
-                <TableHead>Fields</TableHead>
-                <TableHead className="text-right">Filled</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {schemas.map((schema) => (
-                <TableRow
-                  key={schema.schema_id}
-                  onClick={() => setSelected(schema.schema_id)}
-                  className={`cursor-pointer ${schema.schema_id === selected ? "bg-accent/40" : ""}`}
-                >
-                  <TableCell className="font-mono text-xs">
-                    {schema.schema_id}
-                    {schema.name && (
-                      <div className="text-xs text-muted-foreground">{schema.name}</div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {[
-                      ...Object.keys(schema.document_fields),
-                      ...Object.keys(schema.passage_fields).map((name) => `${name} (passage)`),
-                    ].join(", ") || "—"}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {schema.documents_with_fields} doc / {schema.passages_with_fields} psg
-                  </TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      title="Delete"
-                      onClick={() => remove(schema.schema_id)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
+          <TableFrame>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Schema</TableHead>
+                  <TableHead>Fields</TableHead>
+                  <TableHead className="text-right">Filled</TableHead>
+                  <TableHead />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {schemas.map((schema) => (
+                  <TableRow
+                    key={schema.schema_id}
+                    onClick={() => setSelected(schema.schema_id)}
+                    className={`cursor-pointer ${schema.schema_id === selected ? "bg-accent/40" : ""}`}
+                  >
+                    <TableCell className="font-mono text-xs">
+                      {schema.schema_id}
+                      {schema.name && (
+                        <div className="text-xs text-muted-foreground">{schema.name}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {[
+                        ...Object.keys(schema.document_fields),
+                        ...Object.keys(schema.passage_fields).map((name) => `${name} (passage)`),
+                      ].join(", ") || "—"}
+                    </TableCell>
+                    <TableCell className="text-right text-xs">
+                      {schema.documents_with_fields} doc / {schema.passages_with_fields} psg
+                    </TableCell>
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Delete"
+                        onClick={() => remove(schema.schema_id)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableFrame>
 
-          {selected && (
-            <>
-              <p className="mt-4 mb-2 text-sm font-semibold">{selected}</p>
-              <Textarea
-                rows={16}
-                className="font-mono text-xs"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                spellCheck={false}
-              />
-              <p className="mt-2 text-xs text-muted-foreground">
-                A field is <code>{'{"type": "string"}'}</code> plus an optional{" "}
-                <code>description</code>, an <code>items</code> type for arrays, <code>values</code>{" "}
-                — a fixed list, which is how classification is expressed — and the flags{" "}
-                <code>filterable</code> (usable in a search filter) and <code>indexed</code> (its
-                value joins the passage&apos;s embedding). Types: string, integer, number, boolean,
-                date, datetime, array, object.
-              </p>
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" onClick={saveCurrent} disabled={saving}>
-                  {saving ? <Spinner size="sm" /> : "Save schema"}
-                </Button>
+          {current && (
+            <div className="mt-6">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold font-mono">{current.schema_id}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Saved changes apply to the next write; run the extraction to fill documents
+                    already stored.
+                  </p>
+                </div>
                 <Button size="sm" variant="outline" onClick={extract}>
                   Extract documents missing values
                 </Button>
               </div>
-            </>
+              {/* Remounted per schema, so switching never carries one schema's edits
+                  into another's. */}
+              <SchemaEditor
+                key={current.schema_id}
+                initial={{
+                  name: current.name,
+                  description: current.description,
+                  document_fields: current.document_fields,
+                  passage_fields: current.passage_fields,
+                }}
+                saving={saving}
+                onSave={(next: SchemaDraft) => save(current.schema_id, next)}
+              />
+            </div>
           )}
         </>
       )}
@@ -1092,7 +1078,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </Section>
   );
 }
 
@@ -1265,8 +1251,8 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
 
   if (!collections) return <Spinner />;
   return (
-    <>
-      <Card
+    <div className="space-y-8">
+      <Section
         title="Collections"
         description="A collection is a kind of thing the documents talk about; each record folds together what every document said about one of them."
         action={
@@ -1281,70 +1267,73 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
             and the identity field is what makes the same thing found twice one record.
           </p>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Collection</TableHead>
-                <TableHead>Identity</TableHead>
-                <TableHead>Fields</TableHead>
-                <TableHead className="text-right">Records</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {collections.map((collection) => (
-                <TableRow
-                  key={collection.collection_id}
-                  onClick={() => setSelected(collection.collection_id)}
-                  className={`cursor-pointer ${
-                    collection.collection_id === selected ? "bg-accent/40" : ""
-                  }`}
-                >
-                  <TableCell className="font-mono text-xs">
-                    {collection.collection_id}
-                    {collection.name && (
-                      <div className="text-xs text-muted-foreground">{collection.name}</div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs">{collection.identity ?? "—"}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {Object.entries(collection.fields)
-                      .map(([name, spec]) =>
-                        spec.collection ? `${name} → ${spec.collection}` : name
-                      )
-                      .join(", ")}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">{collection.records ?? 0}</TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button size="sm" variant="ghost" onClick={() => openEditor(collection)}>
-                      Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => derive(collection.collection_id)}
-                    >
-                      Derive
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      title="Delete"
-                      onClick={() => remove(collection.collection_id)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
+          <TableFrame>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Collection</TableHead>
+                  <TableHead>Identity</TableHead>
+                  <TableHead>Fields</TableHead>
+                  <TableHead className="text-right">Records</TableHead>
+                  <TableHead />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {collections.map((collection) => (
+                  <TableRow
+                    key={collection.collection_id}
+                    onClick={() => setSelected(collection.collection_id)}
+                    className={`cursor-pointer ${
+                      collection.collection_id === selected ? "bg-accent/40" : ""
+                    }`}
+                  >
+                    <TableCell className="font-mono text-xs">
+                      {collection.collection_id}
+                      {collection.name && (
+                        <div className="text-xs text-muted-foreground">{collection.name}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">{collection.identity ?? "—"}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {Object.entries(collection.fields)
+                        .map(([name, spec]) =>
+                          spec.collection ? `${name} → ${spec.collection}` : name
+                        )
+                        .join(", ")}
+                    </TableCell>
+                    <TableCell className="text-right text-xs">{collection.records ?? 0}</TableCell>
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <Button size="sm" variant="ghost" onClick={() => openEditor(collection)}>
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => derive(collection.collection_id)}
+                      >
+                        Derive
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Delete"
+                        onClick={() => remove(collection.collection_id)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableFrame>
         )}
-      </Card>
+      </Section>
 
       {current && (
-        <Card
+        <Section
           title={`Records · ${current.collection_id}`}
+          sub
           description="The 50 most recently updated records, with how many documents each one folds together."
         >
           {!records ? (
@@ -1358,12 +1347,13 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
               <ResultTable result={records} />
             </div>
           )}
-        </Card>
+        </Section>
       )}
 
       {current && (
-        <Card
+        <Section
           title="Query"
+          sub
           description="The same language the documents use, over records — aggregates, grouping, and joins across relationship fields."
         >
           <div className="flex gap-2 items-center">
@@ -1394,7 +1384,7 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
               <ResultTable result={result} />
             </div>
           )}
-        </Card>
+        </Section>
       )}
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
@@ -1430,37 +1420,39 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }
 
 /** Rows of a query result, whatever its columns turn out to be. */
 function ResultTable({ result }: { result: QueryResult }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          {result.columns.map((column) => (
-            <TableHead key={column}>{column}</TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {result.rows.map((row, i) => (
-          <TableRow key={i}>
-            {row.map((value, j) => (
-              <TableCell key={j} className="text-xs">
-                {value === null
-                  ? "—"
-                  : typeof value === "object"
-                    ? JSON.stringify(value)
-                    : String(value)}
-              </TableCell>
+    <TableFrame>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            {result.columns.map((column) => (
+              <TableHead key={column}>{column}</TableHead>
             ))}
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+        </TableHeader>
+        <TableBody>
+          {result.rows.map((row, i) => (
+            <TableRow key={i}>
+              {row.map((value, j) => (
+                <TableCell key={j} className="text-xs">
+                  {value === null
+                    ? "—"
+                    : typeof value === "object"
+                      ? JSON.stringify(value)
+                      : String(value)}
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableFrame>
   );
 }
 
@@ -1480,38 +1472,44 @@ function Operations({ kbId }: { kbId: string }) {
   }, [kbId]);
 
   return (
-    <Card title="Operations" description="Every write is an operation; this list refreshes itself.">
+    <Section
+      title="Operations"
+      sub
+      description="Every write is an operation; this list refreshes itself."
+    >
       {!operations ? (
         <Spinner />
       ) : operations.length === 0 ? (
         <p className="text-sm text-muted-foreground">No writes yet.</p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Type</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Detail</TableHead>
-              <TableHead>Updated</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {operations.map((op) => (
-              <TableRow key={op.id}>
-                <TableCell className="font-mono text-xs">{op.task_type}</TableCell>
-                <TableCell>{op.status}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {op.error_message ?? op.details ?? ""}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {op.updated_at ? new Date(op.updated_at).toLocaleTimeString() : ""}
-                </TableCell>
+        <TableFrame>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Detail</TableHead>
+                <TableHead>Updated</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {operations.map((op) => (
+                <TableRow key={op.id}>
+                  <TableCell className="font-mono text-xs">{op.task_type}</TableCell>
+                  <TableCell>{op.status}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {op.error_message ?? op.details ?? ""}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {op.updated_at ? new Date(op.updated_at).toLocaleTimeString() : ""}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
       )}
-    </Card>
+    </Section>
   );
 }
 
@@ -1559,8 +1557,8 @@ function SettingsPanel({
         ))}
       </div>
       {tab === "general" ? (
-        <div className="space-y-5">
-          <Stats bank={bank} />
+        <div className="space-y-8">
+          <Stats bank={bank} sub />
           <Operations kbId={kbId} />
         </div>
       ) : (
@@ -1618,7 +1616,7 @@ function Configuration({ kbId }: { kbId: string }) {
 
   if (!config) return <Spinner />;
   return (
-    <Card title="Configuration" description="Chunking and search settings for this bank.">
+    <Section title="Configuration" description="Chunking and search settings for this bank.">
       <div className="grid gap-3 md:grid-cols-2">
         {fields.map((field) => (
           <label key={field} className="text-sm space-y-1">
@@ -1645,6 +1643,6 @@ function Configuration({ kbId }: { kbId: string }) {
       <Button className="mt-4" size="sm" onClick={save}>
         Save
       </Button>
-    </Card>
+    </Section>
   );
 }
