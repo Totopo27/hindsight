@@ -7,6 +7,7 @@ stored where filters can find them, and that the filters mean what they say. Whe
 real model classifies a contract correctly is a different test and a different budget.
 """
 
+import json
 import uuid
 
 import httpx
@@ -14,8 +15,8 @@ import pytest
 import pytest_asyncio
 
 from hindsight_api.api import create_app
-from hindsight_api.knowledge.filters import FilterError, compile_filters
 from hindsight_api.knowledge.fields import SchemaError, extraction_model, validate_field_schema
+from hindsight_api.knowledge.filters import FilterError, compile_filters
 
 SCHEMA = {
     "document_fields": {
@@ -179,6 +180,20 @@ async def test_writing_a_document_extracts_the_schema_and_search_filters_on_it(k
     schema = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/schemas/default")).json()
     assert schema["documents_with_fields"] == 1 and schema["passages_with_fields"] == 1
     assert schema["documents"] == 1 and schema["bank_documents"] == 1
+
+    # The documents list takes the same field filter, and counts what it matched.
+    async def listed(fields):
+        response = await kb_client.get(
+            f"/v1/default/knowledge-banks/{kb}/documents", params={"fields": json.dumps(fields)}
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    matched = await listed({"total": {"$gte": 1000}, "doc_type": "invoice"})
+    assert [d["doc_id"] for d in matched["items"]] == ["inv-1"] and matched["total"] == 1
+    assert (await listed({"total": {"$gt": 5000}}))["total"] == 0
+    bad = await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents", params={"fields": "{nope"})
+    assert bad.status_code == 400
 
     async def search(fields):
         response = await kb_client.post(

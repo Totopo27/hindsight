@@ -6,6 +6,7 @@ for documents, and sharing it would put a bank-kind check on every route.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Literal
 
@@ -302,9 +303,17 @@ def build_router(get_request_context: Any) -> APIRouter:
             default=None,
             description="Only documents read with this schema; 'none' for the ones no schema applied to",
         ),
+        fields: str | None = Query(
+            default=None,
+            description='Field filter as JSON, the one search takes: {"status": "signed", "total": {"$gte": 1000}}',
+        ),
         svc: KnowledgeService = Depends(service),
     ):
-        return await run(svc.list_documents(kb, limit, offset, q, schema_id))
+        try:
+            parsed = json.loads(fields) if fields else None
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"fields is not valid JSON: {e}") from e
+        return await run(svc.list_documents(kb, limit, offset, q, schema_id, parsed))
 
     @router.get(
         "/{kb}/map",

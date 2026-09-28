@@ -408,6 +408,24 @@
             "description": "Only documents read with this schema; 'none' for the ones no schema applied to"
           },
           {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Field filter as JSON, the one search takes: {\"status\": \"signed\", \"total\": {\"$gte\": 1000}}",
+              "title": "Fields"
+            },
+            "description": "Field filter as JSON, the one search takes: {\"status\": \"signed\", \"total\": {\"$gte\": 1000}}"
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,

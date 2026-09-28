@@ -326,7 +326,9 @@ _CHAT_SYSTEM = (
     "record, rather than repeating that thing's attributes.\n"
     "- An update replaces the collection's field list, so give every field it should end with, "
     "not only the new ones.\n"
-    "- Prefer few collections that earn their place over a schema of everything."
+    "- Prefer few collections that earn their place over a schema of everything.\n"
+    "- Every change carries a reason: one sentence, grounded in the documents, saying what it "
+    "buys. A change you cannot explain is one you should not propose."
 )
 
 #: The one tool the chat has. Its arguments are the change, flat and closed: a free-form
@@ -348,6 +350,13 @@ COLLECTION_TOOL: dict[str, Any] = {
                     "items": {
                         "type": "object",
                         "properties": {
+                            "reason": {
+                                "type": "string",
+                                "description": (
+                                    "Why this change, in one sentence, from the documents. Required: a "
+                                    "change nobody can explain is a change nobody should approve."
+                                ),
+                            },
                             "action": {"type": "string", "enum": ["create", "update", "delete"]},
                             "collection_id": {"type": "string", "description": "snake_case, plural, e.g. vendors"},
                             "name": {"type": "string"},
@@ -356,7 +365,6 @@ COLLECTION_TOOL: dict[str, Any] = {
                                 "type": "string",
                                 "description": "The field that says which thing a record is",
                             },
-                            "reason": {"type": "string", "description": "Why, in one sentence"},
                             "fields": {
                                 "type": "array",
                                 "items": {
@@ -390,7 +398,11 @@ COLLECTION_TOOL: dict[str, Any] = {
                                 },
                             },
                         },
-                        "required": ["action", "collection_id"],
+                        # reason is listed first here and in "properties" on purpose: a model
+                        # that fills fields in schema order writes the justification before the
+                        # change, and gemini-2.5-flash-lite omitted a trailing "reason" every
+                        # time even with it marked required.
+                        "required": ["reason", "action", "collection_id"],
                     },
                 }
             },
@@ -450,6 +462,37 @@ async def chat_about_collections(
     result = await llm.call_with_tools(
         messages=conversation, tools=[COLLECTION_TOOL], scope="knowledge_collection_chat"
     )
+    proposals = _parse_proposals(result)
+    # Small models drop "reason" perhaps half the time even with it required and listed
+    # first (gemini-2.5-flash-lite does). A reasonless change is discarded downstream, so
+    # asking once more is cheaper than handing the person a dropped proposal.
+    if any(not proposal.reason.strip() for proposal in proposals):
+        retry = await llm.call_with_tools(
+            messages=[
+                *conversation,
+                {
+                    "role": "user",
+                    "content": (
+                        "Call propose_collection_changes again with the same changes, and give "
+                        "every change a 'reason': one sentence on why, from the documents."
+                    ),
+                },
+            ],
+            tools=[COLLECTION_TOOL],
+            scope="knowledge_collection_chat",
+        )
+        # Take only the reasons from the second answer: the first one is the change the
+        # person asked about, and a retry is free to reword the rest of it.
+        reasons = {p.collection_id: p.reason.strip() for p in _parse_proposals(retry) if p.reason.strip()}
+        proposals = [
+            p if p.reason.strip() else p.model_copy(update={"reason": reasons.get(p.collection_id, "")})
+            for p in proposals
+        ]
+    return CollectionChat(reply=(result.content or "").strip(), proposals=proposals)
+
+
+def _parse_proposals(result: Any) -> list[ProposedCollection]:
+    """The tool calls of one turn, skipping any change too malformed to be a proposal."""
     logger.debug(
         "knowledge collection chat: finish=%s tools=%s",
         result.finish_reason,
@@ -464,4 +507,4 @@ async def chat_about_collections(
                 proposals.append(ProposedCollection.model_validate(change))
             except Exception as e:  # noqa: BLE001 - one bad change must not lose the others
                 logger.warning("knowledge collection chat: unusable change %s: %s", change, e)
-    return CollectionChat(reply=(result.content or "").strip(), proposals=proposals)
+    return proposals

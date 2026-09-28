@@ -66,6 +66,9 @@ interface DraftCollection {
   deriveOnWrite: boolean;
   fields: DraftField[];
   deleted: boolean;
+  /** Why the assistant proposed this, when it did. Kept beside the draft so the reason
+   *  is read where the change is reviewed, not only in the chat that suggested it. */
+  reason?: string;
 }
 
 let nextKey = 1;
@@ -136,7 +139,7 @@ interface Change {
   draft?: DraftCollection;
 }
 
-export function pendingChanges(drafts: DraftCollection[], saved: KnowledgeCollection[]): Change[] {
+function pendingChanges(drafts: DraftCollection[], saved: KnowledgeCollection[]): Change[] {
   const savedById = new Map(saved.map((c) => [c.collection_id, c]));
   const writes: Change[] = [];
   const deletes: Change[] = [];
@@ -185,6 +188,14 @@ export function pendingChanges(drafts: DraftCollection[], saved: KnowledgeCollec
   }
   // Deletes last: a target removed before its referrer is rewritten breaks the referrer.
   return [...ordered, ...deletes];
+}
+
+function ColumnTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="shrink-0 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+      {children}
+    </div>
+  );
 }
 
 export function CollectionsEditor({
@@ -257,7 +268,7 @@ export function CollectionsEditor({
       for (const proposal of proposals) {
         const index = next.findIndex((d) => d.id === proposal.collection_id);
         if (proposal.action === "delete") {
-          if (index >= 0) next[index] = { ...next[index], deleted: true };
+          if (index >= 0) next[index] = { ...next[index], deleted: true, reason: proposal.reason };
           continue;
         }
         const definition = proposal.definition;
@@ -271,6 +282,7 @@ export function CollectionsEditor({
           identity: definition.identity ?? "",
           deriveOnWrite: index >= 0 ? next[index].deriveOnWrite : false,
           deleted: false,
+          reason: proposal.reason,
           fields: Object.entries(definition.fields ?? {}).map(([name, spec]) => ({
             key: nextKey++,
             name,
@@ -374,8 +386,9 @@ export function CollectionsEditor({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid flex-1 gap-5 overflow-hidden md:grid-cols-[minmax(180px,220px)_1fr] xl:grid-cols-[minmax(180px,220px)_1fr_minmax(320px,380px)]">
-          <div className="flex flex-col gap-2 overflow-y-auto">
+        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden md:grid-cols-[200px_1fr] xl:grid-cols-[200px_1fr_340px]">
+          <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+            <ColumnTitle>Collections</ColumnTitle>
             <div className="rounded-lg border border-border divide-y divide-border">
               {drafts.map((draft) => {
                 const status = statusOf(draft);
@@ -423,233 +436,244 @@ export function CollectionsEditor({
             </Button>
           </div>
 
-          <div className="overflow-y-auto pr-1">
-            {!selected ? (
-              <p className="text-sm text-muted-foreground">Pick a collection, or add one.</p>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="grid flex-1 gap-3 sm:grid-cols-3">
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">Id</label>
-                      <Input
-                        className="font-mono"
-                        placeholder="vendors"
-                        value={selected.id}
-                        onChange={(e) => patch(selected.key, { id: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">Name</label>
-                      <Input
-                        placeholder="Vendors"
-                        value={selected.name}
-                        onChange={(e) => patch(selected.key, { name: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">
-                        Identified by
-                      </label>
-                      <select
-                        className={`${inputClass} w-full`}
-                        value={selected.identity}
-                        onChange={(e) => patch(selected.key, { identity: e.target.value })}
-                      >
-                        <option value="">Nothing — every mention is its own record</option>
-                        {selected.fields
-                          .filter((f) => f.name.trim())
-                          .map((f) => (
-                            <option key={f.key} value={f.name.trim()}>
-                              {f.name.trim()}
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={selected.deleted ? "" : "text-destructive"}
-                    onClick={() => patch(selected.key, { deleted: !selected.deleted })}
-                    title={selected.deleted ? "Keep this collection" : "Delete this collection"}
-                  >
-                    {selected.deleted ? (
-                      <>
-                        <Undo2 className="h-4 w-4 mr-1" /> Keep
-                      </>
-                    ) : (
-                      <>
-                        <Trash2 className="h-4 w-4 mr-1" /> Delete
-                      </>
-                    )}
-                  </Button>
-                </div>
+          <div className="flex min-h-0 flex-col gap-2 overflow-hidden border-l border-border pl-4">
+            <ColumnTitle>{selected ? selected.id || "New collection" : "Definition"}</ColumnTitle>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              {!selected ? (
+                <p className="text-sm text-muted-foreground">Pick a collection, or add one.</p>
+              ) : (
+                <div className="space-y-4">
+                  {selected.reason && (
+                    <p className="rounded-md bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">Why: </span>
+                      {selected.reason}
+                    </p>
+                  )}
 
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground">Description</label>
-                  <Textarea
-                    rows={2}
-                    placeholder="What one record of this collection is"
-                    value={selected.description}
-                    onChange={(e) => patch(selected.key, { description: e.target.value })}
-                  />
-                </div>
-
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={selected.deriveOnWrite}
-                    onChange={(e) => patch(selected.key, { deriveOnWrite: e.target.checked })}
-                  />
-                  Re-derive this collection whenever a document is written
-                </label>
-
-                <div className="rounded-lg border border-border overflow-x-auto">
-                  <table className="w-full min-w-[760px] text-sm">
-                    <thead className="bg-muted/40 text-xs text-muted-foreground">
-                      <tr>
-                        <th className="text-left font-medium px-3 py-2 w-48">Field</th>
-                        <th className="text-left font-medium px-3 py-2 w-44">Type</th>
-                        <th className="text-left font-medium px-3 py-2 w-44">Values</th>
-                        <th className="text-left font-medium px-3 py-2">Description</th>
-                        <th className="w-10" />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {selected.fields.length === 0 && (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="px-3 py-6 text-center text-xs text-muted-foreground"
-                          >
-                            No fields yet. A record is its fields, so add the ones a document can
-                            answer.
-                          </td>
-                        </tr>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid flex-1 gap-3 sm:grid-cols-3">
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">Id</label>
+                        <Input
+                          className="font-mono"
+                          placeholder="vendors"
+                          value={selected.id}
+                          onChange={(e) => patch(selected.key, { id: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">Name</label>
+                        <Input
+                          placeholder="Vendors"
+                          value={selected.name}
+                          onChange={(e) => patch(selected.key, { name: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Identified by
+                        </label>
+                        <select
+                          className={`${inputClass} w-full`}
+                          value={selected.identity}
+                          onChange={(e) => patch(selected.key, { identity: e.target.value })}
+                        >
+                          <option value="">Nothing — every mention is its own record</option>
+                          {selected.fields
+                            .filter((f) => f.name.trim())
+                            .map((f) => (
+                              <option key={f.key} value={f.name.trim()}>
+                                {f.name.trim()}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={selected.deleted ? "" : "text-destructive"}
+                      onClick={() => patch(selected.key, { deleted: !selected.deleted })}
+                      title={selected.deleted ? "Keep this collection" : "Delete this collection"}
+                    >
+                      {selected.deleted ? (
+                        <>
+                          <Undo2 className="h-4 w-4 mr-1" /> Keep
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="h-4 w-4 mr-1" /> Delete
+                        </>
                       )}
-                      {selected.fields.map((field) => (
-                        <tr key={field.key}>
-                          <td className="px-3 py-2">
-                            <Input
-                              className="h-8 font-mono text-xs"
-                              placeholder="name"
-                              value={field.name}
-                              onChange={(e) =>
-                                patchField(selected.key, field.key, { name: e.target.value })
-                              }
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <select
-                              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                              value={field.type}
-                              onChange={(e) =>
-                                patchField(selected.key, field.key, { type: e.target.value })
-                              }
+                    </Button>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground">Description</label>
+                    <Textarea
+                      rows={2}
+                      placeholder="What one record of this collection is"
+                      value={selected.description}
+                      onChange={(e) => patch(selected.key, { description: e.target.value })}
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selected.deriveOnWrite}
+                      onChange={(e) => patch(selected.key, { deriveOnWrite: e.target.checked })}
+                    />
+                    Re-derive this collection whenever a document is written
+                  </label>
+
+                  <div className="rounded-lg border border-border overflow-x-auto">
+                    <table className="w-full min-w-[760px] text-sm">
+                      <thead className="bg-muted/40 text-xs text-muted-foreground">
+                        <tr>
+                          <th className="text-left font-medium px-3 py-2 w-48">Field</th>
+                          <th className="text-left font-medium px-3 py-2 w-44">Type</th>
+                          <th className="text-left font-medium px-3 py-2 w-44">Values</th>
+                          <th className="text-left font-medium px-3 py-2">Description</th>
+                          <th className="w-10" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {selected.fields.length === 0 && (
+                          <tr>
+                            <td
+                              colSpan={5}
+                              className="px-3 py-6 text-center text-xs text-muted-foreground"
                             >
-                              {FIELD_TYPES.map((type) => (
-                                <option key={type} value={type}>
-                                  {type}
-                                </option>
-                              ))}
-                              <option value="relationship">→ another collection</option>
-                            </select>
-                            {field.type === "relationship" && (
+                              No fields yet. A record is its fields, so add the ones a document can
+                              answer.
+                            </td>
+                          </tr>
+                        )}
+                        {selected.fields.map((field) => (
+                          <tr key={field.key}>
+                            <td className="px-3 py-2">
+                              <Input
+                                className="h-8 font-mono text-xs"
+                                placeholder="name"
+                                value={field.name}
+                                onChange={(e) =>
+                                  patchField(selected.key, field.key, { name: e.target.value })
+                                }
+                              />
+                            </td>
+                            <td className="px-3 py-2">
                               <select
-                                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                value={field.collection}
+                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                value={field.type}
+                                onChange={(e) =>
+                                  patchField(selected.key, field.key, { type: e.target.value })
+                                }
+                              >
+                                {FIELD_TYPES.map((type) => (
+                                  <option key={type} value={type}>
+                                    {type}
+                                  </option>
+                                ))}
+                                <option value="relationship">→ another collection</option>
+                              </select>
+                              {field.type === "relationship" && (
+                                <select
+                                  className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                  value={field.collection}
+                                  onChange={(e) =>
+                                    patchField(selected.key, field.key, {
+                                      collection: e.target.value,
+                                    })
+                                  }
+                                >
+                                  <option value="">Which collection…</option>
+                                  {/* The drafts, not the saved set: a relationship may point
+                                    at a collection being created in this same sitting. */}
+                                  {drafts
+                                    .filter((d) => !d.deleted && d.id.trim())
+                                    .map((d) => (
+                                      <option key={d.key} value={d.id.trim()}>
+                                        {d.id.trim()}
+                                      </option>
+                                    ))}
+                                </select>
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              <Input
+                                className="h-8 text-xs"
+                                placeholder="signed, expired"
+                                disabled={field.type === "relationship"}
+                                value={field.values}
+                                onChange={(e) =>
+                                  patchField(selected.key, field.key, { values: e.target.value })
+                                }
+                              />
+                            </td>
+                            <td className="px-3 py-2">
+                              <Input
+                                className="h-8 text-xs"
+                                placeholder="What this field is, in the document's words"
+                                value={field.description}
                                 onChange={(e) =>
                                   patchField(selected.key, field.key, {
-                                    collection: e.target.value,
+                                    description: e.target.value,
+                                  })
+                                }
+                              />
+                            </td>
+                            <td className="px-3 py-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0"
+                                title="Remove field"
+                                onClick={() =>
+                                  patch(selected.key, {
+                                    fields: selected.fields.filter((f) => f.key !== field.key),
                                   })
                                 }
                               >
-                                <option value="">Which collection…</option>
-                                {/* The drafts, not the saved set: a relationship may point
-                                    at a collection being created in this same sitting. */}
-                                {drafts
-                                  .filter((d) => !d.deleted && d.id.trim())
-                                  .map((d) => (
-                                    <option key={d.key} value={d.id.trim()}>
-                                      {d.id.trim()}
-                                    </option>
-                                  ))}
-                              </select>
-                            )}
-                          </td>
-                          <td className="px-3 py-2">
-                            <Input
-                              className="h-8 text-xs"
-                              placeholder="signed, expired"
-                              disabled={field.type === "relationship"}
-                              value={field.values}
-                              onChange={(e) =>
-                                patchField(selected.key, field.key, { values: e.target.value })
-                              }
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <Input
-                              className="h-8 text-xs"
-                              placeholder="What this field is, in the document's words"
-                              value={field.description}
-                              onChange={(e) =>
-                                patchField(selected.key, field.key, {
-                                  description: e.target.value,
-                                })
-                              }
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0"
-                              title="Remove field"
-                              onClick={() =>
-                                patch(selected.key, {
-                                  fields: selected.fields.filter((f) => f.key !== field.key),
-                                })
-                              }
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    patch(selected.key, {
-                      fields: [
-                        ...selected.fields,
-                        {
-                          key: nextKey++,
-                          name: "",
-                          type: "string",
-                          collection: "",
-                          values: "",
-                          description: "",
-                        },
-                      ],
-                    })
-                  }
-                >
-                  <Plus className="h-4 w-4 mr-1" /> Add field
-                </Button>
-              </div>
-            )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      patch(selected.key, {
+                        fields: [
+                          ...selected.fields,
+                          {
+                            key: nextKey++,
+                            name: "",
+                            type: "string",
+                            collection: "",
+                            values: "",
+                            description: "",
+                          },
+                        ],
+                      })
+                    }
+                  >
+                    <Plus className="h-4 w-4 mr-1" /> Add field
+                  </Button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* The assistant stages into this same draft: it proposes, the draft shows what
               the proposal will do, and Apply is still the person's. */}
-          <div className="hidden xl:flex xl:flex-col xl:overflow-hidden xl:border-l xl:border-border xl:pl-5">
+          <div className="hidden min-h-0 xl:flex xl:flex-col xl:gap-2 xl:overflow-hidden xl:border-l xl:border-border xl:pl-4">
+            <ColumnTitle>Assistant</ColumnTitle>
             <CollectionChat
               kbId={kbId}
               onStage={stageProposals}

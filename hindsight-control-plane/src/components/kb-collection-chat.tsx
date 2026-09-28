@@ -116,8 +116,8 @@ export function CollectionChat({
   };
 
   return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 text-xs">
         {turns.length === 0 && (
           <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
             <p className="mb-2 flex items-center gap-1.5 font-medium text-foreground">
@@ -139,7 +139,7 @@ export function CollectionChat({
           <div key={index} className={cn(turn.role === "user" && "flex justify-end")}>
             <div
               className={cn(
-                "max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap",
+                "max-w-[90%] rounded-lg px-2.5 py-1.5 whitespace-pre-wrap",
                 turn.role === "user"
                   ? "bg-primary text-primary-foreground"
                   : "bg-muted text-foreground"
@@ -153,49 +153,47 @@ export function CollectionChat({
                 {turn.proposals.map((proposal) => (
                   <div
                     key={proposal.collection_id}
-                    className="rounded-lg border border-primary/40 bg-primary/5 p-3"
+                    className="rounded-md border border-primary/40 bg-primary/5 px-2.5 py-2"
                   >
-                    <div className="flex items-center gap-2 text-sm">
-                      <Wrench className="h-3.5 w-3.5 text-primary" />
+                    <div className="flex items-center gap-1.5">
+                      <Wrench className="h-3 w-3 shrink-0 text-primary" />
                       <span className="font-semibold capitalize">{proposal.action}</span>
-                      <span className="font-mono">{proposal.collection_id}</span>
+                      <span className="font-mono truncate">{proposal.collection_id}</span>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{summarise(proposal)}</p>
-                    {proposal.reason && (
-                      <p className="mt-1 text-xs text-muted-foreground italic">{proposal.reason}</p>
-                    )}
-                    {proposal.definition?.identity && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Identified by{" "}
-                        <span className="font-mono">{proposal.definition.identity}</span>
-                      </p>
-                    )}
+                    {/* The reason comes first: it is the part a person judges. */}
+                    {proposal.reason && <p className="mt-0.5 text-foreground">{proposal.reason}</p>}
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {summarise(proposal)}
+                      {proposal.definition?.identity
+                        ? ` · identified by ${proposal.definition.identity}`
+                        : ""}
+                    </p>
                   </div>
                 ))}
 
                 {turn.applied ? (
-                  <p className="text-xs text-muted-foreground">
-                    <Check className="mr-1 inline h-3 w-3" /> Staged — review it on the left, then
-                    Apply.
+                  <p className="text-muted-foreground">
+                    <Check className="mr-1 inline h-3 w-3" /> Staged — review it on the left.
                   </p>
                 ) : turn.dismissed ? (
-                  <p className="text-xs text-muted-foreground">Dismissed.</p>
+                  <p className="text-muted-foreground">Dismissed.</p>
                 ) : (
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={() => stage(index)}>
-                      <Check className="h-4 w-4 mr-1" />
-                      Stage these changes
+                  <div className="flex gap-1.5">
+                    <Button size="sm" className="h-7 text-xs" onClick={() => stage(index)}>
+                      <Check className="h-3 w-3 mr-1" />
+                      Stage
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
+                      className="h-7 text-xs"
                       onClick={() =>
                         setTurns((prev) =>
                           prev.map((t, i) => (i === index ? { ...t, dismissed: true } : t))
                         )
                       }
                     >
-                      <X className="h-4 w-4 mr-1" /> Dismiss
+                      <X className="h-3 w-3 mr-1" /> Dismiss
                     </Button>
                   </div>
                 )}
@@ -205,23 +203,24 @@ export function CollectionChat({
         ))}
 
         {thinking && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-muted-foreground">
             <Spinner size="sm" /> Reading your documents…
           </div>
         )}
         <div ref={bottom} />
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex shrink-0 gap-1.5">
         <Input
+          className="h-8 text-xs"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
           placeholder="Ask, or describe what you want to track…"
           disabled={thinking}
         />
-        <Button onClick={send} disabled={thinking || !draft.trim()}>
-          <Send className="h-4 w-4" />
+        <Button className="h-8 w-8 p-0" onClick={send} disabled={thinking || !draft.trim()}>
+          <Send className="h-3.5 w-3.5" />
         </Button>
       </div>
     </div>

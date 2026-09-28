@@ -655,6 +655,11 @@ class KnowledgeService:
         for proposal in proposed:
             if not proposal.collection_id:
                 continue
+            # A change nobody can explain is a change nobody should approve, so one that
+            # arrives without a reason is reported rather than shown as a bare diff.
+            if not proposal.reason.strip():
+                warnings.append(f"{proposal.collection_id}: proposed with no reason, so it was dropped")
+                continue
             if proposal.action == "delete":
                 if proposal.collection_id in existing_ids:
                     out.append(
@@ -1456,11 +1461,17 @@ class KnowledgeService:
     # ---- reading
 
     async def list_documents(
-        self, bank_id: str, limit: int, offset: int, query: str | None, schema_id: str | None = None
+        self,
+        bank_id: str,
+        limit: int,
+        offset: int,
+        query: str | None,
+        schema_id: str | None = None,
+        fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
-            return await store.list_documents(conn, bank_id, limit, offset, query, schema_id)
+            return await store.list_documents(conn, bank_id, limit, offset, query, schema_id, fields)
 
     async def passage_map(self, bank_id: str, limit: int) -> dict[str, Any]:
         """The bank's passages as points, for the map view."""

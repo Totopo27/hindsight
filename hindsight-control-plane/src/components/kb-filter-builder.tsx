@@ -94,9 +94,10 @@ export function FilterBuilder({
 }: {
   fields: FilterableField[];
   /** The bank's schema ids, for scoping the search to one kind of document. */
-  schemas: string[];
-  schemaId: string | null;
-  onSchemaChange: (schemaId: string | null) => void;
+  /** The schema picker; omit all three where the schema is already fixed. */
+  schemas?: string[];
+  schemaId?: string | null;
+  onSchemaChange?: (schemaId: string | null) => void;
   /** The filter as the API takes it, or null when nothing is set. */
   onChange: (filter: Record<string, unknown> | null) => void;
 }) {
@@ -172,7 +173,7 @@ export function FilterBuilder({
         {jsonError && <span className="text-xs text-destructive">{jsonError}</span>}
       </div>
 
-      {view === "form" && (
+      {view === "form" && onSchemaChange && (
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground w-20">Schema</span>
           <select
@@ -181,7 +182,7 @@ export function FilterBuilder({
             onChange={(e) => onSchemaChange(e.target.value || null)}
           >
             <option value="">Any schema</option>
-            {schemas.map((schema) => (
+            {(schemas ?? []).map((schema) => (
               <option key={schema} value={schema}>
                 {schema}
               </option>

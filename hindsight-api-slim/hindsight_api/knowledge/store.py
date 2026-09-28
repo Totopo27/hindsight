@@ -325,7 +325,13 @@ async def replace_passages(conn: Any, bank_id: str, doc_id: str, rows: list[tupl
 
 
 async def list_documents(
-    conn: Any, bank_id: str, limit: int, offset: int, query: str | None, schema_id: str | None = None
+    conn: Any,
+    bank_id: str,
+    limit: int,
+    offset: int,
+    query: str | None,
+    schema_id: str | None = None,
+    fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     where = "bank_id = $1"
     params: list[Any] = [bank_id]
@@ -340,12 +346,15 @@ async def list_documents(
         else:
             params.append(schema_id)
             where += f" AND schema_id = ${len(params)}"
-    total = await conn.fetchval(f"SELECT count(*) FROM {fq_table('kb_documents')} WHERE {where}", *params)
+    # The filter search takes, read off the document row alone — the same alias twice, as
+    # a document query does. The columns are unqualified above, so the table is aliased d.
+    where += compile_filters(fields, params, ("d", "d"))
+    total = await conn.fetchval(f"SELECT count(*) FROM {fq_table('kb_documents')} d WHERE {where}", *params)
     rows = await conn.fetch(
         f"""
         SELECT doc_id, title, metadata, fields, schema_id, passage_count,
                length(text) AS chars, created_at, updated_at
-        FROM {fq_table("kb_documents")}
+        FROM {fq_table("kb_documents")} d
         WHERE {where}
         ORDER BY updated_at DESC, doc_id
         LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}

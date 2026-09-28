@@ -476,10 +476,21 @@ async def test_the_chats_tool_call_is_a_proposal_and_writes_nothing(kb_client, b
                             {
                                 "action": "create",
                                 "collection_id": "broken",
+                                "reason": "Regions matter.",
                                 # Points at a collection that will not exist.
                                 "fields": [{"name": "region", "collection": "nope"}],
                             },
-                            {"action": "delete", "collection_id": "never-existed"},
+                            {
+                                "action": "delete",
+                                "collection_id": "never-existed",
+                                "reason": "Noise.",
+                            },
+                            {
+                                # No reason: a change nobody can explain is dropped.
+                                "action": "create",
+                                "collection_id": "unexplained",
+                                "fields": [{"name": "x", "type": "string"}],
+                            },
                         ]
                     },
                 )
@@ -509,6 +520,8 @@ async def test_the_chats_tool_call_is_a_proposal_and_writes_nothing(kb_client, b
     assert "broken" not in by_id
     assert any("broken" in warning for warning in body["warnings"])
     assert "never-existed" not in by_id, "deleting something that is not there is not a change"
+    assert "unexplained" not in by_id
+    assert any("no reason" in warning for warning in body["warnings"])
 
     after = (await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections")).json()
     assert after == before, "the chat wrote nothing"
@@ -540,6 +553,7 @@ async def test_an_update_proposal_keeps_what_it_did_not_mention(kb_client, bank,
                             {
                                 "action": "update",
                                 "collection_id": "vendors",
+                                "reason": "A rating is worth tracking.",
                                 "fields": [
                                     {"name": "name", "type": "string"},
                                     {"name": "country", "type": "string"},
@@ -561,3 +575,42 @@ async def test_an_update_proposal_keeps_what_it_did_not_mention(kb_client, bank,
     assert proposal["definition"]["identity"] == "name", "the identity it already had"
     assert proposal["definition"]["name"] == "Vendors"
     assert "rating" in proposal["definition"]["fields"], "and the field the model added"
+
+
+@pytest.mark.asyncio
+async def test_a_proposal_without_a_reason_is_asked_for_one(kb_client, bank, memory):
+    """Small models drop the reason half the time, so the turn asks once more.
+
+    The change itself comes from the first answer — only the missing reason is taken
+    from the second, so a retry cannot quietly reword what the person is approving.
+    """
+    from hindsight_api.engine.response_models import LLMToolCall, LLMToolCallResult
+
+    calls: list[int] = []
+
+    def respond(messages, scope):
+        calls.append(1)
+        change = {
+            "action": "create",
+            "collection_id": "topics",
+            "identity": "name",
+            "fields": [{"name": "name", "type": "string"}],
+        }
+        if len(calls) > 1:
+            change = {**change, "reason": "Every document is about one topic."}
+        return LLMToolCallResult(
+            content="Here is what I suggest.",
+            finish_reason="tool_calls",
+            tool_calls=[LLMToolCall(id="1", name="propose_collection_changes", arguments={"changes": [change]})],
+        )
+
+    memory._llm_config._provider_impl.set_response_callback(respond)
+    body = (
+        await kb_client.post(
+            f"/v1/default/knowledge-banks/{bank}/collections/chat",
+            json={"messages": [{"role": "user", "content": "track the topics"}]},
+        )
+    ).json()
+    assert len(calls) == 2, "it asked again rather than dropping the change"
+    assert body["warnings"] == []
+    assert body["proposals"][0]["reason"] == "Every document is about one topic."

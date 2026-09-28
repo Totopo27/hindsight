@@ -1313,25 +1313,36 @@ function FieldTable({
   );
 }
 
-function SearchPanel({
-  kbId,
-  schemas: allSchemas,
-  lockedSchemaId,
-}: {
-  kbId: string;
-  schemas: KnowledgeSchema[];
-  /** Embedded in one schema's page: search only that schema, filter only its fields. */
-  lockedSchemaId?: string;
-}) {
-  const schemas = lockedSchemaId
-    ? allSchemas.filter((schema) => schema.schema_id === lockedSchemaId)
-    : allSchemas;
+// Only a filterable field can be filtered on, so those are the only ones offered —
+// each under the schema that defines it, because two schemas may name the same field.
+function filterableFields(schemas: KnowledgeSchema[]) {
+  return schemas.flatMap((schema) => [
+    ...Object.entries(schema.document_fields)
+      .filter(([, spec]) => spec.filterable)
+      .map(([name, spec]) => ({
+        name,
+        spec,
+        schemaId: schema.schema_id,
+        level: "document" as const,
+      })),
+    ...Object.entries(schema.passage_fields)
+      .filter(([, spec]) => spec.filterable)
+      .map(([name, spec]) => ({
+        name,
+        spec,
+        schemaId: schema.schema_id,
+        level: "passage" as const,
+      })),
+  ]);
+}
+
+function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema[] }) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"hybrid" | "vector" | "keyword">("hybrid");
   const [topK, setTopK] = useState(10);
   const [collapse, setCollapse] = useState(false);
   const [filter, setFilter] = useState<Record<string, unknown> | null>(null);
-  const [schemaId, setSchemaId] = useState<string | null>(lockedSchemaId ?? null);
+  const [schemaId, setSchemaId] = useState<string | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1362,45 +1373,14 @@ function SearchPanel({
     }
   };
 
-  // Only a filterable field can be filtered on, so those are the only ones offered —
-  // each under the schema that defines it, because two schemas may name the same field.
-  const filterable = schemas.flatMap((schema) => [
-    ...Object.entries(schema.document_fields)
-      .filter(([, spec]) => spec.filterable)
-      .map(([name, spec]) => ({
-        name,
-        spec,
-        schemaId: schema.schema_id,
-        level: "document" as const,
-      })),
-    ...Object.entries(schema.passage_fields)
-      .filter(([, spec]) => spec.filterable)
-      .map(([name, spec]) => ({
-        name,
-        spec,
-        schemaId: schema.schema_id,
-        level: "passage" as const,
-      })),
-  ]);
+  const filterable = filterableFields(schemas);
 
   // The badge on the collapsed disclosure: how many options differ from the defaults.
   const activeOptions =
-    (schemaId && !lockedSchemaId ? 1 : 0) +
-    (filter ? 1 : 0) +
-    (topK !== 10 ? 1 : 0) +
-    (collapse ? 1 : 0);
+    (schemaId ? 1 : 0) + (filter ? 1 : 0) + (topK !== 10 ? 1 : 0) + (collapse ? 1 : 0);
 
   return (
-    <Section
-      title="Search"
-      tab={!lockedSchemaId}
-      sub={!!lockedSchemaId}
-      description={
-        lockedSchemaId
-          ? `Hybrid search over this schema's documents, filtered by its fields.`
-          : "Hybrid vector + keyword search, reranked."
-      }
-    >
+    <Section title="Search" tab description="Hybrid vector + keyword search, reranked.">
       <div className="flex gap-3">
         <div className="relative flex-1">
           <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -1410,7 +1390,7 @@ function SearchPanel({
             onKeyDown={(e) => e.key === "Enter" && run()}
             placeholder="Ask something…"
             className="pl-10 h-12 text-lg"
-            autoFocus={!lockedSchemaId}
+            autoFocus
           />
         </div>
         <Button onClick={run} disabled={loading || !query.trim()} className="h-12 px-8">
@@ -1479,7 +1459,7 @@ function SearchPanel({
               fields={filterable}
               schemas={schemas.map((schema) => schema.schema_id)}
               schemaId={schemaId}
-              onSchemaChange={lockedSchemaId ? () => {} : setSchemaId}
+              onSchemaChange={setSchemaId}
               onChange={setFilter}
             />
           </Section2>
@@ -1747,22 +1727,9 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                   <ErdDiagram nodes={[schemaCard(current)]} edges={[]} />
                 )}
 
-                {/* Remounted per schema, so a query never carries over to another one. */}
-                <div className="mt-8">
-                  <SearchPanel
-                    key={current.schema_id}
-                    kbId={kbId}
-                    schemas={schemas}
-                    lockedSchemaId={current.schema_id}
-                  />
-                </div>
-
                 <div className="mt-6">
-                  <SchemaDocuments
-                    kbId={kbId}
-                    schemaId={current.schema_id}
-                    fields={Object.keys(current.document_fields)}
-                  />
+                  {/* Remounted per schema, so a filter never carries over to another one. */}
+                  <SchemaDocuments key={current.schema_id} kbId={kbId} schema={current} />
                 </div>
               </>
             )}
@@ -1880,26 +1847,27 @@ function SchemaFillCard({ schema }: { schema: KnowledgeSchema }) {
   );
 }
 
-function SchemaDocuments({
-  kbId,
-  schemaId,
-  fields,
-}: {
-  kbId: string;
-  schemaId: string;
-  /** The schema's document fields, one column each. */
-  fields: string[];
-}) {
+function SchemaDocuments({ kbId, schema }: { kbId: string; schema: KnowledgeSchema }) {
+  const schemaId = schema.schema_id;
+  // One column per document field; the filter reads the document row, so it offers those.
+  const fields = Object.keys(schema.document_fields);
+  const filterable = filterableFields([schema]).filter((f) => f.level === "document");
+  const [filter, setFilter] = useState<Record<string, unknown> | null>(null);
   const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
 
-  useEffect(() => setPage(0), [schemaId]);
+  useEffect(() => setPage(0), [filter]);
 
   useEffect(() => {
     let live = true;
     kbFetch<{ items: KnowledgeDocument[]; total: number }>(
-      `/${encodeURIComponent(kbId)}/documents?limit=${DOCUMENTS_PER_PAGE}&offset=${page * DOCUMENTS_PER_PAGE}&schema_id=${encodeURIComponent(schemaId)}`
+      `/${encodeURIComponent(kbId)}/documents?${new URLSearchParams({
+        limit: String(DOCUMENTS_PER_PAGE),
+        offset: String(page * DOCUMENTS_PER_PAGE),
+        schema_id: schemaId,
+        ...(filter ? { fields: JSON.stringify(filter) } : {}),
+      })}`
     )
       .then((page) => {
         if (!live) return;
@@ -1910,16 +1878,30 @@ function SchemaDocuments({
     return () => {
       live = false;
     };
-  }, [kbId, schemaId, page]);
+  }, [kbId, schemaId, page, filter]);
+
+  const filterBox = filterable.length > 0 && (
+    <div className="mb-4 rounded-lg border border-border bg-card p-4">
+      <FilterBuilder fields={filterable} onChange={setFilter} />
+    </div>
+  );
 
   if (!documents) return <Spinner />;
   if (documents.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">No documents were read with this schema yet.</p>
+      <>
+        {filterBox}
+        <p className="text-sm text-muted-foreground">
+          {filter
+            ? "No document of this schema matches the filter."
+            : "No documents were read with this schema yet."}
+        </p>
+      </>
     );
   }
   return (
     <div className="space-y-2">
+      {filterBox}
       <TableFrame>
         <Table>
           <TableHeader>
