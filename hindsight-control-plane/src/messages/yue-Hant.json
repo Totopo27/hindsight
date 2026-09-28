@@ -1893,6 +1893,8 @@
     "subtitle": "每個記憶庫都係一個獨立嘅大腦——隔離咁儲住某個用戶、代理或者專案記得嘅所有嘢。記憶庫之間唔會共享任何內容。",
     "welcomeTitle": "歡迎使用 Hindsight",
     "welcomeBody": "記憶庫係一個獨立嘅大腦——隔離咁儲住某個用戶、代理或者專案記得嘅所有嘢。建立第一個記憶庫開始用啦。",
+    "welcomeCreateMemory": "建立新記憶庫",
+    "welcomeCreateKnowledge": "建立新知識庫",
     "search": "搵記憶庫...",
     "noSearchResults": "冇記憶庫符合你嘅搜尋。",
     "columnBank": "記憶庫",

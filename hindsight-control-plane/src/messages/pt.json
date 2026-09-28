@@ -1893,6 +1893,8 @@
     "subtitle": "Cada banco de memória é um cérebro separado — um armazenamento isolado de tudo o que um usuário, agente ou projeto lembra. Nada é compartilhado entre bancos.",
     "welcomeTitle": "Bem-vindo ao Hindsight",
     "welcomeBody": "Um banco de memória é um cérebro separado — um armazenamento isolado de tudo o que um usuário, agente ou projeto lembra. Crie o primeiro para começar.",
+    "welcomeCreateMemory": "Criar novo banco de memória",
+    "welcomeCreateKnowledge": "Criar novo banco de conhecimento",
     "search": "Pesquisar bancos...",
     "noSearchResults": "Nenhum banco corresponde à sua pesquisa.",
     "columnBank": "Banco",

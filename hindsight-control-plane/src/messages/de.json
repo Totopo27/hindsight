@@ -1893,6 +1893,8 @@
     "subtitle": "Jede Speicherbank ist ein eigenes Gehirn — ein isolierter Speicher für alles, woran sich ein Benutzer, Agent oder Projekt erinnert. Zwischen Bänken wird nichts geteilt.",
     "welcomeTitle": "Willkommen bei Hindsight",
     "welcomeBody": "Eine Speicherbank ist ein eigenes Gehirn — ein isolierter Speicher für alles, woran sich ein Benutzer, Agent oder Projekt erinnert. Erstellen Sie Ihre erste, um loszulegen.",
+    "welcomeCreateMemory": "Neue Speicherbank erstellen",
+    "welcomeCreateKnowledge": "Neue Wissensbank erstellen",
     "search": "Bänke suchen...",
     "noSearchResults": "Keine Bänke entsprechen Ihrer Suche.",
     "columnBank": "Bank",

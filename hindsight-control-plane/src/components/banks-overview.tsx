@@ -13,6 +13,7 @@ import { formatRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import { BankKindSwitch, type BankKind } from "@/components/bank-kind-switch";
 import { KnowledgeBanksList } from "@/components/knowledge-banks-list";
+import { NewKnowledgeBankDialog } from "@/components/new-knowledge-bank-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -103,6 +104,7 @@ export function BanksOverview() {
 
   // Both kinds of bank are listed here, chosen by the switch beside the search box, so
   // knowledge banks are not a second page with its own navigation.
+  const [newKnowledgeBankOpen, setNewKnowledgeBankOpen] = React.useState(false);
   const [kind, setKind] = React.useState<BankKind>(
     searchParams.get("kind") === "knowledge" ? "knowledge" : "memory"
   );
@@ -241,10 +243,23 @@ export function BanksOverview() {
           <Spinner size="xl" variant="jump" className="mx-auto mb-4" />
           <h3 className="mb-3 text-2xl font-bold text-card-foreground">{t("welcomeTitle")}</h3>
           <p className="mb-6 text-muted-foreground">{t("welcomeBody")}</p>
-          <Button onClick={() => window.dispatchEvent(new CustomEvent("hindsight:create-bank"))}>
-            <Plus className="mr-1.5 h-4 w-4" />
-            {tNavBank("create")}
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {/* Both kinds are offered here, and both say which kind: a server with no
+                banks at all is where someone decides which one they came for, and this
+                screen is all they are shown. */}
+            <Button onClick={() => window.dispatchEvent(new CustomEvent("hindsight:create-bank"))}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              {t("welcomeCreateMemory")}
+            </Button>
+            <Button variant="outline" onClick={() => setNewKnowledgeBankOpen(true)}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              {t("welcomeCreateKnowledge")}
+            </Button>
+          </div>
+          <NewKnowledgeBankDialog
+            open={newKnowledgeBankOpen}
+            onOpenChange={setNewKnowledgeBankOpen}
+          />
         </div>
       </div>
     );

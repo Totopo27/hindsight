@@ -1893,6 +1893,8 @@
     "subtitle": "각 메모리 뱅크는 별개의 뇌입니다. 한 사용자, 에이전트 또는 프로젝트가 기억하는 모든 것을 격리해 저장하며, 뱅크 간에는 아무것도 공유되지 않습니다.",
     "welcomeTitle": "Hindsight에 오신 것을 환영합니다",
     "welcomeBody": "메모리 뱅크는 별개의 뇌입니다. 한 사용자, 에이전트 또는 프로젝트가 기억하는 모든 것을 격리해 저장합니다. 첫 번째 뱅크를 만들어 시작해 보세요.",
+    "welcomeCreateMemory": "새 메모리 뱅크 만들기",
+    "welcomeCreateKnowledge": "새 지식 뱅크 만들기",
     "search": "뱅크 검색...",
     "noSearchResults": "검색과 일치하는 뱅크가 없습니다.",
     "columnBank": "뱅크",

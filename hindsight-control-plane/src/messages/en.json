@@ -1893,6 +1893,8 @@
     "subtitle": "Each memory bank is a separate brain — an isolated store of everything one user, agent or project remembers. Nothing is shared between banks.",
     "welcomeTitle": "Welcome to Hindsight",
     "welcomeBody": "A memory bank is a separate brain — an isolated store of everything one user, agent or project remembers. Create your first one to get started.",
+    "welcomeCreateMemory": "Create new memory bank",
+    "welcomeCreateKnowledge": "Create new knowledge bank",
     "search": "Search banks...",
     "noSearchResults": "No banks match your search.",
     "columnBank": "Bank",

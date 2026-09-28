@@ -20,6 +20,7 @@ import {
 
 import { BankKindSwitch, type BankKind } from "@/components/bank-kind-switch";
 import { kbFetch, type KnowledgeBank } from "@/components/knowledge-bank-api";
+import { NewKnowledgeBankDialog } from "@/components/new-knowledge-bank-dialog";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { Button } from "@/components/ui/button";
 import {
@@ -128,6 +129,7 @@ function BankSelectorInner() {
   // their own list endpoint, so they are fetched here rather than through the bank context.
   const [kind, setKind] = React.useState<BankKind>("memory");
   const [knowledgeBanks, setKnowledgeBanks] = React.useState<KnowledgeBank[] | null>(null);
+  const [newKnowledgeBankOpen, setNewKnowledgeBankOpen] = React.useState(false);
   // One-shot spin of the header logo, fired by sidebar navigation (see the
   // "hindsight:logo-spin" listener below). Reset on animationEnd so it can replay.
   const [logoSpinning, setLogoSpinning] = React.useState(false);
@@ -845,9 +847,9 @@ function BankSelectorInner() {
                   className="w-full flex items-center gap-2 px-2 py-2 text-sm rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
                   onClick={() => {
                     setOpen(false);
-                    // A knowledge bank is created where the knowledge list lives, so there
-                    // is one create dialog per kind rather than two copies of each.
-                    if (kind === "knowledge") router.push("/dashboard?kind=knowledge");
+                    // One dialog per kind, and the knowledge one is shared with the
+                    // list on the overview.
+                    if (kind === "knowledge") setNewKnowledgeBankOpen(true);
                     else setCreateDialogOpen(true);
                   }}
                 >
@@ -1014,6 +1016,11 @@ function BankSelectorInner() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <NewKnowledgeBankDialog
+          open={newKnowledgeBankOpen}
+          onOpenChange={setNewKnowledgeBankOpen}
+        />
 
         <Dialog open={docDialogOpen} onOpenChange={setDocDialogOpen}>
           <DialogContent className="sm:max-w-[750px] max-h-[90vh] flex flex-col">

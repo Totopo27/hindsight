@@ -9,7 +9,6 @@ import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
@@ -19,21 +18,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { kbFetch, type KnowledgeBank } from "@/components/knowledge-bank-api";
+import { NewKnowledgeBankDialog } from "@/components/new-knowledge-bank-dialog";
 
 export function KnowledgeBanksList({ search }: { search: string }) {
   const router = useRouter();
   const [banks, setBanks] = React.useState<KnowledgeBank[] | null>(null);
   const [creating, setCreating] = React.useState(false);
-  const [newId, setNewId] = React.useState("");
 
   const load = React.useCallback(async () => {
     try {
@@ -48,17 +39,6 @@ export function KnowledgeBanksList({ search }: { search: string }) {
   React.useEffect(() => {
     load();
   }, [load]);
-
-  const create = async () => {
-    try {
-      await kbFetch("", { method: "POST", body: { id: newId.trim() } });
-      setCreating(false);
-      setNewId("");
-      router.push(`/knowledge-banks/${encodeURIComponent(newId.trim())}`);
-    } catch (e) {
-      toast.error((e as Error).message);
-    }
-  };
 
   const remove = async (bankId: string) => {
     try {
@@ -132,23 +112,7 @@ export function KnowledgeBanksList({ search }: { search: string }) {
         </Table>
       )}
 
-      <Dialog open={creating} onOpenChange={setCreating}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>New knowledge bank</DialogTitle>
-            <DialogDescription>
-              The id is how the API addresses it. Knowledge banks and memory banks have separate
-              ids.
-            </DialogDescription>
-          </DialogHeader>
-          <Input placeholder="contracts" value={newId} onChange={(e) => setNewId(e.target.value)} />
-          <DialogFooter>
-            <Button disabled={!newId.trim()} onClick={create}>
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <NewKnowledgeBankDialog open={creating} onOpenChange={setCreating} />
     </>
   );
 }

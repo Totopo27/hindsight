@@ -1893,6 +1893,8 @@
     "subtitle": "每个记忆库都是一个独立的大脑——隔离存储某个用户、智能体或项目记住的一切。记忆库之间不共享任何内容。",
     "welcomeTitle": "欢迎使用 Hindsight",
     "welcomeBody": "记忆库是一个独立的大脑——隔离存储某个用户、智能体或项目记住的一切。创建第一个记忆库开始使用。",
+    "welcomeCreateMemory": "创建新记忆库",
+    "welcomeCreateKnowledge": "创建新知识库",
     "search": "搜索记忆库...",
     "noSearchResults": "没有与搜索匹配的记忆库。",
     "columnBank": "记忆库",

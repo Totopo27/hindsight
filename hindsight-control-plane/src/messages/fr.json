@@ -1893,6 +1893,8 @@
     "subtitle": "Chaque banque mémoire est un cerveau distinct : un stockage isolé de tout ce dont se souvient un utilisateur, un agent ou un projet. Rien n'est partagé entre les banques.",
     "welcomeTitle": "Bienvenue dans Hindsight",
     "welcomeBody": "Une banque mémoire est un cerveau distinct : un stockage isolé de tout ce dont se souvient un utilisateur, un agent ou un projet. Créez la première pour commencer.",
+    "welcomeCreateMemory": "Créer une nouvelle banque mémoire",
+    "welcomeCreateKnowledge": "Créer une nouvelle banque de connaissances",
     "search": "Rechercher des banques...",
     "noSearchResults": "Aucune banque ne correspond à votre recherche.",
     "columnBank": "Banque",
