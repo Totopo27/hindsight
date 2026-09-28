@@ -59,6 +59,8 @@ export interface KnowledgeDocument {
   tags: string[];
   metadata: Record<string, unknown>;
   fields: Record<string, unknown>;
+  /** Which schema's fields were read out of this document; null when none applied. */
+  schema_id: string | null;
   passage_count: number;
   chars: number;
   created_at: string;

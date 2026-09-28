@@ -4,25 +4,17 @@
 // which the memory-bank rail uses too; only the items differ — a knowledge bank has
 // documents and search, not memories.
 
-import { FileText, LayoutGrid, ListChecks, Search, Settings, Table2, Tags } from "lucide-react";
+import { FileText, LayoutGrid, Settings, Table2 } from "lucide-react";
 import { BankRail, railItemClass } from "@/components/bank-rail";
 
-export type KbSection =
-  | "overview"
-  | "documents"
-  | "search"
-  | "schemas"
-  | "collections"
-  | "operations"
-  | "settings";
+export type KbSection = "overview" | "documents" | "collections" | "settings";
 
+// Documents carries search and schemas as tabs — a field only means something beside the
+// schema that defines it — and Settings carries the operations.
 const ITEMS: { id: KbSection; label: string; icon: typeof LayoutGrid }[] = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "documents", label: "Documents", icon: FileText },
-  { id: "search", label: "Search", icon: Search },
-  { id: "schemas", label: "Schemas", icon: Tags },
   { id: "collections", label: "Collections", icon: Table2 },
-  { id: "operations", label: "Operations", icon: ListChecks },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 

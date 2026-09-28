@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { FileText, Plus, Search as SearchIcon, Trash2, Upload, X } from "lucide-react";
+import { FileText, Plus, Search as SearchIcon, Table2, Trash2, Upload, X } from "lucide-react";
 import { BankSelector } from "@/components/bank-selector";
 import { KnowledgeBankSidebar, type KbSection } from "@/components/knowledge-bank-sidebar";
 import { Button } from "@/components/ui/button";
@@ -39,19 +39,12 @@ import {
   type KnowledgeOperation,
   type QueryResult,
   type KnowledgeSchema,
+  type SchemaField,
   type SearchResult,
 } from "@/components/knowledge-bank-api";
 import { withBasePath } from "@/lib/base-path";
 
-const SECTIONS: KbSection[] = [
-  "overview",
-  "documents",
-  "search",
-  "schemas",
-  "collections",
-  "operations",
-  "settings",
-];
+const SECTIONS: KbSection[] = ["overview", "documents", "collections", "settings"];
 
 function Card({
   title,
@@ -106,6 +99,13 @@ export default function KnowledgeBankPage() {
     loadBank();
   }, [loadBank]);
 
+  const rawDocTab = searchParams.get("docTab");
+  const docTab = (
+    rawDocTab === "schemas" || rawDocTab === "search" ? rawDocTab : "documents"
+  ) as DocTab;
+  const goDocTab = (next: DocTab) =>
+    router.push(`/knowledge-banks/${encodeURIComponent(kbId)}?section=documents&docTab=${next}`);
+
   const settingsTab = (
     searchParams.get("settingsTab") === "configuration" ? "configuration" : "general"
   ) as SettingsTab;
@@ -148,11 +148,15 @@ export default function KnowledgeBankPage() {
                 </div>
                 <div className="space-y-5">
                   {section === "overview" && <Overview bank={bank} onGo={go} />}
-                  {section === "documents" && <Documents kbId={kbId} onChanged={loadBank} />}
-                  {section === "search" && <SearchPanel kbId={kbId} />}
-                  {section === "schemas" && <SchemaPanel kbId={kbId} />}
+                  {section === "documents" && (
+                    <DocumentsSection
+                      kbId={kbId}
+                      onChanged={loadBank}
+                      tab={docTab}
+                      onTab={goDocTab}
+                    />
+                  )}
                   {section === "collections" && <CollectionsPanel kbId={kbId} />}
-                  {section === "operations" && <Operations kbId={kbId} />}
                   {section === "settings" && (
                     <SettingsPanel
                       kbId={kbId}
@@ -202,15 +206,87 @@ function Overview({ bank, onGo }: { bank: KnowledgeBank; onGo: (s: KbSection) =>
         <Button size="sm" variant="outline" onClick={() => onGo("documents")}>
           <FileText className="w-4 h-4 mr-1" /> Documents
         </Button>
-        <Button size="sm" variant="outline" onClick={() => onGo("search")}>
-          <SearchIcon className="w-4 h-4 mr-1" /> Search
+        <Button size="sm" variant="outline" onClick={() => onGo("collections")}>
+          <Table2 className="w-4 h-4 mr-1" /> Collections
         </Button>
       </div>
     </>
   );
 }
 
-function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void }) {
+type DocTab = "documents" | "search" | "schemas";
+
+/** Documents and schemas in one place: a document's fields only mean something next to
+ *  the schema that defines them, and a schema is only worth editing to watch it fill. */
+function DocumentsSection({
+  kbId,
+  onChanged,
+  tab,
+  onTab,
+}: {
+  kbId: string;
+  onChanged: () => void;
+  tab: DocTab;
+  onTab: (tab: DocTab) => void;
+}) {
+  const [schemas, setSchemas] = useState<KnowledgeSchema[] | null>(null);
+
+  const loadSchemas = useCallback(async () => {
+    try {
+      setSchemas(
+        (await kbFetch<{ items: KnowledgeSchema[] }>(`/${encodeURIComponent(kbId)}/schemas`)).items
+      );
+    } catch {
+      setSchemas([]);
+    }
+  }, [kbId]);
+
+  useEffect(() => {
+    loadSchemas();
+  }, [loadSchemas]);
+
+  const tabs: { id: DocTab; label: string }[] = [
+    { id: "documents", label: "Documents" },
+    { id: "search", label: "Search" },
+    { id: "schemas", label: "Schemas" },
+  ];
+  return (
+    <div>
+      <div className="border-b border-border mb-5 flex">
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onTab(item.id)}
+            className={`px-6 py-3 font-semibold text-sm transition-all relative ${
+              tab === item.id ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {item.label}
+            {tab === item.id && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
+            )}
+          </button>
+        ))}
+      </div>
+      {tab === "documents" && (
+        <Documents kbId={kbId} onChanged={onChanged} schemas={schemas ?? []} />
+      )}
+      {tab === "search" && <SearchPanel kbId={kbId} />}
+      {tab === "schemas" && <SchemaPanel kbId={kbId} onSaved={loadSchemas} />}
+    </div>
+  );
+}
+
+function Documents({
+  kbId,
+  onChanged,
+  schemas,
+}: {
+  kbId: string;
+  onChanged: () => void;
+  schemas: KnowledgeSchema[];
+}) {
+  const [open, setOpen] = useState<string | null>(null);
   const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
   const [total, setTotal] = useState(0);
   const [adding, setAdding] = useState(false);
@@ -330,25 +406,39 @@ function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void })
           <TableHeader>
             <TableRow>
               <TableHead>Document</TableHead>
+              <TableHead className="w-40">Schema</TableHead>
+              <TableHead>Fields</TableHead>
               <TableHead>Tags</TableHead>
-              <TableHead className="text-right">Chunks</TableHead>
-              <TableHead className="text-right">Characters</TableHead>
-              <TableHead />
+              <TableHead className="text-right w-24">Passages</TableHead>
+              <TableHead className="w-12" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {documents.map((doc) => (
-              <TableRow key={doc.doc_id}>
+              <TableRow
+                key={doc.doc_id}
+                className="cursor-pointer"
+                onClick={() => setOpen(doc.doc_id)}
+              >
                 <TableCell className="font-mono text-sm">
                   {doc.doc_id}
                   {doc.title && <div className="text-xs text-muted-foreground">{doc.title}</div>}
+                </TableCell>
+                <TableCell className="text-xs">
+                  {doc.schema_id ? (
+                    <span className="font-mono">{doc.schema_id}</span>
+                  ) : (
+                    <span className="text-muted-foreground">none</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <FieldChips values={doc.fields} limit={3} />
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {doc.tags.join(", ")}
                 </TableCell>
                 <TableCell className="text-right">{doc.passage_count}</TableCell>
-                <TableCell className="text-right">{doc.chars.toLocaleString()}</TableCell>
-                <TableCell className="text-right">
+                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -363,6 +453,8 @@ function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void })
           </TableBody>
         </Table>
       )}
+
+      <DocumentDetail kbId={kbId} docId={open} schemas={schemas} onClose={() => setOpen(null)} />
 
       <Dialog open={adding} onOpenChange={setAdding}>
         <DialogContent className="max-w-2xl">
@@ -471,6 +563,211 @@ function Documents({ kbId, onChanged }: { kbId: string; onChanged: () => void })
         </DialogContent>
       </Dialog>
     </Card>
+  );
+}
+
+/** Field values as chips. Shows what a document or passage actually carries, in the
+ *  width a table cell has; the rest is behind the count. */
+function FieldChips({ values, limit }: { values: Record<string, unknown>; limit?: number }) {
+  const entries = Object.entries(values || {});
+  if (entries.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
+  const shown = limit ? entries.slice(0, limit) : entries;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {shown.map(([name, value]) => (
+        <span
+          key={name}
+          className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px]"
+          title={`${name}: ${formatFieldValue(value)}`}
+        >
+          <span className="font-mono text-muted-foreground">{name}</span>
+          <span className="max-w-[12rem] truncate">{formatFieldValue(value)}</span>
+        </span>
+      ))}
+      {limit && entries.length > limit && (
+        <span className="text-[11px] text-muted-foreground">+{entries.length - limit}</span>
+      )}
+    </div>
+  );
+}
+
+function formatFieldValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return value.map((v) => formatFieldValue(v)).join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+interface DocumentWithPassages extends KnowledgeDocument {
+  text: string;
+  passages: {
+    passage_index: number;
+    text: string;
+    token_count: number;
+    fields: Record<string, unknown>;
+  }[];
+}
+
+/** One document: which schema it was read with, what that schema asks for, what this
+ *  document answered — and the same, per passage. A field the schema defines but nothing
+ *  filled is shown empty rather than left out, because "we looked and found nothing" and
+ *  "we never asked" are different answers. */
+function DocumentDetail({
+  kbId,
+  docId,
+  schemas,
+  onClose,
+}: {
+  kbId: string;
+  docId: string | null;
+  schemas: KnowledgeSchema[];
+  onClose: () => void;
+}) {
+  const [document, setDocument] = useState<DocumentWithPassages | null>(null);
+
+  useEffect(() => {
+    if (!docId) {
+      setDocument(null);
+      return;
+    }
+    let live = true;
+    kbFetch<DocumentWithPassages>(
+      `/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}`
+    )
+      .then((d) => live && setDocument(d))
+      .catch((e) => toast.error((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [kbId, docId]);
+
+  const schema = schemas.find((item) => item.schema_id === document?.schema_id) ?? null;
+
+  return (
+    <Dialog open={docId !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-base">{docId}</DialogTitle>
+          <DialogDescription>
+            {document?.title ? `${document.title} · ` : ""}
+            {document?.schema_id ? (
+              <>
+                read with schema <span className="font-mono">{document.schema_id}</span>
+              </>
+            ) : (
+              "no schema — nothing was extracted for this document"
+            )}
+          </DialogDescription>
+        </DialogHeader>
+
+        {!document ? (
+          <Spinner />
+        ) : (
+          <div className="space-y-5">
+            <FieldTable
+              title="Document fields"
+              definition={schema?.document_fields}
+              values={document.fields}
+            />
+
+            <div>
+              <div className="text-[13px] font-semibold mb-2">
+                Passages ({document.passages.length})
+              </div>
+              <div className="space-y-3">
+                {document.passages.map((passage) => (
+                  <div key={passage.passage_index} className="rounded-lg border border-border p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs font-mono text-muted-foreground">
+                        #{passage.passage_index}
+                      </span>
+                      <FieldChips values={passage.fields} />
+                    </div>
+                    <p className="text-xs whitespace-pre-wrap text-muted-foreground">
+                      {passage.text}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {schema && Object.keys(schema.passage_fields).length > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  This schema asks each passage for:{" "}
+                  <span className="font-mono">{Object.keys(schema.passage_fields).join(", ")}</span>
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Every field a schema defines, beside what this document answered for it. */
+function FieldTable({
+  title,
+  definition,
+  values,
+}: {
+  title: string;
+  definition?: Record<string, SchemaField>;
+  values: Record<string, unknown>;
+}) {
+  // A value with no definition still shows: it was supplied with the write, or the
+  // schema changed after extraction, and hiding it would hide what search can filter on.
+  const names = Array.from(new Set([...Object.keys(definition ?? {}), ...Object.keys(values)]));
+  return (
+    <div>
+      <div className="text-[13px] font-semibold mb-2">{title}</div>
+      {names.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No fields. Define a schema to give this kind of document fields.
+        </p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-56">Field</TableHead>
+              <TableHead className="w-32">Type</TableHead>
+              <TableHead>Value</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {names.map((name) => {
+              const spec = definition?.[name];
+              return (
+                <TableRow key={name}>
+                  <TableCell className="font-mono text-xs">
+                    {name}
+                    {spec?.filterable && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">filterable</span>
+                    )}
+                    {spec?.indexed && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">indexed</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {spec?.type ?? "—"}
+                    {/* A fixed value list IS the classification, so it belongs next to
+                        the type: it says what an answer may be, not just its shape. */}
+                    {spec?.values && spec.values.length > 0 && (
+                      <div className="text-[10px]">{spec.values.join(" · ")}</div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {name in values ? (
+                      formatFieldValue(values[name])
+                    ) : (
+                      <span className="text-muted-foreground">not filled</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
+    </div>
   );
 }
 
@@ -583,7 +880,7 @@ function SearchPanel({ kbId }: { kbId: string }) {
   );
 }
 
-function SchemaPanel({ kbId }: { kbId: string }) {
+function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) {
   const [schemas, setSchemas] = useState<KnowledgeSchema[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -632,6 +929,7 @@ function SchemaPanel({ kbId }: { kbId: string }) {
       toast.success("Saved. It applies to the next write.");
       setSelected(schemaId);
       await load();
+      onSaved?.();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
