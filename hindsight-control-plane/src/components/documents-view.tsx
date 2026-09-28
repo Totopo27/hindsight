@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { InfoCard, MetadataRow, SectionLabel } from "@/components/ui/info-card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -276,34 +277,6 @@ function TagsAndMetadataCell({
 
 /* ── Shared helper components (match mental-model-detail-modal pattern) ── */
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground mb-1">
-      {children}
-    </div>
-  );
-}
-
-function InfoCard({
-  title,
-  icon,
-  children,
-}: {
-  title: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 overflow-hidden">
-      <div className="flex items-center gap-1.5 px-4 py-2 border-b border-border bg-muted/40 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {icon}
-        {title}
-      </div>
-      <div className="p-4 space-y-4">{children}</div>
-    </div>
-  );
-}
-
 interface RetainRun {
   traceId: string;
   entry: LLMRequestEntry;
@@ -398,15 +371,6 @@ function DocumentRetainTraces({ bankId, documentId }: { bankId: string; document
         onOpenChange={(o) => !o && setDialogEntry(null)}
       />
     </InfoCard>
-  );
-}
-
-function MetadataRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div>
-      <SectionLabel>{label}</SectionLabel>
-      <div className="text-sm text-foreground">{value}</div>
-    </div>
   );
 }
 

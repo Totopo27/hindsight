@@ -70,8 +70,6 @@ export interface SearchResult {
   document_id: string;
   passage_index: number;
   text: string;
-  score: number;
-  ranks: { vector?: number; keyword?: number };
 }
 
 export interface KnowledgeOperation {

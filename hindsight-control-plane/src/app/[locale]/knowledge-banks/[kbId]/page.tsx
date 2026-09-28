@@ -32,6 +32,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  DisclosureButton,
+  Hint,
+  Row,
+  Section as Section2,
+  Segmented,
+} from "@/components/form-layout";
+import { InfoCard, MetadataRow } from "@/components/ui/info-card";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -444,8 +452,7 @@ function Documents({
               <TableRow>
                 <TableHead>Document</TableHead>
                 <TableHead className="w-40">Schema</TableHead>
-                <TableHead>Fields</TableHead>
-                <TableHead>Tags</TableHead>
+                <TableHead className="w-48">Updated</TableHead>
                 <TableHead className="text-right w-24">Passages</TableHead>
                 <TableHead className="w-12" />
               </TableRow>
@@ -697,73 +704,101 @@ function DocumentDetail({
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="general" className="flex-1 overflow-y-auto mt-4 space-y-4">
-              <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
-                {[
-                  ["Document id", <span className="font-mono text-xs">{document.doc_id}</span>],
-                  ["Title", document.title || "—"],
-                  [
-                    "Schema",
-                    document.schema_id ? (
-                      <span className="font-mono text-xs">{document.schema_id}</span>
-                    ) : (
-                      "none — nothing was extracted for this document"
-                    ),
-                  ],
-                  ["Passages", document.passages.length],
-                  ["Characters", (document.text ?? "").length.toLocaleString()],
-                  ["Created", new Date(document.created_at).toLocaleString()],
-                  ["Updated", new Date(document.updated_at).toLocaleString()],
-                ].map(([label, value], i) => (
-                  <div key={i}>
-                    <dt className="text-xs text-muted-foreground">{label as string}</dt>
-                    <dd className="text-sm">{value as React.ReactNode}</dd>
-                  </div>
-                ))}
-              </dl>
-              {Object.keys(document.metadata || {}).length > 0 && (
-                <div>
-                  <div className="text-xs text-muted-foreground mb-1">Metadata</div>
-                  <FieldChips values={document.metadata} />
+            <TabsContent value="general" className="flex-1 overflow-y-auto mt-4">
+              <div className="space-y-4">
+                {/* The same InfoCard/MetadataRow furniture the memory-bank document
+                    dialog uses, so the two read as one product. */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <InfoCard title="Document" icon={<FileText className="w-3.5 h-3.5" />}>
+                    <MetadataRow
+                      label="Id"
+                      value={<span className="font-mono text-xs">{document.doc_id}</span>}
+                    />
+                    <MetadataRow label="Title" value={document.title || "—"} />
+                    <MetadataRow
+                      label="Created"
+                      value={new Date(document.created_at).toLocaleString()}
+                    />
+                    <MetadataRow
+                      label="Updated"
+                      value={new Date(document.updated_at).toLocaleString()}
+                    />
+                    <MetadataRow
+                      label="Size"
+                      value={`${(document.text ?? "").length.toLocaleString()} characters`}
+                    />
+                  </InfoCard>
+
+                  <InfoCard title="Extraction" icon={<Tags className="w-3.5 h-3.5" />}>
+                    <MetadataRow
+                      label="Schema"
+                      value={
+                        document.schema_id ? (
+                          <span className="font-mono text-xs">{document.schema_id}</span>
+                        ) : (
+                          <span className="italic text-muted-foreground">
+                            none — nothing was extracted from this document
+                          </span>
+                        )
+                      }
+                    />
+                    <MetadataRow
+                      label="Fields filled"
+                      value={Object.keys(document.fields || {}).length}
+                    />
+                    <MetadataRow label="Passages" value={document.passages.length} />
+                    {Object.keys(document.metadata || {}).length > 0 && (
+                      <MetadataRow
+                        label="Metadata"
+                        value={<FieldChips values={document.metadata} />}
+                      />
+                    )}
+                  </InfoCard>
                 </div>
-              )}
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">Text</div>
-                <pre className="rounded-lg border border-border bg-muted/30 p-3 text-xs whitespace-pre-wrap">
-                  {document.text}
-                </pre>
+
+                <InfoCard title="Text" icon={<FileText className="w-3.5 h-3.5" />}>
+                  <pre className="text-sm whitespace-pre-wrap font-sans leading-relaxed">
+                    {document.text}
+                  </pre>
+                </InfoCard>
               </div>
             </TabsContent>
 
-            <TabsContent value="fields" className="flex-1 overflow-y-auto mt-4 space-y-5">
-              <FieldTable
-                title="Document fields"
-                definition={schema?.document_fields}
-                values={document.fields}
-              />
-              {schema && Object.keys(schema.passage_fields).length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  This schema also asks each passage for{" "}
-                  <span className="font-mono">{Object.keys(schema.passage_fields).join(", ")}</span>
-                  ; the answers are on the Passages tab.
-                </p>
-              )}
+            <TabsContent value="fields" className="flex-1 overflow-y-auto mt-4">
+              <div className="space-y-4">
+                <InfoCard title="Document fields" icon={<Tags className="w-3.5 h-3.5" />}>
+                  <FieldTable definition={schema?.document_fields} values={document.fields} />
+                </InfoCard>
+                {schema && Object.keys(schema.passage_fields).length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    This schema also asks each passage for{" "}
+                    <span className="font-mono">
+                      {Object.keys(schema.passage_fields).join(", ")}
+                    </span>
+                    ; the answers are on the Passages tab.
+                  </p>
+                )}
+              </div>
             </TabsContent>
 
-            <TabsContent value="passages" className="flex-1 overflow-y-auto mt-4 space-y-3">
-              {document.passages.map((passage) => (
-                <div key={passage.passage_index} className="rounded-lg border border-border p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-mono text-muted-foreground">
-                      #{passage.passage_index}
-                    </span>
-                    <FieldChips values={passage.fields} />
-                  </div>
-                  <p className="text-xs whitespace-pre-wrap text-muted-foreground">
-                    {passage.text}
-                  </p>
-                </div>
-              ))}
+            <TabsContent value="passages" className="flex-1 overflow-y-auto mt-4">
+              <div className="space-y-4">
+                {document.passages.map((passage) => (
+                  <InfoCard
+                    key={passage.passage_index}
+                    title={`Passage ${passage.passage_index}`}
+                    icon={<Layers className="w-3.5 h-3.5" />}
+                  >
+                    {Object.keys(passage.fields || {}).length > 0 && (
+                      <MetadataRow label="Fields" value={<FieldChips values={passage.fields} />} />
+                    )}
+                    <MetadataRow
+                      label="Text"
+                      value={<p className="whitespace-pre-wrap">{passage.text}</p>}
+                    />
+                  </InfoCard>
+                ))}
+              </div>
             </TabsContent>
           </Tabs>
         )}
@@ -774,11 +809,9 @@ function DocumentDetail({
 
 /** Every field a schema defines, beside what this document answered for it. */
 function FieldTable({
-  title,
   definition,
   values,
 }: {
-  title: string;
   definition?: Record<string, SchemaField>;
   values: Record<string, unknown>;
 }) {
@@ -787,7 +820,6 @@ function FieldTable({
   const names = Array.from(new Set([...Object.keys(definition ?? {}), ...Object.keys(values)]));
   return (
     <div>
-      <div className="text-[13px] font-semibold mb-2">{title}</div>
       {names.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           No fields. Define a schema to give this kind of document fields.
@@ -845,8 +877,11 @@ function FieldTable({
 function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema[] }) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"hybrid" | "vector" | "keyword">("hybrid");
+  const [topK, setTopK] = useState(10);
+  const [collapse, setCollapse] = useState(false);
   const [filter, setFilter] = useState<Record<string, unknown> | null>(null);
   const [schemaId, setSchemaId] = useState<string | null>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -861,7 +896,8 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
           body: {
             query,
             mode,
-            top_k: 10,
+            top_k: topK,
+            collapse_documents: collapse,
             fields: filter ?? undefined,
             schema_id: schemaId ?? undefined,
           },
@@ -896,52 +932,99 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
       })),
   ]);
 
+  // The badge on the collapsed disclosure: how many options differ from the defaults.
+  const activeOptions =
+    (schemaId ? 1 : 0) + (filter ? 1 : 0) + (topK !== 10 ? 1 : 0) + (collapse ? 1 : 0);
+
   return (
     <Section title="Search" tab description="Hybrid vector + keyword search, reranked.">
-      <form
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          run();
-        }}
-      >
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Ask something…"
-          autoFocus
-        />
-        <div className="flex shrink-0 rounded-md border border-input overflow-hidden text-sm">
-          {(["hybrid", "vector", "keyword"] as const).map((m) => (
-            <button
-              type="button"
-              key={m}
-              onClick={() => setMode(m)}
-              className={`whitespace-nowrap px-3 capitalize ${
-                mode === m ? "bg-primary text-primary-foreground" : "hover:bg-muted"
-              }`}
-            >
-              {m}
-            </button>
-          ))}
+      <div className="flex gap-3">
+        <div className="relative flex-1">
+          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && run()}
+            placeholder="Ask something…"
+            className="pl-10 h-12 text-lg"
+            autoFocus
+          />
         </div>
-        <Button type="submit" disabled={loading}>
-          {loading ? <Spinner size="sm" /> : <SearchIcon className="w-4 h-4" />}
+        <Button onClick={run} disabled={loading || !query.trim()} className="h-12 px-8">
+          {loading ? "Searching…" : "Search"}
         </Button>
-      </form>
-
-      <div className="mt-4">
-        <FilterBuilder
-          fields={filterable}
-          schemas={schemas.map((schema) => schema.schema_id)}
-          schemaId={schemaId}
-          onSchemaChange={setSchemaId}
-          onChange={setFilter}
-        />
       </div>
 
+      {/* The everyday control inline, everything else behind Options — the shape the
+          Recall page uses, with the same building blocks. */}
+      <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Mode</span>
+          <Hint text="Hybrid fuses a vector arm and a keyword arm; the single arms are for seeing what each one finds on its own." />
+          <Segmented
+            value={mode}
+            onChange={setMode}
+            ariaLabel="Search mode"
+            options={[
+              { value: "hybrid", label: "Hybrid" },
+              { value: "vector", label: "Vector" },
+              { value: "keyword", label: "Keyword" },
+            ]}
+          />
+        </div>
+        <div className="ml-auto">
+          <DisclosureButton
+            open={optionsOpen}
+            onToggle={() => setOptionsOpen((open) => !open)}
+            label="Options"
+            badge={activeOptions}
+          />
+        </div>
+      </div>
+
+      {optionsOpen && (
+        <div className="mt-5 grid gap-8 md:grid-cols-2">
+          <Section2 title="Retrieval">
+            <Row label="Results" description="How many passages to return." htmlFor="kb-top-k">
+              <Input
+                id="kb-top-k"
+                type="number"
+                min={1}
+                max={200}
+                value={topK}
+                onChange={(e) => setTopK(Math.max(1, Number(e.target.value) || 1))}
+              />
+            </Row>
+            <Row
+              label="One per document"
+              description="Keep only each document's best passage, so the count means that many distinct documents."
+            >
+              <Segmented
+                value={collapse ? "yes" : "no"}
+                onChange={(v) => setCollapse(v === "yes")}
+                ariaLabel="One passage per document"
+                options={[
+                  { value: "no", label: "Off" },
+                  { value: "yes", label: "On" },
+                ]}
+              />
+            </Row>
+          </Section2>
+
+          <Section2 title="Filters">
+            <FilterBuilder
+              fields={filterable}
+              schemas={schemas.map((schema) => schema.schema_id)}
+              schemaId={schemaId}
+              onSchemaChange={setSchemaId}
+              onChange={setFilter}
+            />
+          </Section2>
+        </div>
+      )}
+
       {results && (
-        <Tabs defaultValue="data" className="mt-5">
+        <Tabs defaultValue="data" className="mt-6">
           <TabsList className="grid w-full max-w-xs grid-cols-2">
             <TabsTrigger value="data">Data</TabsTrigger>
             <TabsTrigger value="json">JSON</TabsTrigger>
@@ -960,19 +1043,6 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
                   <span className="text-muted-foreground">#{i + 1}</span>
                   <span className="font-mono">{hit.document_id}</span>
                   <span className="text-muted-foreground">passage {hit.passage_index}</span>
-                  {hit.ranks.vector && (
-                    <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[11px]">
-                      vector #{hit.ranks.vector}
-                    </span>
-                  )}
-                  {hit.ranks.keyword && (
-                    <span className="rounded bg-emerald-100 dark:bg-emerald-500/20 px-1.5 py-0.5 text-[11px]">
-                      keyword #{hit.ranks.keyword}
-                    </span>
-                  )}
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {hit.score.toFixed(4)}
-                  </span>
                 </div>
                 <p className="text-sm whitespace-pre-wrap">{hit.text}</p>
               </div>

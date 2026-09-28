@@ -595,14 +595,15 @@ def build_router(get_request_context: Any) -> APIRouter:
                 request_context=ctx,
             )
         )
+        # Order is the answer. A fusion score has no meaning across two queries and the
+        # per-arm ranks are how the answer was reached, not part of it — both invited a
+        # caller to threshold on a number that is not comparable to anything.
         return {
             "results": [
                 {
                     "document_id": hit.doc_id,
                     "passage_index": hit.passage_index,
                     "text": hit.text,
-                    "score": hit.score,
-                    "ranks": hit.ranks,
                 }
                 for hit in hits
             ]

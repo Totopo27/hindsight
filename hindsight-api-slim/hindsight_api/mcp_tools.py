@@ -4756,7 +4756,6 @@ def _register_search_knowledge_bank(mcp: FastMCP, memory: MemoryEngine, config: 
                         "document_id": hit.doc_id,
                         "passage_index": hit.passage_index,
                         "text": hit.text,
-                        "score": hit.score,
                     }
                     for hit in hits
                 ]

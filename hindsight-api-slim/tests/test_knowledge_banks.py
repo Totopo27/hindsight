@@ -81,19 +81,23 @@ async def test_write_batch_runs_as_an_operation_and_becomes_searchable(kb_client
     assert hits and hits[0]["document_id"] == "milan"
     assert "Borsa" in hits[0]["text"]
 
-    # Each arm on its own, and the ranks that produced the fused order.
+    # Each arm on its own. A hit is a document, a passage index and its text — the
+    # fusion score and the per-arm ranks are how the order was reached, not part of the
+    # answer, and a score that means nothing across two queries is worse than none.
+    assert set(hits[0]) == {"document_id", "passage_index", "text"}
     keyword = (
         await kb_client.post(
             f"/v1/default/knowledge-banks/{kb}/search", json={"query": "Fiat", "mode": "keyword", "top_k": 2}
         )
     ).json()["results"]
-    assert keyword[0]["document_id"] == "turin" and set(keyword[0]["ranks"]) == {"keyword"}
+    assert keyword[0]["document_id"] == "turin"
     vector = (
         await kb_client.post(
-            f"/v1/default/knowledge-banks/{kb}/search", json={"query": "car manufacturer", "mode": "vector", "top_k": 2}
+            f"/v1/default/knowledge-banks/{kb}/search",
+            json={"query": "car manufacturer", "mode": "vector", "top_k": 2},
         )
     ).json()["results"]
-    assert set(vector[0]["ranks"]) == {"vector"}
+    assert vector[0]["document_id"] == "turin"
 
     # A field written with the document narrows the search to the documents that carry it.
     # (Metadata is matched by the same filter as a schema field, so this works with no
