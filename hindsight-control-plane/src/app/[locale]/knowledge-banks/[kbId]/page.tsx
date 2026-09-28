@@ -12,6 +12,7 @@ import {
   List,
   Network,
   MoreVertical,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -53,6 +54,7 @@ import {
 } from "@/components/form-layout";
 import { Constellation } from "@/components/constellation";
 import { ErdDiagram, type ErdField, type ErdNode } from "@/components/kb-erd";
+import { CollectionsEditor } from "@/components/kb-collections-editor";
 import { QueryBuilder } from "@/components/kb-query-builder";
 import { InfoCard, MetadataRow } from "@/components/ui/info-card";
 import { InlineStat, StatStrip } from "@/components/ui/inline-stat";
@@ -1998,17 +2000,6 @@ function CollectionsPanel({ kbId }: { kbId: string }) {
   );
 }
 
-const NEW_COLLECTION_DEFINITION_TEMPLATE = `{
-  "name": "Vendors",
-  "description": "One company we buy from",
-  "identity": "name",
-  "derive_on_write": false,
-  "fields": {
-    "name": { "type": "string", "description": "The company's name" },
-    "country": { "type": "string" }
-  }
-}`;
-
 /** The collections themselves, in the layout the schemas use: the list on the left, the
  *  selected one on the right, and the whole set as a diagram when that reads better. */
 function CollectionDefinitions({
@@ -2025,54 +2016,9 @@ function CollectionDefinitions({
   onChanged: () => Promise<void> | void;
 }) {
   const [view, setView] = useState<"list" | "diagram">("list");
-  const [editing, setEditing] = useState<{ id: string; definition: string } | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
 
   const current = collections.find((c) => c.collection_id === selected) ?? null;
-
-  const openEditor = (collection?: KnowledgeCollection) =>
-    setEditing(
-      collection
-        ? {
-            id: collection.collection_id,
-            definition: JSON.stringify(
-              {
-                name: collection.name,
-                description: collection.description,
-                identity: collection.identity,
-                derive_on_write: collection.derive_on_write ?? false,
-                fields: collection.fields,
-              },
-              null,
-              2
-            ),
-          }
-        : { id: "", definition: NEW_COLLECTION_DEFINITION_TEMPLATE }
-    );
-
-  const saveDefinition = async () => {
-    if (!editing) return;
-    const id = editing.id.trim();
-    if (!id) return;
-    let body: unknown;
-    try {
-      body = JSON.parse(editing.definition);
-    } catch {
-      toast.error("That is not valid JSON");
-      return;
-    }
-    try {
-      await kbFetch(`/${encodeURIComponent(kbId)}/collections/${encodeURIComponent(id)}`, {
-        method: "PUT",
-        body,
-      });
-      toast.success("Saved. Derive to fill it from the documents.");
-      setEditing(null);
-      onSelect(id);
-      await onChanged();
-    } catch (e) {
-      toast.error((e as Error).message);
-    }
-  };
 
   const derive = async (collectionId: string) => {
     try {
@@ -2108,8 +2054,8 @@ function CollectionDefinitions({
         </div>
         <div className="flex items-center gap-2">
           <ViewToggle value={view} onChange={setView} />
-          <Button size="sm" variant="outline" onClick={() => openEditor()}>
-            <Plus className="w-4 h-4 mr-1" /> New collection
+          <Button size="sm" variant="outline" onClick={() => setEditorOpen(true)}>
+            <Pencil className="w-4 h-4 mr-1" /> Edit collections
           </Button>
         </div>
       </div>
@@ -2169,7 +2115,7 @@ function CollectionDefinitions({
                     </p>
                   </div>
                   <div className="flex gap-2 shrink-0">
-                    <Button size="sm" variant="outline" onClick={() => openEditor(current)}>
+                    <Button size="sm" variant="outline" onClick={() => setEditorOpen(true)}>
                       Edit
                     </Button>
                     <DropdownMenu>
@@ -2206,39 +2152,13 @@ function CollectionDefinitions({
         </div>
       )}
 
-      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editing?.id ? `Collection ${editing.id}` : "New collection"}</DialogTitle>
-            <DialogDescription>
-              A field is <code>{'{"type": "string"}'}</code>, or{" "}
-              <code>{'{"collection": "vendors"}'}</code> for a relationship to another
-              collection&apos;s record. <code>identity</code> names the field that says which thing
-              a record is.
-            </DialogDescription>
-          </DialogHeader>
-          <Input
-            placeholder="Collection id, e.g. vendors"
-            value={editing?.id ?? ""}
-            disabled={Boolean(collections.find((c) => c.collection_id === editing?.id))}
-            onChange={(e) => setEditing((prev) => (prev ? { ...prev, id: e.target.value } : prev))}
-          />
-          <Textarea
-            rows={16}
-            className="font-mono text-xs"
-            value={editing?.definition ?? ""}
-            spellCheck={false}
-            onChange={(e) =>
-              setEditing((prev) => (prev ? { ...prev, definition: e.target.value } : prev))
-            }
-          />
-          <DialogFooter>
-            <Button onClick={saveDefinition} disabled={!editing?.id.trim()}>
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <CollectionsEditor
+        kbId={kbId}
+        open={editorOpen}
+        collections={collections}
+        onOpenChange={setEditorOpen}
+        onApplied={onChanged}
+      />
     </>
   );
 }
