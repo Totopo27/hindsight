@@ -158,3 +158,19 @@ export interface CollectionStats {
   last_updated: string | null;
   coverage: { field: string; filled: number }[];
 }
+
+/** A change the model suggests to a bank's collections. Nothing is applied by it. */
+export interface CollectionProposal {
+  action: "create" | "update" | "delete";
+  collection_id: string;
+  reason: string;
+  definition: {
+    name: string | null;
+    description: string | null;
+    identity: string | null;
+    fields: Record<
+      string,
+      { type?: string; collection?: string; values?: unknown[]; description?: string }
+    >;
+  } | null;
+}

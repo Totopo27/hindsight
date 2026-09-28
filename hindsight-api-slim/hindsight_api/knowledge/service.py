@@ -27,7 +27,13 @@ from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
 from ..engine.storage import bank_storage_prefix
 from . import collections as collections_store
 from . import store
-from .extraction import classify_schema, derive_records, extract_document, extract_passages
+from .extraction import (
+    classify_schema,
+    derive_records,
+    extract_document,
+    extract_passages,
+    propose_collections,
+)
 from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
 from .identity import normalise
@@ -581,6 +587,109 @@ class KnowledgeService:
                 collection_id,
             )
         return collection
+
+    async def propose_collections(
+        self, bank_id: str, instruction: str | None, sample: int, request_context: Any = None
+    ) -> dict[str, Any]:
+        """What collections this corpus deserves, as a proposal a person applies or drops.
+
+        The model reads the documents and the collections that exist and answers with
+        changes; nothing here writes. That separation is the point: a schema change
+        re-reads a corpus and costs an LLM call per document, so it is a decision, not
+        something an agent should be able to make on its own.
+        """
+        await self._require_bank(bank_id)
+        config = await self._config(bank_id, request_context)
+        async with acquire_with_retry(await self._pool()) as conn:
+            existing = await collections_store.list_collections(conn, bank_id)
+            rows = await conn.fetch(
+                f"""
+                SELECT doc_id, title, left(text, $2) AS text
+                FROM {store.fq_table("kb_documents")}
+                WHERE bank_id = $1 AND text <> ''
+                ORDER BY updated_at DESC
+                LIMIT $3
+                """,
+                bank_id,
+                int(config.kb_field_extraction_max_chars),
+                sample,
+            )
+        documents = [dict(row) for row in rows]
+        if not documents:
+            raise KnowledgeBankError(400, "this bank has no documents to read; write some first")
+
+        llm = self._field_extraction_llm(bank_id, config)
+        try:
+            proposals = await propose_collections(llm, instruction=instruction, existing=existing, documents=documents)
+        except Exception as e:
+            raise KnowledgeBankError(502, f"the model could not propose collections: {e}") from e
+
+        # Everything the model returns is validated here, against the same rules a PUT
+        # applies, so what comes back can be applied as-is — or is reported as refused
+        # rather than handed on to fail later.
+        known = {c["collection_id"] for c in existing} | {p.collection_id for p in proposals if p.action != "delete"}
+        existing_ids = {c["collection_id"] for c in existing}
+        out: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for proposal in proposals:
+            if not proposal.collection_id:
+                continue
+            if proposal.action == "delete":
+                if proposal.collection_id in existing_ids:
+                    out.append(
+                        {
+                            "action": "delete",
+                            "collection_id": proposal.collection_id,
+                            "reason": proposal.reason,
+                            "definition": None,
+                        }
+                    )
+                continue
+            fields = {
+                field.name: (
+                    {
+                        "collection": field.collection,
+                        **({"description": field.description} if field.description else {}),
+                    }
+                    if field.collection
+                    else {
+                        "type": field.type,
+                        **({"description": field.description} if field.description else {}),
+                        **({"values": field.values} if field.values else {}),
+                    }
+                )
+                for field in proposal.fields
+                if field.name
+            }
+            try:
+                validated = collections_store.validate_collection_fields(fields, known_collections=known)
+            except SchemaError as e:
+                warnings.append(f"{proposal.collection_id}: {e}")
+                continue
+            identity = proposal.identity if proposal.identity in validated else None
+            if proposal.identity and identity is None:
+                warnings.append(f"{proposal.collection_id}: identity {proposal.identity!r} is not one of its fields")
+            # An update the model left blank keeps what the collection has. A proposal is
+            # about the fields; a PUT replaces the whole definition, so an omitted name or
+            # identity would silently erase one — which is not what "update" asked for.
+            current = next((c for c in existing if c["collection_id"] == proposal.collection_id), None)
+            if identity is None and current and current.get("identity") in validated:
+                identity = current["identity"]
+            out.append(
+                {
+                    # An id the bank already has is an update whatever the model called it.
+                    "action": "update" if proposal.collection_id in existing_ids else "create",
+                    "collection_id": proposal.collection_id,
+                    "reason": proposal.reason,
+                    "definition": {
+                        "name": proposal.name or (current or {}).get("name") or None,
+                        "description": proposal.description or (current or {}).get("description") or None,
+                        "identity": identity,
+                        "fields": validated,
+                    },
+                }
+            )
+        return {"proposals": out, "documents_read": len(documents), "warnings": warnings}
 
     async def put_collection(
         self,

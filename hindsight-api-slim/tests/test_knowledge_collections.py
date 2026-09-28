@@ -419,3 +419,130 @@ async def test_collection_stats_describe_the_data_not_the_definition(kb_client, 
     assert 0 < coverage["name"] <= body["records"]
     assert coverage["country"] < coverage["name"], "the record written without a country counts"
     assert body["documents"] >= 2, "the documents behind the records, counted once each"
+
+
+@pytest.mark.asyncio
+async def test_a_proposal_is_applyable_and_writes_nothing(kb_client, bank, memory):
+    """The model proposes; a person applies. The endpoint must not touch the bank.
+
+    What comes back is validated against the same rules a PUT applies, so approving a
+    proposal cannot fail on a shape the model invented.
+    """
+    await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={"documents": [{"id": "inv", "text": "Invoice from Acme Ltd for 4200 EUR."}]},
+    )
+    before = (await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections")).json()
+
+    memory._llm_config._provider_impl.set_response_callback(
+        lambda messages, scope: {
+            "collections": [
+                {
+                    "action": "create",
+                    "collection_id": "invoices",
+                    "name": "Invoices",
+                    "identity": "number",
+                    "reason": "The documents are invoices.",
+                    "fields": [
+                        {"name": "number", "type": "string"},
+                        {"name": "total", "type": "number"},
+                        {"name": "vendor", "collection": "vendors"},
+                        # A relationship to a collection that will not exist. Structured
+                        # output stops the model inventing a TYPE, but nothing stops it
+                        # naming a collection, so this is the shape that can arrive.
+                        {"name": "region", "collection": "nope"},
+                    ],
+                },
+                {"action": "delete", "collection_id": "contracts", "reason": "Superseded."},
+                {"action": "delete", "collection_id": "never-existed", "reason": "Noise."},
+            ]
+        }
+    )
+
+    response = await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/collections/propose",
+        json={"instruction": "track the invoices", "sample_documents": 5},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    by_id = {p["collection_id"]: p for p in body["proposals"]}
+
+    # A relationship pointing nowhere refuses the whole collection rather than being
+    # quietly dropped — approving half a definition is worse than being told.
+    assert "invoices" not in by_id
+    assert any("invoices" in warning for warning in body["warnings"])
+    assert by_id["contracts"]["action"] == "delete"
+    assert "never-existed" not in by_id, "a delete of something that is not there is not a change"
+    assert body["documents_read"] >= 1
+
+    after = (await kb_client.get(f"/v1/default/knowledge-banks/{bank}/collections")).json()
+    assert after == before, "proposing changed nothing"
+
+
+@pytest.mark.asyncio
+async def test_a_valid_proposal_comes_back_ready_to_put(kb_client, bank, memory):
+    """The definition in a proposal is the body of the PUT that applies it."""
+    await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={"documents": [{"id": "inv", "text": "Invoice from Acme Ltd for 4200 EUR."}]},
+    )
+    memory._llm_config._provider_impl.set_response_callback(
+        lambda messages, scope: {
+            "collections": [
+                {
+                    "action": "create",
+                    "collection_id": "invoices",
+                    "identity": "number",
+                    "fields": [
+                        {"name": "number", "type": "string"},
+                        {"name": "total", "type": "number"},
+                        # A relationship to a collection this bank already has.
+                        {"name": "vendor", "collection": "vendors"},
+                    ],
+                }
+            ]
+        }
+    )
+    proposal = (await kb_client.post(f"/v1/default/knowledge-banks/{bank}/collections/propose", json={})).json()[
+        "proposals"
+    ][0]
+    assert proposal["action"] == "create"
+
+    applied = await kb_client.put(
+        f"/v1/default/knowledge-banks/{bank}/collections/invoices", json=proposal["definition"]
+    )
+    assert applied.status_code == 200, applied.text
+    stored = applied.json()
+    assert stored["identity"] == "number"
+    assert stored["fields"]["vendor"]["collection"] == "vendors"
+
+
+@pytest.mark.asyncio
+async def test_an_update_proposal_keeps_what_it_did_not_mention(kb_client, bank, memory):
+    """A PUT replaces the whole definition, so a proposal that only changes fields must
+    not carry a blank name or identity through and erase them."""
+    await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={"documents": [{"id": "d", "text": "Acme Ltd invoices us monthly."}]},
+    )
+    memory._llm_config._provider_impl.set_response_callback(
+        lambda messages, scope: {
+            "collections": [
+                {
+                    "action": "update",
+                    "collection_id": "vendors",
+                    "fields": [
+                        {"name": "name", "type": "string"},
+                        {"name": "country", "type": "string"},
+                        {"name": "rating", "type": "number"},
+                    ],
+                }
+            ]
+        }
+    )
+    proposal = (await kb_client.post(f"/v1/default/knowledge-banks/{bank}/collections/propose", json={})).json()[
+        "proposals"
+    ][0]
+    assert proposal["definition"]["identity"] == "name", "the identity it already had"
+    assert proposal["definition"]["name"] == "Vendors"
+    assert "rating" in proposal["definition"]["fields"], "and the field the model added"

@@ -100,6 +100,15 @@ class CollectionRequest(BaseModel):
     )
 
 
+class ProposeCollectionsRequest(BaseModel):
+    """What to take into account when proposing collections."""
+
+    instruction: str | None = Field(default=None, description="What the caller wants out of this bank, in their words")
+    sample_documents: int = Field(
+        default=12, ge=1, le=50, description="How many of the most recent documents the model reads"
+    )
+
+
 class RecordsRequest(BaseModel):
     records: list[dict[str, Any]] = Field(
         min_length=1, description="[{record_id?, values, evidence?, doc_ids?}] — written as given, no LLM"
@@ -527,6 +536,22 @@ def build_router(get_request_context: Any) -> APIRouter:
         svc: KnowledgeService = Depends(service),
     ):
         return await run(svc.query_records(kb, collection_id, body.model_dump(exclude_none=True), request_context=ctx))
+
+    @router.post(
+        "/{kb}/collections/propose",
+        summary="Ask the model what collections this corpus deserves",
+        description="Reads a sample of the bank's documents and the collections it already has, and "
+        "answers with changes to make: create, update or delete, each with the definition and why. "
+        "Nothing is written — applying a proposal is the caller's PUT or DELETE, deliberately, "
+        "because a schema change re-reads the corpus and costs an LLM call per document.",
+    )
+    async def propose_collections(
+        kb: str,
+        body: ProposeCollectionsRequest,
+        svc: KnowledgeService = Depends(service),
+        ctx: RequestContext = Depends(get_request_context),
+    ):
+        return await run(svc.propose_collections(kb, body.instruction, body.sample_documents, ctx))
 
     @router.get(
         "/{kb}/collections/{collection_id}/stats",

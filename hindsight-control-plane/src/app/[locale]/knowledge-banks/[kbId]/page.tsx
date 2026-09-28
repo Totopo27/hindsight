@@ -567,6 +567,7 @@ function Documents({
   const fileInput = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [schemaFilter, setSchemaFilter] = useState("all");
+  const [page, setPage] = useState(0);
   // The map is what the tab opens on: a bank of a thousand passages is a shape before it
   // is a list, and the shape is what says whether the schemas caught anything.
   const [view, setView] = useState<"list" | "diagram">("diagram");
@@ -575,18 +576,24 @@ function Documents({
   // is paginated, so filtering the page in the browser would filter the wrong set.
   const load = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ limit: "200" });
+      const params = new URLSearchParams({
+        limit: String(DOCUMENTS_PER_PAGE),
+        offset: String(page * DOCUMENTS_PER_PAGE),
+      });
       if (searchQuery.trim()) params.set("q", searchQuery.trim());
       if (schemaFilter !== "all") params.set("schema_id", schemaFilter);
-      const page = await kbFetch<{ items: KnowledgeDocument[]; total: number }>(
+      const result = await kbFetch<{ items: KnowledgeDocument[]; total: number }>(
         `/${encodeURIComponent(kbId)}/documents?${params}`
       );
-      setDocuments(page.items);
-      setTotal(page.total);
+      setDocuments(result.items);
+      setTotal(result.total);
     } catch (e) {
       toast.error((e as Error).message);
     }
-  }, [kbId, searchQuery, schemaFilter]);
+  }, [kbId, searchQuery, schemaFilter, page]);
+
+  // A new filter is a new list: start it from its first page.
+  useEffect(() => setPage(0), [searchQuery, schemaFilter]);
 
   useEffect(() => {
     const timer = setTimeout(load, searchQuery ? 250 : 0);
@@ -800,6 +807,17 @@ function Documents({
                 </TableBody>
               </Table>
             </TableFrame>
+          )}
+          {documents && documents.length > 0 && (
+            <div className="mt-3">
+              <Pager
+                page={page}
+                total={total}
+                perPage={DOCUMENTS_PER_PAGE}
+                noun="document"
+                onPage={setPage}
+              />
+            </div>
           )}
         </>
       )}
@@ -1295,13 +1313,25 @@ function FieldTable({
   );
 }
 
-function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema[] }) {
+function SearchPanel({
+  kbId,
+  schemas: allSchemas,
+  lockedSchemaId,
+}: {
+  kbId: string;
+  schemas: KnowledgeSchema[];
+  /** Embedded in one schema's page: search only that schema, filter only its fields. */
+  lockedSchemaId?: string;
+}) {
+  const schemas = lockedSchemaId
+    ? allSchemas.filter((schema) => schema.schema_id === lockedSchemaId)
+    : allSchemas;
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"hybrid" | "vector" | "keyword">("hybrid");
   const [topK, setTopK] = useState(10);
   const [collapse, setCollapse] = useState(false);
   const [filter, setFilter] = useState<Record<string, unknown> | null>(null);
-  const [schemaId, setSchemaId] = useState<string | null>(null);
+  const [schemaId, setSchemaId] = useState<string | null>(lockedSchemaId ?? null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1355,10 +1385,22 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
 
   // The badge on the collapsed disclosure: how many options differ from the defaults.
   const activeOptions =
-    (schemaId ? 1 : 0) + (filter ? 1 : 0) + (topK !== 10 ? 1 : 0) + (collapse ? 1 : 0);
+    (schemaId && !lockedSchemaId ? 1 : 0) +
+    (filter ? 1 : 0) +
+    (topK !== 10 ? 1 : 0) +
+    (collapse ? 1 : 0);
 
   return (
-    <Section title="Search" tab description="Hybrid vector + keyword search, reranked.">
+    <Section
+      title="Search"
+      tab={!lockedSchemaId}
+      sub={!!lockedSchemaId}
+      description={
+        lockedSchemaId
+          ? `Hybrid search over this schema's documents, filtered by its fields.`
+          : "Hybrid vector + keyword search, reranked."
+      }
+    >
       <div className="flex gap-3">
         <div className="relative flex-1">
           <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -1368,7 +1410,7 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
             onKeyDown={(e) => e.key === "Enter" && run()}
             placeholder="Ask something…"
             className="pl-10 h-12 text-lg"
-            autoFocus
+            autoFocus={!lockedSchemaId}
           />
         </div>
         <Button onClick={run} disabled={loading || !query.trim()} className="h-12 px-8">
@@ -1437,7 +1479,7 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
               fields={filterable}
               schemas={schemas.map((schema) => schema.schema_id)}
               schemaId={schemaId}
-              onSchemaChange={setSchemaId}
+              onSchemaChange={lockedSchemaId ? () => {} : setSchemaId}
               onChange={setFilter}
             />
           </Section2>
@@ -1488,10 +1530,9 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
   const [saving, setSaving] = useState(false);
   const [newId, setNewId] = useState("");
   const [creating, setCreating] = useState(false);
-  // A schema is read far more often than it is changed, so the right pane opens on the
+  // A schema is read far more often than it is changed, so the page opens on the
   // fields and the form is one click away.
   const [editing, setEditing] = useState(false);
-  const [pane, setPane] = useState<"schema" | "data">("schema");
   // A saved schema changes what the next write extracts; whether it also re-reads what
   // is already stored costs LLM calls, so it is asked rather than assumed.
   const [pendingSave, setPendingSave] = useState<SchemaDraft | null>(null);
@@ -1604,7 +1645,6 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
             onSelect={(id) => {
               setSelected(id);
               setEditing(false);
-              setPane("schema");
             }}
           />
         </div>
@@ -1615,31 +1655,29 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
           No schemas yet. Create one to give documents fields that search and query can filter on.
         </p>
       ) : view === "diagram" ? null : (
-        // List on the left, the schema itself on the right: picking one is a move of the
-        // eye rather than a scroll past the table you were just reading.
-        <div className="grid gap-5 md:grid-cols-[minmax(200px,260px)_1fr] items-start">
-          <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+        // The schemas as a row of pills, like the collections: the page below gets the
+        // full width, which the documents table needs for one column per field.
+        <div className="space-y-4">
+          <div className="flex gap-1 overflow-x-auto rounded-lg border border-border bg-muted/40 p-1">
             {schemas.map((schema) => (
               <button
                 key={schema.schema_id}
                 onClick={() => {
                   setSelected(schema.schema_id);
                   setEditing(false);
-                  setPane("schema");
                 }}
-                className={`w-full text-left px-3 py-2.5 transition-colors ${
-                  schema.schema_id === selected ? "bg-accent" : "hover:bg-muted/50"
+                title={schema.name ?? undefined}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  schema.schema_id === selected
+                    ? "bg-background font-semibold text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                <div className="font-mono text-xs">{schema.schema_id}</div>
-                {schema.name && (
-                  <div className="text-xs text-muted-foreground truncate">{schema.name}</div>
-                )}
-                <div className="text-[11px] text-muted-foreground mt-0.5">
-                  {Object.keys(schema.document_fields).length +
-                    Object.keys(schema.passage_fields).length}{" "}
-                  fields · {schema.documents_with_fields} filled
-                </div>
+                <Tags className="h-3.5 w-3.5" />
+                <span className="font-mono">{schema.schema_id}</span>
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  {schema.documents ?? 0}
+                </span>
               </button>
             ))}
           </div>
@@ -1658,7 +1696,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                     </p>
                   </div>
                   <div className="flex gap-2 shrink-0">
-                    {pane === "schema" && !editing && (
+                    {!editing && (
                       <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                         Edit
                       </Button>
@@ -1690,29 +1728,8 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
 
                 <SchemaFillCard schema={current} />
 
-                {/* Its definition, and what that definition actually caught. */}
-                <div className="border-b border-border mb-4 flex">
-                  {(["schema", "data"] as const).map((item) => (
-                    <button
-                      key={item}
-                      onClick={() => setPane(item)}
-                      className={`px-4 py-2 text-sm font-semibold transition-all relative capitalize ${
-                        pane === item
-                          ? "text-primary"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {item}
-                      {pane === item && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-gradient" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-
-                {pane === "data" ? (
-                  <SchemaDocuments kbId={kbId} schemaId={current.schema_id} />
-                ) : editing ? (
+                {/* Its definition first — bounded in size — then what it actually caught. */}
+                {editing ? (
                   /* Remounted per schema, so switching never carries one schema's edits
                      into another's. */
                   <SchemaEditor
@@ -1729,6 +1746,25 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
                 ) : (
                   <ErdDiagram nodes={[schemaCard(current)]} edges={[]} />
                 )}
+
+                {/* Remounted per schema, so a query never carries over to another one. */}
+                <div className="mt-8">
+                  <SearchPanel
+                    key={current.schema_id}
+                    kbId={kbId}
+                    schemas={schemas}
+                    lockedSchemaId={current.schema_id}
+                  />
+                </div>
+
+                <div className="mt-8">
+                  <h2 className="text-lg font-semibold text-foreground mb-3">Documents</h2>
+                  <SchemaDocuments
+                    kbId={kbId}
+                    schemaId={current.schema_id}
+                    fields={Object.keys(current.document_fields)}
+                  />
+                </div>
               </>
             )}
           </div>
@@ -1845,14 +1881,26 @@ function SchemaFillCard({ schema }: { schema: KnowledgeSchema }) {
   );
 }
 
-function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string }) {
+function SchemaDocuments({
+  kbId,
+  schemaId,
+  fields,
+}: {
+  kbId: string;
+  schemaId: string;
+  /** The schema's document fields, one column each. */
+  fields: string[];
+}) {
   const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+
+  useEffect(() => setPage(0), [schemaId]);
 
   useEffect(() => {
     let live = true;
     kbFetch<{ items: KnowledgeDocument[]; total: number }>(
-      `/${encodeURIComponent(kbId)}/documents?limit=100&schema_id=${encodeURIComponent(schemaId)}`
+      `/${encodeURIComponent(kbId)}/documents?limit=${DOCUMENTS_PER_PAGE}&offset=${page * DOCUMENTS_PER_PAGE}&schema_id=${encodeURIComponent(schemaId)}`
     )
       .then((page) => {
         if (!live) return;
@@ -1863,7 +1911,7 @@ function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string })
     return () => {
       live = false;
     };
-  }, [kbId, schemaId]);
+  }, [kbId, schemaId, page]);
 
   if (!documents) return <Spinner />;
   if (documents.length === 0) {
@@ -1873,15 +1921,16 @@ function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string })
   }
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">
-        {total} document{total === 1 ? "" : "s"} read with this schema.
-      </p>
       <TableFrame>
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Document</TableHead>
-              <TableHead>Fields</TableHead>
+              {fields.map((field) => (
+                <TableHead key={field} className="font-mono text-xs">
+                  {field}
+                </TableHead>
+              ))}
               <TableHead className="text-right w-24">Passages</TableHead>
             </TableRow>
           </TableHeader>
@@ -1892,15 +1941,28 @@ function SchemaDocuments({ kbId, schemaId }: { kbId: string; schemaId: string })
                   {doc.doc_id}
                   {doc.title && <div className="text-xs text-muted-foreground">{doc.title}</div>}
                 </TableCell>
-                <TableCell>
-                  <FieldChips values={doc.fields} />
-                </TableCell>
+                {fields.map((field) => (
+                  <TableCell key={field} className="text-sm">
+                    {doc.fields[field] === undefined || doc.fields[field] === null ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      formatFieldValue(doc.fields[field])
+                    )}
+                  </TableCell>
+                ))}
                 <TableCell className="text-right text-xs">{doc.passage_count}</TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </TableFrame>
+      <Pager
+        page={page}
+        total={total}
+        perPage={DOCUMENTS_PER_PAGE}
+        noun="document"
+        onPage={setPage}
+      />
     </div>
   );
 }
@@ -2267,6 +2329,55 @@ function collectionCard(collection: KnowledgeCollection): ErdNode {
 
 const RECORDS_PER_PAGE = 25;
 
+/** Previous / Next under a server-paginated table: documents, a schema's documents,
+ *  a collection's records. */
+function Pager({
+  page,
+  total,
+  perPage,
+  noun,
+  onPage,
+}: {
+  page: number;
+  total: number;
+  perPage: number;
+  noun: string;
+  onPage: (page: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(total / perPage));
+  return (
+    <div className="flex items-center justify-between text-xs text-muted-foreground">
+      <span>
+        {total.toLocaleString()} {noun}
+        {total === 1 ? "" : "s"}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={page === 0}
+          onClick={() => onPage(Math.max(0, page - 1))}
+        >
+          Previous
+        </Button>
+        <span className="tabular-nums">
+          {page + 1} / {pages}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={page + 1 >= pages}
+          onClick={() => onPage(page + 1)}
+        >
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const DOCUMENTS_PER_PAGE = 50;
+
 /** The records themselves: a page at a time, with the query language above them. A row
  *  opens the record, because a folded record is only trustworthy with its evidence. */
 function CollectionRecords({
@@ -2339,7 +2450,6 @@ function CollectionRecords({
 
   const columns = collection ? Object.keys(collection.fields) : [];
   const total = records?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / RECORDS_PER_PAGE));
 
   return (
     <div className="space-y-4">
@@ -2484,32 +2594,13 @@ function CollectionRecords({
             </Table>
           </TableFrame>
 
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>
-              {total.toLocaleString()} record{total === 1 ? "" : "s"}
-            </span>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                Previous
-              </Button>
-              <span className="tabular-nums">
-                {page + 1} / {pages}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={page + 1 >= pages}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next
-              </Button>
-            </div>
-          </div>
+          <Pager
+            page={page}
+            total={total}
+            perPage={RECORDS_PER_PAGE}
+            noun="record"
+            onPage={setPage}
+          />
         </>
       )}
 

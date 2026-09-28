@@ -12,7 +12,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, Undo2 } from "lucide-react";
+import { Plus, Sparkles, Trash2, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +26,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { kbFetch, type KnowledgeCollection } from "@/components/knowledge-bank-api";
+import {
+  kbFetch,
+  type CollectionProposal,
+  type KnowledgeCollection,
+} from "@/components/knowledge-bank-api";
 import { cn } from "@/lib/utils";
 
 const FIELD_TYPES = [
@@ -198,6 +202,8 @@ export function CollectionsEditor({
   const [drafts, setDrafts] = React.useState<DraftCollection[]>([]);
   const [selectedKey, setSelectedKey] = React.useState<number | null>(null);
   const [applying, setApplying] = React.useState(false);
+  const [proposing, setProposing] = React.useState(false);
+  const [instruction, setInstruction] = React.useState("");
 
   // The draft is taken when the dialog opens, so edits are never overwritten by a
   // refresh happening behind it.
@@ -237,6 +243,70 @@ export function CollectionsEditor({
     };
     setDrafts((prev) => [...prev, draft]);
     setSelectedKey(draft.key);
+  };
+
+  /** Ask the model what this corpus deserves and stage its answer as edits.
+   *
+   *  The proposal lands in the same draft as everything else and is applied by the same
+   *  Apply — the model cannot write to the bank, and a suggestion nobody reads changes
+   *  nothing. */
+  const propose = async () => {
+    setProposing(true);
+    try {
+      const response = await kbFetch<{
+        proposals: CollectionProposal[];
+        documents_read: number;
+        warnings: string[];
+      }>(`/${encodeURIComponent(kbId)}/collections/propose`, {
+        method: "POST",
+        body: { instruction: instruction.trim() || undefined, sample_documents: 12 },
+      });
+      if (response.proposals.length === 0) {
+        toast.info(`Read ${response.documents_read} documents and had nothing to suggest.`);
+        return;
+      }
+      setDrafts((prev) => {
+        const next = [...prev];
+        for (const proposal of response.proposals) {
+          const index = next.findIndex((d) => d.id === proposal.collection_id);
+          if (proposal.action === "delete") {
+            if (index >= 0) next[index] = { ...next[index], deleted: true };
+            continue;
+          }
+          const definition = proposal.definition;
+          if (!definition) continue;
+          const staged: DraftCollection = {
+            key: index >= 0 ? next[index].key : nextKey++,
+            id: proposal.collection_id,
+            originalId: index >= 0 ? next[index].originalId : null,
+            name: definition.name ?? "",
+            description: definition.description ?? "",
+            identity: definition.identity ?? "",
+            deriveOnWrite: index >= 0 ? next[index].deriveOnWrite : false,
+            deleted: false,
+            fields: Object.entries(definition.fields ?? {}).map(([name, spec]) => ({
+              key: nextKey++,
+              name,
+              type: spec.collection ? "relationship" : (spec.type ?? "string"),
+              collection: spec.collection ?? "",
+              values: Array.isArray(spec.values) ? spec.values.map(String).join(", ") : "",
+              description: spec.description ?? "",
+            })),
+          };
+          if (index >= 0) next[index] = staged;
+          else next.push(staged);
+        }
+        return next;
+      });
+      for (const warning of response.warnings) toast.warning(warning);
+      toast.success(
+        `Staged ${response.proposals.length} suggestion${response.proposals.length === 1 ? "" : "s"} from ${response.documents_read} documents. Nothing is written until Apply.`
+      );
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setProposing(false);
+    }
   };
 
   /** What is wrong with the draft, in words, or nothing. */
@@ -355,6 +425,16 @@ export function CollectionsEditor({
             </div>
             <Button variant="outline" size="sm" onClick={addCollection}>
               <Plus className="h-4 w-4 mr-1" /> Add collection
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={proposing}
+              onClick={propose}
+              title="Read some documents and suggest collections"
+            >
+              {proposing ? <Spinner size="sm" /> : <Sparkles className="h-4 w-4 mr-1" />}
+              Suggest from documents
             </Button>
           </div>
 
@@ -582,6 +662,13 @@ export function CollectionsEditor({
             )}
           </div>
         </div>
+
+        <Input
+          className="h-8 text-xs"
+          placeholder="What do you want out of this bank? (optional, steers the suggestion)"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+        />
 
         <DialogFooter className="items-center sm:justify-between">
           <div className="text-xs text-muted-foreground">

@@ -263,3 +263,113 @@ async def derive_records(
         if values:
             out.append({"values": values, "evidence": {k: v for k, v in evidence.items() if k in values}})
     return out
+
+
+# ---- proposing collections
+
+
+class ProposedField(BaseModel):
+    """One field of a proposed collection.
+
+    Flat and closed on purpose: a free-form dict becomes ``additionalProperties`` in the
+    JSON schema, which the Gemini Developer API refuses outright. The API's nested shape
+    is built from this after the call, not asked of the model.
+    """
+
+    name: str = Field(description="snake_case field name")
+    type: Literal["string", "integer", "number", "boolean", "date", "datetime", "array"] = "string"
+    description: str = Field(default="", description="What this field is, in the documents' words")
+    values: list[str] = Field(default_factory=list, description="The allowed values, if it is a classification")
+    collection: str = Field(
+        default="",
+        description="Another collection's id when this field points at one of its records; otherwise empty",
+    )
+
+
+class ProposedCollection(BaseModel):
+    """One change a proposal suggests. Nothing here is applied by the model."""
+
+    action: Literal["create", "update", "delete"] = "create"
+    collection_id: str = Field(description="snake_case id, plural, e.g. vendors")
+    name: str = ""
+    description: str = Field(default="", description="What one record of this collection is")
+    identity: str = Field(
+        default="",
+        description="The field that says WHICH thing a record is, so the same thing found twice is one record",
+    )
+    fields: list[ProposedField] = Field(default_factory=list)
+    reason: str = Field(default="", description="Why this collection, in one sentence, from the documents")
+
+
+class CollectionProposal(BaseModel):
+    collections: list[ProposedCollection] = Field(default_factory=list)
+
+
+_PROPOSE_SYSTEM = (
+    "You design collections for a knowledge bank. A collection is a kind of thing the documents "
+    "talk about — a vendor, a contract, an incident — and each record folds together what every "
+    "document said about one of them.\n"
+    "Rules:\n"
+    "- Propose only what the documents shown actually support. A field no document answers is a "
+    "field that will sit empty forever.\n"
+    "- Every collection needs an identity field: the one that says WHICH thing a record is, so the "
+    "same thing named in two documents becomes one record.\n"
+    "- Use a relationship (the `collection` key on a field) when a field's value IS another "
+    "collection's record, rather than repeating that thing's attributes.\n"
+    "- Keep what already exists unless it is wrong: 'update' an existing collection only to add or "
+    "fix fields, and give the full field list you want it to end with.\n"
+    "- Prefer few collections that earn their place over a schema of everything."
+)
+
+
+async def propose_collections(
+    llm: Any,
+    *,
+    instruction: str | None,
+    existing: list[dict[str, Any]],
+    documents: list[dict[str, str]],
+) -> list[ProposedCollection]:
+    """Ask the LLM what collections this corpus deserves. It proposes; it never writes.
+
+    The existing collections are sent too, so the answer is a change to what is there
+    rather than a design that ignores it.
+    """
+    lines = ["Collections that already exist:"]
+    if existing:
+        for collection in existing:
+            fields = ", ".join(
+                f"{name} ({spec.get('collection') or spec.get('type', 'string')})"
+                for name, spec in (collection.get("fields") or {}).items()
+            )
+            lines.append(
+                f"- {collection['collection_id']}: identity={collection.get('identity') or 'none'}; fields: {fields or 'none'}"
+            )
+    else:
+        lines.append("- none yet")
+
+    lines.append("\nDocuments from this bank:")
+    for document in documents:
+        heading = document.get("title") or document["doc_id"]
+        lines.append(f"\n### {heading}\n{document['text']}")
+
+    if instruction:
+        lines.append(f"\nWhat the user asked for:\n{instruction}")
+
+    messages = [
+        {"role": "system", "content": _PROPOSE_SYSTEM},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+    try:
+        result = await llm.call(
+            messages=messages, response_format=CollectionProposal, scope="knowledge_collection_proposal"
+        )
+    except Exception as e:
+        logger.warning("knowledge collection proposal failed: %s", e)
+        raise
+
+    content = result.content
+    if isinstance(content, CollectionProposal):
+        return list(content.collections)
+    if isinstance(content, dict):
+        return list(CollectionProposal.model_validate(content).collections)
+    return []

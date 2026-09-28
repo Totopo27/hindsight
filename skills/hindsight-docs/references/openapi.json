@@ -2035,6 +2035,73 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/collections/propose": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Ask the model what collections this corpus deserves",
+        "description": "Reads a sample of the bank's documents and the collections it already has, and answers with changes to make: create, update or delete, each with the definition and why. Nothing is written \u2014 applying a proposal is the caller's PUT or DELETE, deliberately, because a schema change re-reads the corpus and costs an LLM call per document.",
+        "operationId": "propose_collections_v1_default_knowledge_banks__kb__collections_propose_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposeCollectionsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/stats": {
       "get": {
         "tags": [
@@ -19293,6 +19360,33 @@
         "type": "object",
         "title": "PromptPreviewResponse",
         "description": "The messages one call of the requested operation would send.\n\n`messages` is in send order, system first. Both are always present because a\nmission is not necessarily in the system prompt: retain and consolidation keep\ntheir system prompt bank-agnostic (so one provider-side cache serves every bank)\nand carry the mission in the user message instead.\n\nWhen `skipped_reason` is set the configuration means no prompt is sent at all \u2014\n`chunks` extraction mode stores each chunk verbatim and never calls an LLM \u2014 and\n`messages` is empty."
+      },
+      "ProposeCollectionsRequest": {
+        "properties": {
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction",
+            "description": "What the caller wants out of this bank, in their words"
+          },
+          "sample_documents": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Sample Documents",
+            "description": "How many of the most recent documents the model reads",
+            "default": 12
+          }
+        },
+        "type": "object",
+        "title": "ProposeCollectionsRequest",
+        "description": "What to take into account when proposing collections."
       },
       "QueryRequest": {
         "properties": {
