@@ -214,16 +214,18 @@ export function SchemaEditor({
             </div>
           </div>
 
-          <div className="rounded-lg border border-border overflow-hidden">
-            <table className="w-full text-sm">
+          {/* The pane this sits in is a right-hand column, so the columns are given a
+              floor and the frame scrolls rather than squeezing "Description" to nothing. */}
+          <div className="rounded-lg border border-border overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
                   <th className="text-left font-medium px-3 py-2 w-48">Field</th>
                   <th className="text-left font-medium px-3 py-2 w-32">Level</th>
                   <th className="text-left font-medium px-3 py-2 w-32">Type</th>
                   <th className="text-left font-medium px-3 py-2">Description</th>
-                  <th className="text-left font-medium px-3 py-2 w-48">Values</th>
-                  <th className="text-left font-medium px-3 py-2 w-40">Flags</th>
+                  <th className="text-left font-medium px-3 py-2 w-44">Values</th>
+                  <th className="text-left font-medium px-3 py-2 w-28">Flags</th>
                   <th className="w-10" />
                 </tr>
               </thead>

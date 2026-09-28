@@ -56,6 +56,7 @@ function Section({
   description,
   action,
   sub,
+  tab,
   children,
 }: {
   title: string;
@@ -64,19 +65,21 @@ function Section({
   /** A block within a view rather than the view itself: same shape, quieter heading,
    *  so one page does not read as three pages stacked. */
   sub?: boolean;
+  /** The view is a tab, and the tab bar above it is its title — so it prints none. */
+  tab?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className={`flex items-start justify-between gap-4 ${sub ? "mb-3" : "mb-6"}`}>
+      <div className={`flex items-start justify-between gap-4 ${sub || tab ? "mb-3" : "mb-6"}`}>
         <div>
-          {sub ? (
+          {tab ? null : sub ? (
             <h2 className="text-lg font-semibold text-foreground">{title}</h2>
           ) : (
             <h1 className="text-3xl font-bold mb-2 text-foreground">{title}</h1>
           )}
           {description && (
-            <p className={sub ? "text-sm text-muted-foreground" : "text-muted-foreground"}>
+            <p className={sub || tab ? "text-sm text-muted-foreground" : "text-muted-foreground"}>
               {description}
             </p>
           )}
@@ -264,6 +267,13 @@ function DocumentsSection({
   ];
   return (
     <div>
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2 text-foreground">Knowledge</h1>
+        <p className="text-muted-foreground">
+          The documents in this bank, the schemas that give them fields, and search over their
+          passages.
+        </p>
+      </div>
       <div className="border-b border-border mb-5 flex">
         {tabs.map((item) => (
           <button
@@ -402,6 +412,7 @@ function Documents({
   return (
     <Section
       title="Documents"
+      tab
       description={`${total} documents. Writes are queued as operations and run in the background.`}
       action={
         <Button size="sm" onClick={() => setAdding(true)}>
@@ -821,7 +832,7 @@ function SearchPanel({ kbId, schemas }: { kbId: string; schemas: KnowledgeSchema
   );
 
   return (
-    <Section title="Search" description="Hybrid vector + keyword search, reranked.">
+    <Section title="Search" tab description="Hybrid vector + keyword search, reranked.">
       <form
         className="flex gap-2"
         onSubmit={(e) => {
@@ -899,6 +910,9 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
   const [saving, setSaving] = useState(false);
   const [newId, setNewId] = useState("");
   const [creating, setCreating] = useState(false);
+  // A schema is read far more often than it is changed, so the right pane opens on the
+  // fields and the form is one click away.
+  const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
     const response = await kbFetch<{ items: KnowledgeSchema[] }>(
@@ -968,6 +982,7 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
   return (
     <Section
       title="Schemas"
+      tab
       description="A schema is the fields one kind of document has. A bank with several lets the LLM classify which one a document is."
       action={
         <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
@@ -980,85 +995,99 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
           No schemas yet. Create one to give documents fields that search and query can filter on.
         </p>
       ) : (
-        <>
-          <TableFrame>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Schema</TableHead>
-                  <TableHead>Fields</TableHead>
-                  <TableHead className="text-right">Filled</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {schemas.map((schema) => (
-                  <TableRow
-                    key={schema.schema_id}
-                    onClick={() => setSelected(schema.schema_id)}
-                    className={`cursor-pointer ${schema.schema_id === selected ? "bg-accent/40" : ""}`}
-                  >
-                    <TableCell className="font-mono text-xs">
-                      {schema.schema_id}
-                      {schema.name && (
-                        <div className="text-xs text-muted-foreground">{schema.name}</div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {[
-                        ...Object.keys(schema.document_fields),
-                        ...Object.keys(schema.passage_fields).map((name) => `${name} (passage)`),
-                      ].join(", ") || "—"}
-                    </TableCell>
-                    <TableCell className="text-right text-xs">
-                      {schema.documents_with_fields} doc / {schema.passages_with_fields} psg
-                    </TableCell>
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        title="Delete"
-                        onClick={() => remove(schema.schema_id)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableFrame>
-
-          {current && (
-            <div className="mt-6">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold font-mono">{current.schema_id}</div>
-                  <p className="text-xs text-muted-foreground">
-                    Saved changes apply to the next write; run the extraction to fill documents
-                    already stored.
-                  </p>
-                </div>
-                <Button size="sm" variant="outline" onClick={extract}>
-                  Extract documents missing values
-                </Button>
-              </div>
-              {/* Remounted per schema, so switching never carries one schema's edits
-                  into another's. */}
-              <SchemaEditor
-                key={current.schema_id}
-                initial={{
-                  name: current.name,
-                  description: current.description,
-                  document_fields: current.document_fields,
-                  passage_fields: current.passage_fields,
+        // List on the left, the schema itself on the right: picking one is a move of the
+        // eye rather than a scroll past the table you were just reading.
+        <div className="grid gap-5 md:grid-cols-[minmax(200px,260px)_1fr] items-start">
+          <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+            {schemas.map((schema) => (
+              <button
+                key={schema.schema_id}
+                onClick={() => {
+                  setSelected(schema.schema_id);
+                  setEditing(false);
                 }}
-                saving={saving}
-                onSave={(next: SchemaDraft) => save(current.schema_id, next)}
-              />
-            </div>
-          )}
-        </>
+                className={`w-full text-left px-3 py-2.5 transition-colors ${
+                  schema.schema_id === selected ? "bg-accent" : "hover:bg-muted/50"
+                }`}
+              >
+                <div className="font-mono text-xs">{schema.schema_id}</div>
+                {schema.name && (
+                  <div className="text-xs text-muted-foreground truncate">{schema.name}</div>
+                )}
+                <div className="text-[11px] text-muted-foreground mt-0.5">
+                  {Object.keys(schema.document_fields).length +
+                    Object.keys(schema.passage_fields).length}{" "}
+                  fields · {schema.documents_with_fields} filled
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div>
+            {!current ? (
+              <p className="text-sm text-muted-foreground">Pick a schema to see its fields.</p>
+            ) : (
+              <>
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-mono text-sm font-semibold">{current.schema_id}</div>
+                    <p className="text-xs text-muted-foreground">
+                      {current.description ||
+                        "Filled on the next write; run the extraction for documents already stored."}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <Button size="sm" variant="outline" onClick={() => setEditing((v) => !v)}>
+                      {editing ? "Done" : "Edit"}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={extract}>
+                      Extract
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title="Delete schema"
+                      onClick={() => remove(current.schema_id)}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                {editing ? (
+                  /* Remounted per schema, so switching never carries one schema's edits
+                     into another's. */
+                  <SchemaEditor
+                    key={current.schema_id}
+                    initial={{
+                      name: current.name,
+                      description: current.description,
+                      document_fields: current.document_fields,
+                      passage_fields: current.passage_fields,
+                    }}
+                    saving={saving}
+                    onSave={(next: SchemaDraft) => save(current.schema_id, next)}
+                  />
+                ) : (
+                  <div className="space-y-4">
+                    <SchemaFields
+                      title="Document fields"
+                      fields={current.document_fields}
+                      filled={current.documents_with_fields}
+                      noun="document"
+                    />
+                    <SchemaFields
+                      title="Passage fields"
+                      fields={current.passage_fields}
+                      filled={current.passages_with_fields}
+                      noun="passage"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       <Dialog open={creating} onOpenChange={setCreating}>
@@ -1079,6 +1108,66 @@ function SchemaPanel({ kbId, onSaved }: { kbId: string; onSaved?: () => void }) 
         </DialogContent>
       </Dialog>
     </Section>
+  );
+}
+
+/** A schema's fields, read rather than edited: one line each, with the flags and the
+ *  allowed values that decide what a search can do with them. */
+function SchemaFields({
+  title,
+  fields,
+  filled,
+  noun,
+}: {
+  title: string;
+  fields: Record<string, SchemaField>;
+  filled: number;
+  noun: string;
+}) {
+  const entries = Object.entries(fields || {});
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-2">
+        <span className="text-sm font-semibold">{title}</span>
+        <span className="text-xs text-muted-foreground">
+          {entries.length} field{entries.length === 1 ? "" : "s"} · filled on {filled} {noun}
+          {filled === 1 ? "" : "s"}
+        </span>
+      </div>
+      {entries.length === 0 ? (
+        <p className="text-xs text-muted-foreground">None.</p>
+      ) : (
+        <div className="rounded-lg border border-border divide-y divide-border">
+          {entries.map(([name, spec]) => (
+            <div key={name} className="px-3 py-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span className="font-mono text-xs">{name}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {spec.type}
+                {spec.type === "array" && spec.items ? ` of ${spec.items}` : ""}
+              </span>
+              {spec.filterable && (
+                <span className="rounded bg-blue-100 dark:bg-blue-500/20 px-1.5 py-0.5 text-[10px]">
+                  filterable
+                </span>
+              )}
+              {spec.indexed && (
+                <span className="rounded bg-emerald-100 dark:bg-emerald-500/20 px-1.5 py-0.5 text-[10px]">
+                  indexed
+                </span>
+              )}
+              {spec.values && spec.values.length > 0 && (
+                <span className="text-[11px] text-muted-foreground">
+                  {spec.values.map(String).join(" · ")}
+                </span>
+              )}
+              {spec.description && (
+                <span className="w-full text-[11px] text-muted-foreground">{spec.description}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1535,8 +1624,8 @@ function SettingsPanel({
   return (
     <div>
       <div className="mb-6">
-        <h2 className="text-[20px] font-semibold leading-[26px]">Settings</h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <h1 className="text-3xl font-bold mb-2 text-foreground">Settings</h1>
+        <p className="text-muted-foreground">
           What is in this bank, what it is doing, and how it is configured.
         </p>
       </div>
@@ -1616,7 +1705,7 @@ function Configuration({ kbId }: { kbId: string }) {
 
   if (!config) return <Spinner />;
   return (
-    <Section title="Configuration" description="Chunking and search settings for this bank.">
+    <Section title="Configuration" tab description="Chunking and search settings for this bank.">
       <div className="grid gap-3 md:grid-cols-2">
         {fields.map((field) => (
           <label key={field} className="text-sm space-y-1">
