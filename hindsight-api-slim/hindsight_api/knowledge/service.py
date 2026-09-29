@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+
 from ..config import get_config
 from ..engine.db_utils import acquire_with_retry
 from ..engine.llm_wrapper import sanitize_llm_output
@@ -28,12 +29,11 @@ from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
 from ..engine.schema import fq_table
 from ..engine.storage import bank_storage_prefix
 from . import collections as collections_store
-from . import store
+from . import extraction, store
 from .extraction import (
     chat_about_collections,
     classify_schema,
     collections_context,
-    derive_records,
     extract_document,
     extract_passages,
 )
@@ -52,6 +52,15 @@ logger = logging.getLogger(__name__)
 #: overhead: at 8 the pipeline ran at a third of the embedding model's own throughput.
 _EMBED_BATCH_DOCUMENTS = 64
 MAX_BATCH_DOCUMENTS = 500
+#: How much of a document's opening travels with every later slice of it, and how much
+#: of the corpus's openings the link pass is shown. A contract's parties and a play's
+#: cast list live there, and a slice is all the model sees.
+_SLICE_HEAD_CHARS = 2000
+_LINK_EVIDENCE_CHARS = 24000
+#: How much of a document's opening travels with every later window of it. Enough for a
+#: contract's parties or a play's cast list, small enough that repeating it is cheaper
+#: than the second pass that would otherwise have to go and find it.
+_WINDOW_HEAD_CHARS = 2000
 
 
 class KnowledgeBankError(Exception):
@@ -155,6 +164,14 @@ def indexed_values(
             if spec.get("indexed") and values.get(name) not in (None, [], {}):
                 indexed[name] = values[name]
     return indexed
+
+
+@dataclass(frozen=True)
+class LinkPassOutcome:
+    """What the link pass did: links written, and what it spent doing it."""
+
+    placed: int
+    calls: int
 
 
 class KnowledgeService:
@@ -749,7 +766,7 @@ class KnowledgeService:
         description: str | None,
         fields: Any,
         identity: str | None,
-        derive_on_write: bool = False,
+        derive_on_write: bool = True,
         reprocess: bool = False,
     ) -> dict[str, Any]:
         """Define or redefine a collection, and say what the change did to its records.
@@ -924,16 +941,24 @@ class KnowledgeService:
             await collections_store.materialize(conn, bank_id, collection_id, record_id)
         return await self.get_record(bank_id, collection_id, record_id)
 
-    async def _derivation_windows(self, pool: Any, bank_id: str, row: Any, char_limit: int) -> list[str]:
-        """One document as the windows a derivation reads, largest that still fit.
+    # ---- deriving records
 
-        Passages are what the bank already cut the document into, so they are the unit:
-        consecutive ones are packed up to ``char_limit`` and each pack is one prompt. A
-        document with no passages yet (or one short enough to fit) is a single window of
-        its own text, which is what the whole corpus used to be.
+    async def _slices(self, pool: Any, bank_id: str, row: Any, size: int) -> list[str]:
+        """One document as the slices a derivation reads.
+
+        The passages the bank already cut are the unit — packed up to ``size`` and each
+        pack is one prompt. A document used to be sent whole and truncated at the field
+        limit, so anything past the cut was never read and nothing said so: invisible on
+        a corpus of paragraphs, total on a real one. On thirty pages of a play the cast
+        past the cut simply did not exist.
+
+        Every slice after the first carries the document's opening. What a document
+        establishes it establishes at the top — the parties of a contract, the cast list
+        of a play — and a slice is all the model sees.
         """
-        if len(row["text"] or "") <= char_limit:
-            return [row["text"] or ""]
+        text = row["text"] or ""
+        if len(text) <= size:
+            return [text]
         async with acquire_with_retry(pool) as conn:
             passages = await conn.fetch(
                 f"SELECT text FROM {store.fq_table('kb_passages')} "
@@ -942,43 +967,163 @@ class KnowledgeService:
                 row["doc_id"],
             )
         if not passages:
-            return [row["text"][:char_limit]]
-        windows: list[str] = []
+            return [text[i : i + size] for i in range(0, len(text), size)]
+        head = text[:_SLICE_HEAD_CHARS]
+        budget = max(size - len(head), size // 2)
+        slices: list[str] = []
         current = ""
         for passage in passages:
-            text = passage["text"] or ""
-            if current and len(current) + len(text) + 2 > char_limit:
-                windows.append(current)
-                current = text
+            body = passage["text"] or ""
+            if current and len(current) + len(body) + 2 > budget:
+                slices.append(current)
+                current = body
             else:
-                current = f"{current}\n\n{text}" if current else text
+                current = f"{current}\n\n{body}" if current else body
         if current:
-            windows.append(current)
-        return windows
+            slices.append(current)
+        return [slices[0]] + [f"{head}\n\n[...]\n\n{rest}" for rest in slices[1:]]
 
-    async def _relationship_candidates(
-        self, conn: Any, bank_id: str, collection: dict[str, Any], limit: int = 200
-    ) -> list[str]:
-        """The records this collection's relationships may point at, as ``field: name``.
-
-        Capped: a prompt cannot carry a million records, and past a point the list stops
-        helping a model choose. Beyond the cap the value falls back to what the document
-        says, which resolution still tries to match.
-        """
-        lines: list[str] = []
-        for name, target in collections_store.relationships(collection.get("fields") or {}).items():
-            rows = await conn.fetch(
-                f"SELECT record_id FROM {store.fq_table('kb_records')} "
-                "WHERE bank_id = $1 AND collection_id = $2 ORDER BY record_id LIMIT $3",
-                bank_id,
-                target,
-                limit,
+    async def _specs(
+        self, conn: Any, bank_id: str, collections: list[dict[str, Any]]
+    ) -> list[extraction.CollectionSpec]:
+        """The collections as a slice is asked about them, with their link candidates."""
+        specs = []
+        for collection in collections:
+            fields = collection.get("fields") or {}
+            relationships = collections_store.relationships(fields)
+            candidates: list[str] = []
+            for name, target in relationships.items():
+                rows = await conn.fetch(
+                    f"SELECT record_id FROM {store.fq_table('kb_records')} "
+                    "WHERE bank_id = $1 AND collection_id = $2 ORDER BY record_id LIMIT 100",
+                    bank_id,
+                    target,
+                )
+                candidates.extend(f"{name} -> {row['record_id']}" for row in rows)
+            specs.append(
+                extraction.CollectionSpec(
+                    collection_id=collection["collection_id"],
+                    name=collection.get("name") or collection["collection_id"],
+                    description=collection.get("description"),
+                    # A relationship is a plain string to the model: it names the thing,
+                    # and resolution turns the name into the record's id.
+                    fields={
+                        **{name: spec for name, spec in fields.items() if not spec.get("collection")},
+                        **{name: {"type": "string"} for name in relationships},
+                    },
+                    candidates=candidates,
+                )
             )
-            lines.extend(f"{name}: {row['record_id']}" for row in rows)
-        return lines
+        return specs
+
+    async def _link_pass(
+        self,
+        pool: Any,
+        bank_id: str,
+        collection: dict[str, Any],
+        *,
+        seen: dict[str, list[str]],
+        llm: Any,
+        config: Any,
+    ) -> "LinkPassOutcome":
+        """Place the records no single slice could place, one call per relationship.
+
+        Not one call per gap: the model is given every unplaced record at once, the
+        closed list of what they may point at, and the text they were read from. A
+        document that never says "Tybalt is a Capulet" in those words still says it by
+        listing him among them, and only a model looking at the whole set can see that.
+        """
+        collection_id = collection["collection_id"]
+        relationships = collections_store.relationships(collection.get("fields") or {})
+        if not relationships or not getattr(config, "kb_link_pass", True):
+            return LinkPassOutcome(placed=0, calls=0)
+        linked = 0
+        calls = 0
+        for name, target in relationships.items():
+            async with acquire_with_retry(pool) as conn:
+                candidates = [
+                    row["record_id"]
+                    for row in await conn.fetch(
+                        f"SELECT record_id FROM {store.fq_table('kb_records')} "
+                        "WHERE bank_id = $1 AND collection_id = $2 ORDER BY record_id LIMIT 200",
+                        bank_id,
+                        target,
+                    )
+                ]
+                gaps = [
+                    row["record_id"]
+                    for row in await conn.fetch(
+                        f"""
+                        SELECT r.record_id FROM {store.fq_table("kb_records")} r
+                        WHERE r.bank_id = $1 AND r.collection_id = $2
+                          AND NOT EXISTS (
+                            SELECT 1 FROM {store.fq_table("kb_records")} t
+                            WHERE t.bank_id = r.bank_id AND t.collection_id = $3
+                              AND t.record_id = (r.values -> $4 #>> '{{}}')
+                          )
+                        ORDER BY r.record_id LIMIT $5
+                        """,
+                        bank_id,
+                        collection_id,
+                        target,
+                        name,
+                        int(getattr(config, "kb_link_pass_max", 200)),
+                    )
+                ]
+            if not gaps or not candidates:
+                continue
+            field_spec = (collection.get("fields") or {}).get(name) or {}
+            # The text the unplaced records were read from, each slice once. Showing the
+            # model where they appear beats showing it the first page of every document:
+            # on a converted PDF the first page is the publisher's front matter.
+            evidence: list[str] = []
+            for record_id in gaps:
+                for text in seen.get(record_id, []):
+                    if text not in evidence:
+                        evidence.append(text)
+            evidence_text = "\n\n---\n\n".join(evidence)[:_LINK_EVIDENCE_CHARS]
+            if not evidence_text:
+                continue
+            calls += 1
+            placements = await extraction.resolve_links(
+                llm,
+                collection_name=collection.get("name") or collection_id,
+                field_name=name,
+                field_description=field_spec.get("description"),
+                target_name=target,
+                records=gaps,
+                candidates=candidates,
+                evidence=evidence_text,
+            )
+            async with acquire_with_retry(pool) as conn:
+                for placement in placements:
+                    record_id = normalise(placement.record)
+                    points_at = normalise(placement.points_at)
+                    # Both ends must be real: the model is given closed lists and asked
+                    # to pick from them, and anything else is a guess — which is the
+                    # thing this pass exists to avoid writing.
+                    if record_id not in gaps or points_at not in candidates:
+                        continue
+                    await collections_store.contribute(
+                        conn,
+                        bank_id,
+                        collection_id,
+                        record_id,
+                        doc_id="",
+                        values={name: points_at},
+                        evidence={name: placement.quote} if placement.quote else {},
+                    )
+                    await collections_store.materialize(conn, bank_id, collection_id, record_id)
+                    linked += 1
+        return LinkPassOutcome(placed=linked, calls=calls)
 
     async def _unresolved_relationships(self, conn: Any, bank_id: str, collection: dict[str, Any]) -> int:
-        """How many relationship values name no record in the collection they point at."""
+        """How many records have a relationship that joins to nothing.
+
+        Both kinds count, because a join cannot tell them apart: a value naming no
+        record, and no value at all. Counting only the first read 0 on a bank where six
+        of sixteen characters had no house — true to the letter and useless to a reader.
+        """
         unresolved = 0
         for name, target in collections_store.relationships(collection.get("fields") or {}).items():
             unresolved += (
@@ -986,7 +1131,6 @@ class KnowledgeService:
                     f"""
                     SELECT count(*) FROM {store.fq_table("kb_records")} r
                     WHERE r.bank_id = $1 AND r.collection_id = $2
-                      AND r.values ? $3
                       AND NOT EXISTS (
                         SELECT 1 FROM {store.fq_table("kb_records")} t
                         WHERE t.bank_id = r.bank_id AND t.collection_id = $4
@@ -1088,33 +1232,57 @@ class KnowledgeService:
         return await self.get_record(bank_id, collection_id, target)
 
     async def submit_derive_records(
-        self, bank_id: str, collection_id: str, doc_ids: list[str] | None, *, replace: bool = False
+        self, bank_id: str, collection_id: str | None, doc_ids: list[str] | None, *, replace: bool = False
     ) -> dict[str, Any]:
-        """Queue LLM derivation of this collection's records from the bank's documents.
+        """Queue a derivation. ``collection_id`` None means every automatic collection.
 
-        ``replace`` drops what those documents contributed before re-reading them, which
-        is what a definition change needs: without it the old values would fold back in
-        beside the new ones.
+        A bank-level run is the one that pays off: its slices are read once for the
+        whole set of collections instead of once per collection.
         """
-        await self.get_collection(bank_id, collection_id)
+        if collection_id is not None:
+            await self.get_collection(bank_id, collection_id)
+        else:
+            await self._require_bank(bank_id)
         result = await self.memory._submit_async_operation(
             bank_id=bank_id,
             operation_type="knowledge_derive_records",
             task_type="knowledge_derive_records",
             task_payload={"collection_id": collection_id, "doc_ids": doc_ids or [], "replace": replace},
+            # A bank-level run coalesces: a hundred documents written in a row leave one
+            # pending derivation, not a hundred. The same rule retain uses for
+            # consolidation, and the reason this needs no loop to sweep up after it.
+            dedupe_by_bank=collection_id is None and not doc_ids,
         )
         return {"operation_id": result["operation_id"], "collection_id": collection_id, "status": "pending"}
 
     async def run_derive_records(self, task: dict[str, Any]) -> dict[str, Any]:
-        """Worker side: read the documents, ask for records, fold them in by identity."""
+        """Worker side: slice the documents, read each slice once for every collection,
+        merge what the slices found, then place the links the slices could not.
+
+        The shape is the point. Reading is the expensive part and it is done once per
+        slice; everything after it is arithmetic over what came back.
+        """
         bank_id = task["bank_id"]
-        collection_id = task["collection_id"]
-        collection = await self.get_collection(bank_id, collection_id)
-        collection = {**collection, "bank_id": bank_id}
+        only = task.get("collection_id")
+        replace = bool(task.get("replace"))
         config = await self._config(bank_id, None)
         pool = await self._pool()
         llm = self._field_extraction_llm(bank_id, config)
-        replace = bool(task.get("replace"))
+
+        async with acquire_with_retry(pool) as conn:
+            every = await collections_store.list_collections(conn, bank_id)
+        collections = [
+            collection
+            for collection in every
+            if (collection["collection_id"] == only if only else collection.get("derive_on_write", True))
+        ]
+        if not collections:
+            # Still recorded: "nothing to derive" is an answer an operator needs, and an
+            # operation that completes with no result at all reads as a silent failure.
+            counts = {"documents_read": 0, "collections": 0, "records_written": 0, "llm_calls": 0}
+            await self._record_derivation(task.get("operation_id"), counts, pool)
+            return counts
+        by_id = {collection["collection_id"]: {**collection, "bank_id": bank_id} for collection in collections}
 
         where = "bank_id = $1"
         params: list[Any] = [bank_id]
@@ -1126,126 +1294,132 @@ class KnowledgeService:
                 f"SELECT doc_id, title, text FROM {store.fq_table('kb_documents')} WHERE {where} ORDER BY doc_id",
                 *params,
             )
-            # The records a relationship may point at, offered to the model so it names
-            # one instead of inventing a spelling that resolves to nothing.
-            known_records = await self._relationship_candidates(conn, bank_id, collection)
+            specs = await self._specs(conn, bank_id, collections)
 
-        derivable = {name: spec for name, spec in (collection["fields"] or {}).items() if not spec.get("collection")}
-        relationship_fields = collections_store.relationships(collection["fields"] or {})
-        fields_for_model = {**derivable, **{name: {"type": "string"} for name in relationship_fields}}
-        char_limit = int(config.kb_field_extraction_max_chars)
-        records_written = 0
-        records_skipped = 0
-        identity_field = collection.get("identity")
-
-        async def read(row: Any) -> tuple[Any, list[dict[str, Any]]]:
-            """Every record one document describes, read a window at a time.
-
-            A document is not one prompt. It used to be sent whole and truncated at
-            ``kb_field_extraction_max_chars``, so a contract longer than that lost
-            everything past the cut with nothing said about it — invisible on a corpus of
-            paragraphs, total on a real one. Its passages are already stored, so they are
-            read in windows of the same budget and what each window found is merged.
-            """
-            windows = await self._derivation_windows(pool, bank_id, row, char_limit)
-            merged: dict[str, dict[str, Any]] = {}
-            for window in windows:
-                async with semaphore:
-                    derived = await derive_records(
-                        llm,
-                        fields_for_model,
-                        collection_name=collection.get("name") or collection_id,
-                        collection_description=collection.get("description"),
-                        known_records=known_records,
-                        doc_id=row["doc_id"],
-                        title=row["title"],
-                        text=window,
-                        char_limit=char_limit,
-                    )
-                for record in derived:
-                    # Windows of one document are one contribution per record, not one
-                    # each: a contribution is keyed by (record, document), so writing
-                    # them separately would leave only the last window's values.
-                    key = normalise(record["values"].get(identity_field)) if identity_field else str(len(merged))
-                    into = merged.setdefault(key, {"values": {}, "evidence": {}})
-                    into["values"].update({k: v for k, v in record["values"].items() if v is not None})
-                    into["evidence"].update(record["evidence"] or {})
-            return row, list(merged.values())
-
-        # The model calls run together; the writes do not. Two documents folding the same
-        # record would otherwise race each other through materialize.
+        size = int(config.kb_field_extraction_max_chars)
         semaphore = asyncio.Semaphore(max(1, int(config.kb_field_extraction_concurrency)))
-        for row, derived in await asyncio.gather(*(read(row) for row in documents)):
-            async with acquire_with_retry(pool) as conn:
-                stale = (
-                    {
-                        r
-                        for c, r in await collections_store.records_touched_by(conn, bank_id, row["doc_id"])
-                        if c == collection_id
-                    }  # fmt: skip
-                    if replace
-                    else set()
-                )
-                if replace:
-                    await collections_store.drop_contributions_of(conn, bank_id, row["doc_id"], collection_id)
-                for record in derived:
-                    # A collection with an identity field says what one of its records
-                    # IS. A derived record with no value for it is not a thing, it is
-                    # half a sentence — and hashing its values into an id files it as a
-                    # row of its own: one run produced 14 contract rows for 3 contracts,
-                    # rows like {"value": 120000} with no reference, which then carried
-                    # their numbers into every aggregate. Dropping it loses nothing: a
-                    # document that really describes the record says which one.
-                    if identity_field and record["values"].get(identity_field) in (None, ""):
-                        records_skipped += 1
-                        continue
-                    values = await self._resolved_relationships(
-                        conn, bank_id, collection, dict(record["values"]), config=config
-                    )
-                    record_id = await self._record_id(conn, collection, None, values, config=config)
-                    await collections_store.contribute(
-                        conn,
-                        bank_id,
-                        collection_id,
-                        record_id,
-                        doc_id=row["doc_id"],
-                        values=values,
-                        evidence=record["evidence"] or {},
-                    )
-                    await collections_store.materialize(conn, bank_id, collection_id, record_id)
-                    stale.discard(record_id)
-                    records_written += 1
-                # A record this document used to feed and no longer mentions: rebuild it,
-                # which removes it entirely when nothing else was ever behind it.
-                for record_id in stale:
-                    await collections_store.materialize(conn, bank_id, collection_id, record_id)
+        calls = 0
 
+        async def read(row: Any) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
+            nonlocal calls
+            found: dict[str, dict[str, dict[str, Any]]] = {}
+            for text in await self._slices(pool, bank_id, row, size):
+                async with semaphore:
+                    calls += 1
+                    derived = await extraction.derive_records(
+                        llm, specs, doc_id=row["doc_id"], title=row["title"], text=text
+                    )
+                for collection_id, records in derived.items():
+                    identity = (by_id.get(collection_id) or {}).get("identity")
+                    merged = found.setdefault(collection_id, {})
+                    for record in records:
+                        # Slices of one document are one contribution per record, not
+                        # one each: a contribution is keyed by (record, document), so
+                        # writing them separately would keep only the last slice.
+                        key = normalise(record["values"].get(identity)) if identity else str(len(merged))
+                        into = merged.setdefault(key, {"values": {}, "evidence": {}, "slices": []})
+                        into["values"].update({k: v for k, v in record["values"].items() if v is not None})
+                        into["evidence"].update(record["evidence"] or {})
+                        # Where this record was read from, so the link pass can be shown
+                        # the text that mentions it rather than a guess at where the
+                        # answer lives. A document's first page is often boilerplate.
+                        if text not in into["slices"]:
+                            into["slices"].append(text)
+            return row, {collection_id: list(v.values()) for collection_id, v in found.items()}
+
+        written = skipped = 0
+        #: Per collection, the slice text each record was read from — the evidence the
+        #: link pass is shown for the records it has to place.
+        seen: dict[str, dict[str, list[str]]] = {}
+        for row, per_collection in await asyncio.gather(*(read(row) for row in documents)):
+            async with acquire_with_retry(pool) as conn:
+                for collection_id, records in per_collection.items():
+                    collection = by_id[collection_id]
+                    identity = collection.get("identity")
+                    stale = (
+                        {
+                            r
+                            for c, r in await collections_store.records_touched_by(conn, bank_id, row["doc_id"])
+                            if c == collection_id
+                        }  # fmt: skip
+                        if replace
+                        else set()
+                    )
+                    if replace:
+                        await collections_store.drop_contributions_of(conn, bank_id, row["doc_id"], collection_id)
+                    for record in records:
+                        # A collection with an identity says what one of its records IS.
+                        # A derived record without it is half a sentence, and hashing its
+                        # values into an id files it as a row of its own: one run made 14
+                        # contract rows for 3 contracts, fragments like {"value": 120000}
+                        # that then fed every aggregate.
+                        if identity and record["values"].get(identity) in (None, ""):
+                            skipped += 1
+                            continue
+                        values = await self._resolved_relationships(
+                            conn, bank_id, collection, dict(record["values"]), config=config
+                        )
+                        record_id = await self._record_id(conn, collection, None, values, config=config)
+                        seen.setdefault(collection_id, {}).setdefault(record_id, []).extend(record.get("slices") or [])
+                        await collections_store.contribute(
+                            conn,
+                            bank_id,
+                            collection_id,
+                            record_id,
+                            doc_id=row["doc_id"],
+                            values=values,
+                            evidence=record["evidence"] or {},
+                        )
+                        await collections_store.materialize(conn, bank_id, collection_id, record_id)
+                        stale.discard(record_id)
+                        written += 1
+                    # A record this document used to feed and no longer mentions: rebuild
+                    # it, which removes it when nothing else was ever behind it.
+                    for record_id in stale:
+                        await collections_store.materialize(conn, bank_id, collection_id, record_id)
+
+        linked = 0
+        for collection in by_id.values():
+            outcome = await self._link_pass(
+                pool, bank_id, collection, seen=seen.get(collection["collection_id"], {}), llm=llm, config=config
+            )
+            linked += outcome.placed
+            calls += outcome.calls
+
+        dangling = 0
         async with acquire_with_retry(pool) as conn:
-            dangling = await self._unresolved_relationships(conn, bank_id, collection)
+            for collection in by_id.values():
+                dangling += await self._unresolved_relationships(conn, bank_id, collection)
 
         counts = {
             "documents_read": len(documents),
-            "records_written": records_written,
+            "collections": len(collections),
+            "records_written": written,
             # Reported, not swallowed: a derivation that drops most of what the model
             # returned is a prompt or schema problem the operator should see.
-            "records_skipped": records_skipped,
-            # A relationship whose value names no record in the collection it points at.
-            # The link is kept — the record may arrive later — but a join over it returns
-            # nothing, and silence there is the failure nobody notices.
+            "records_skipped": skipped,
+            "links_placed": linked,
+            # A relationship that joins to nothing. Silence here is the failure nobody
+            # notices: the join simply returns no row.
             "unresolved_links": dangling,
+            "llm_calls": calls,
         }
-        operation_id = task.get("operation_id")
-        if operation_id:
-            async with acquire_with_retry(pool) as conn:
-                await conn.execute(
-                    f"UPDATE {store.fq_table('async_operations')} "
-                    "SET result_metadata = COALESCE(result_metadata, '{}'::jsonb) || $1::jsonb "
-                    "WHERE operation_id = $2",
-                    json.dumps(counts),
-                    uuid.UUID(str(operation_id)),
-                )
-        logger.info("knowledge records derived bank=%s collection=%s %s", bank_id, collection_id, counts)
+        logger.info("knowledge records derived bank=%s %s", bank_id, counts)
+        await self._record_derivation(task.get("operation_id"), counts, pool)
         return counts
+
+    async def _record_derivation(self, operation_id: str | None, counts: dict[str, Any], pool: Any) -> None:
+        """Put a derivation's counts on its operation, so the run can be read back."""
+        if not operation_id:
+            return
+        async with acquire_with_retry(pool) as conn:
+            await conn.execute(
+                f"UPDATE {store.fq_table('async_operations')} "
+                "SET result_metadata = COALESCE(result_metadata, '{}'::jsonb) || $1::jsonb "
+                "WHERE operation_id = $2",
+                json.dumps(counts),
+                uuid.UUID(operation_id),
+            )
 
     async def query_records(
         self, bank_id: str, collection_id: str, body: dict[str, Any], request_context: Any = None
@@ -1519,7 +1693,6 @@ class KnowledgeService:
             return await self._schema_for_write(bank_id, None, document=document, config=config)
 
         written = skipped = passage_total = 0
-        pending_documents: list[tuple[DocumentInput, str, list[Any]]] = []
         for start in range(0, len(documents), _EMBED_BATCH_DOCUMENTS):
             window = documents[start : start + _EMBED_BATCH_DOCUMENTS]
             async with acquire_with_retry(pool) as conn:
@@ -1539,7 +1712,6 @@ class KnowledgeService:
                 )
             if not pending:
                 continue
-            pending_documents.extend(pending)
             # Fields are resolved *before* the embedding, not after: a field marked
             # ``indexed`` becomes part of the text that gets embedded, so the passage is
             # findable by a value that its own words never say ("region: emea").
@@ -1631,17 +1803,15 @@ class KnowledgeService:
                 auto = [
                     collection
                     for collection in await collections_store.list_collections(conn, bank_id)
-                    if collection.get("derive_on_write")
+                    if collection.get("derive_on_write", True)
                 ]
-            for collection in auto:
-                await self.run_derive_records(
-                    {
-                        "bank_id": bank_id,
-                        "collection_id": collection["collection_id"],
-                        "doc_ids": [d.doc_id for d, _, _ in pending_documents],
-                        "replace": True,
-                    }
-                )
+            if auto:
+                # An event, not a loop and not an inline run. The write queues one
+                # bank-level derivation that coalesces with any already pending, so a
+                # hundred documents written in a row leave one job rather than a hundred
+                # — the same rule retain uses for consolidation. Running it inline here
+                # instead would put an LLM pass for every collection inside the write.
+                await self.submit_derive_records(bank_id, None, None, replace=True)
 
         counts = {"documents_written": written, "documents_unchanged": skipped, "passages": passage_total}
         operation_id = task.get("operation_id")
@@ -1997,7 +2167,7 @@ class KnowledgeService:
                     description=definition.get("description"),
                     fields=definition.get("fields") or {},
                     identity=definition.get("identity"),
-                    derive_on_write=bool(definition.get("derive_on_write")),
+                    derive_on_write=bool(definition.get("derive_on_write", True)),
                 )
             counts["collections"] = len(archive.collections)
 

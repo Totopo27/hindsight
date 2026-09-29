@@ -92,7 +92,7 @@ async def put_collection(
     description: str | None,
     fields: dict[str, Any],
     identity: str | None,
-    derive_on_write: bool = False,
+    derive_on_write: bool = True,
 ) -> None:
     await conn.execute(
         f"""

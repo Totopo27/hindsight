@@ -372,8 +372,8 @@ async def test_resolution_applies_to_records_the_llm_derives_too(kb_client, memo
         content = messages[-1]["content"]
         for marker, records in answers.items():
             if marker in content:
-                return {"records": records}
-        return {"records": []}
+                return {"vendors": records}
+        return {}
 
     memory._llm_config._provider_impl.set_response_callback(answer)
     await kb_client.post(
@@ -433,8 +433,8 @@ async def test_a_merge_survives_re_derivation_of_the_documents(kb_client, memory
         content = messages[-1]["content"]
         for marker, records in llm_records.items():
             if marker in content:
-                return {"records": records}
-        return {"records": []}
+                return {"vendors": records}
+        return {}
 
     memory._llm_config._provider_impl.set_response_callback(answer)
     await kb_client.post(

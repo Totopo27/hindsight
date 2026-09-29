@@ -52,17 +52,19 @@ class Derivation:
         self.by_marker: dict[str, list[dict]] = {}
         self.provider.set_response_callback(self._answer)
 
-    def says(self, marker: str, records: list[dict]) -> None:
-        self.by_marker[marker] = records
+    def says(self, marker: str, records: list[dict], collection: str = "vendors") -> None:
+        self.by_marker[marker] = (collection, records)
 
     def _answer(self, messages: list[dict], scope: str):
         if scope != "knowledge_records":
             return {}
         content = messages[-1]["content"]
-        for marker, records in self.by_marker.items():
+        for marker, (collection, records) in self.by_marker.items():
             if marker in content:
-                return {"records": records}
-        return {"records": []}
+                # One slice is read for every collection at once, so the answer is keyed
+                # by collection rather than a bare list of records.
+                return {collection: records}
+        return {}
 
 
 async def _write(client, kb: str, documents: list[dict]) -> None:
@@ -331,6 +333,7 @@ async def test_a_relationship_added_later_is_resolved_by_reprocessing(kb_client,
     llm.says(
         "c-1",
         [{"values": {"reference": "c-1", "value": 1000}, "evidence": {}}],
+        collection="contracts",
     )
     await _write(kb_client, bank, [{"id": "d1", "text": "c-1: a contract with Acme worth 1000."}])
     await _derive(kb_client, bank, "contracts")
@@ -348,7 +351,11 @@ async def test_a_relationship_added_later_is_resolved_by_reprocessing(kb_client,
             "vendor": {"collection": "vendors"},
         },
     }
-    llm.says("c-1", [{"values": {"reference": "c-1", "value": 1000, "vendor": "Acme"}, "evidence": {}}])
+    llm.says(
+        "c-1",
+        [{"values": {"reference": "c-1", "value": 1000, "vendor": "Acme"}, "evidence": {}}],
+        collection="contracts",
+    )
     changed = await _collection(kb_client, bank, "contracts", with_vendor, reprocess=True)
     assert changed["changes"]["added"] == ["vendor"]
 
@@ -477,12 +484,12 @@ async def test_a_record_with_no_identity_field_is_replaced_not_duplicated(kb_cli
     """With no identity the id is a hash of the values, so a changed value is a new id."""
     llm = Derivation(memory)
     await _collection(kb_client, bank, "notes", {"fields": {"subject": {"type": "string"}}})
-    llm.says("note", [{"values": {"subject": "delivery delays"}, "evidence": {}}])
+    llm.says("note", [{"values": {"subject": "delivery delays"}, "evidence": {}}], collection="notes")
     await _write(kb_client, bank, [{"id": "d1", "text": "note: about delivery delays."}])
     await _derive(kb_client, bank, "notes")
     assert await _count(kb_client, bank, "notes") == 1
 
-    llm.says("note", [{"values": {"subject": "payment terms"}, "evidence": {}}])
+    llm.says("note", [{"values": {"subject": "payment terms"}, "evidence": {}}], collection="notes")
     await _derive(kb_client, bank, "notes", replace=True)
     assert await _count(kb_client, bank, "notes") == 1, "the old hash had nothing left behind it"
 
@@ -614,9 +621,11 @@ async def test_one_document_feeding_two_collections_stays_consistent_in_both(kb_
         if scope != "knowledge_records":
             return {}
         content = messages[-1]["content"]
-        if "Collection: Vendors" in content:
-            return {"records": [{"values": {"name": "acme", "country": "de"}, "evidence": {}}]}
-        return {"records": [{"values": {"reference": "c-1", "value": 5000}, "evidence": {}}]}
+        # Both collections are asked for in the same call now, so both are answered.
+        return {
+            "vendors": [{"values": {"name": "acme", "country": "de"}, "evidence": {}}],
+            "contracts": [{"values": {"reference": "c-1", "value": 5000}, "evidence": {}}],
+        }
 
     llm.provider.set_response_callback(answer)
     await _write(kb_client, bank, [{"id": "d1", "text": "Acme, German, contract c-1 worth 5000."}])

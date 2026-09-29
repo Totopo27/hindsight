@@ -99,7 +99,11 @@ class CollectionRequest(BaseModel):
         description="The field that identifies one record, so the same thing found twice is one row",
     )
     derive_on_write: bool = Field(
-        default=False, description="Re-derive this collection's records whenever a document is written"
+        default=True,
+        description="Include this collection when a write triggers the bank's derivation. On by "
+        "default: a collection nobody derives is an empty table. Turn it off for one that is "
+        "written directly through the records endpoint, or is expensive and derived on a schedule "
+        "of your own.",
     )
 
 
@@ -589,6 +593,24 @@ def build_router(get_request_context: Any) -> APIRouter:
         svc: KnowledgeService = Depends(service),
     ):
         return await run(svc.put_records(kb, collection_id, body.records))
+
+    @router.post(
+        "/{kb}/collections/derive",
+        status_code=202,
+        summary="Derive every automatic collection from the documents",
+        description="One run over the bank: each slice of each document is read once for every "
+        "collection at once, rather than once per collection, and the records that no single "
+        "slice could place are linked afterwards from what the whole run saw. This is the path a "
+        "write takes automatically — a write queues exactly this, coalesced, so a hundred "
+        "documents leave one job. Collections with derive_on_write=false are left alone.",
+    )
+    async def derive_bank(
+        kb: str,
+        body: DeriveRequest,
+        ctx: RequestContext = Depends(get_request_context),
+        svc: KnowledgeService = Depends(service),
+    ):
+        return await run(svc.submit_derive_records(kb, None, body.doc_ids, replace=body.replace))
 
     @router.post(
         "/{kb}/collections/{collection_id}/derive",

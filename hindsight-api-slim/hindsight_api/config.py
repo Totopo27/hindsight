@@ -781,6 +781,8 @@ ENV_KB_SEARCH_VECTOR_WEIGHT = "HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT"
 ENV_KB_FIELD_EXTRACTION = "HINDSIGHT_API_KB_FIELD_EXTRACTION"
 ENV_KB_SCHEMA_CLASSIFICATION = "HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION"
 ENV_KB_RECORD_IDENTITY_SIMILARITY = "HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY"
+ENV_KB_LINK_PASS = "HINDSIGHT_API_KB_LINK_PASS"
+ENV_KB_LINK_PASS_MAX = "HINDSIGHT_API_KB_LINK_PASS_MAX"
 ENV_KB_FIELD_EXTRACTION_MAX_CHARS = "HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS"
 ENV_KB_FIELD_EXTRACTION_CONCURRENCY = "HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY"
 ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
@@ -1650,6 +1652,11 @@ DEFAULT_KB_SCHEMA_CLASSIFICATION = True
 # — not this number — is what decides. 0 turns typo matching off entirely, leaving exact
 # keys and explicit merges, which is the right setting where a wrong merge is expensive.
 DEFAULT_KB_RECORD_IDENTITY_SIMILARITY = 0.45
+# After the slices are read, place the relationships no single slice could see: one call
+# per relationship over the records that have none, never one per record.
+DEFAULT_KB_LINK_PASS = True
+# The most records one link pass will try to place per relationship.
+DEFAULT_KB_LINK_PASS_MAX = 200
 # How much of a document (and of a chunk) the extraction LLM reads. A metadata property is
 # almost always stated early, and the whole point of the feature is that it is cheap.
 DEFAULT_KB_FIELD_EXTRACTION_MAX_CHARS = 12000
@@ -3366,6 +3373,8 @@ class HindsightConfig:
     kb_field_extraction: bool
     kb_schema_classification: bool
     kb_record_identity_similarity: float
+    kb_link_pass: bool
+    kb_link_pass_max: int
     kb_field_extraction_max_chars: int
     kb_field_extraction_concurrency: int
     kb_search_rerank: bool
@@ -3772,6 +3781,8 @@ class HindsightConfig:
         "kb_field_extraction",
         "kb_schema_classification",
         "kb_record_identity_similarity",
+        "kb_link_pass",
+        "kb_link_pass_max",
         "kb_field_extraction_max_chars",
         "kb_field_extraction_concurrency",
         "kb_search_rerank",
@@ -4934,6 +4945,8 @@ class HindsightConfig:
                 ENV_KB_SCHEMA_CLASSIFICATION, str(DEFAULT_KB_SCHEMA_CLASSIFICATION)
             ).lower()
             in ("true", "1", "yes"),
+            kb_link_pass=os.getenv(ENV_KB_LINK_PASS, str(DEFAULT_KB_LINK_PASS)).lower() in ("true", "1", "yes"),
+            kb_link_pass_max=int(os.getenv(ENV_KB_LINK_PASS_MAX, str(DEFAULT_KB_LINK_PASS_MAX))),
             kb_record_identity_similarity=float(
                 os.getenv(ENV_KB_RECORD_IDENTITY_SIMILARITY, str(DEFAULT_KB_RECORD_IDENTITY_SIMILARITY))
             ),

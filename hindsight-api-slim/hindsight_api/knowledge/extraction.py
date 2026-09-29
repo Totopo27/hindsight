@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -214,99 +215,122 @@ def _evidence_map(evidence: Any) -> dict[str, str]:
     return out
 
 
+@dataclass(frozen=True)
+class CollectionSpec:
+    """One collection as a slice of a document is asked about it."""
+
+    collection_id: str
+    name: str
+    description: str | None
+    fields: dict[str, dict[str, Any]]
+    #: Records that already exist in the collections this one's relationships point at,
+    #: as ``field: record`` lines. Offered so the model names an existing record rather
+    #: than a spelling that resolves to nothing.
+    candidates: list[str]
+
+
 async def derive_records(
     llm: Any,
-    fields: dict[str, dict[str, Any]],
+    specs: list[CollectionSpec],
     *,
-    collection_name: str,
-    collection_description: str | None = None,
-    known_records: list[str] | None = None,
     doc_id: str,
     title: str | None,
     text: str,
-    char_limit: int,
-) -> list[dict[str, Any]]:
-    """The records this document contributes to one collection, with their evidence.
+) -> dict[str, list[dict[str, Any]]]:
+    """Every record one slice of a document describes, for several collections at once.
 
-    Each returned item is ``{"values": {...}, "evidence": {field: quote}}``. The quote is
-    what makes a derived number auditable: a total nobody can trace is a claim, not data.
+    Returns ``{collection_id: [{"values": {...}, "evidence": {field: quote}}]}``. The
+    quote is what makes a derived number auditable: a total nobody can trace is a claim.
+
+    One call covers up to the whole set rather than one call per collection. A slice
+    already has to be read to answer "which vendors are here"; asking "and which
+    contracts" in the same breath costs a few hundred tokens of schema instead of a
+    second pass over the same text. On two collections that halves the calls; on ten it
+    is a tenth of them.
+
+    The response is one field per collection rather than a list of tagged records,
+    because a tagged list needs a union of per-collection value models and a union makes
+    a JSON schema that providers reject or mangle. One closed field each is flat.
     """
-    if not fields:
-        return []
-    value_model = extraction_model(fields, name="RecordValues")
-    if value_model is None:
-        return []
-    record_model = create_model(
-        "Record",
-        # Values first, evidence second, and evidence required. Declared optional it was
-        # omitted on every record by gemini-2.5-flash and nothing derived could be
-        # traced. Declared *before* the values it was worse than either: the model wrote
-        # commentary into the fields it was quoting for ("Ireland (Ireland is a country -
-        # so just Ireland here.)") and left most values null, because it was asked to
-        # quote for fields it had not decided on yet. Extract, then cite what you
-        # extracted.
-        values=(value_model, Field(description="The record's fields")),
-        evidence=(
-            list[_FieldEvidence],
-            Field(description="For each field you filled in values, the sentence you read it from. Required."),
-        ),
-    )
-    # list[record_model] is a type built at runtime, which the checker cannot follow: the
-    # element type only exists once the collection's fields are known.
-    record_list: Any = list[record_model]  # type: ignore[valid-type]
-    batch_model = create_model(
-        "Records",
-        records=(record_list, Field(default_factory=list, description=f"Every {collection_name} this text describes")),
-    )
+    per_collection: dict[str, Any] = {}
+    for spec in specs:
+        value_model = extraction_model(spec.fields, name=f"{_model_name(spec.collection_id)}Values")
+        if value_model is None:
+            continue
+        record_model = create_model(
+            f"{_model_name(spec.collection_id)}Record",
+            # Values first, evidence second, and evidence required. Declared optional it
+            # was omitted on every record by gemini-2.5-flash and nothing derived could
+            # be traced. Declared *before* the values it was worse than either: the model
+            # wrote commentary into the fields it was quoting for ("Ireland (Ireland is a
+            # country - so just Ireland here.)") and left most values null, because it
+            # was asked to quote for fields it had not decided on yet. Extract, then cite.
+            values=(value_model, Field(description="The record's fields")),
+            evidence=(
+                list[_FieldEvidence],
+                Field(description="For each field you filled in values, the sentence you read it from. Required."),
+            ),
+        )
+        per_collection[spec.collection_id] = (
+            list[record_model],  # type: ignore[valid-type]
+            Field(default_factory=list, description=f"Records of {spec.name} this text describes"),
+        )
+    if not per_collection:
+        return {}
+    batch_model = create_model("Extraction", **per_collection)
+
+    described = []
+    for spec in specs:
+        line = f"- {spec.collection_id} ({spec.name})"
+        if spec.description:
+            line += f": {spec.description}"
+        described.append(line)
+        described.extend(f"    may point at: {candidate}" for candidate in spec.candidates)
+
     messages = [
         {"role": "system", "content": _RECORDS_SYSTEM},
         {
             "role": "user",
             "content": (
-                # The operator's own definition of what one record IS, when they wrote
-                # one. Without it the model has only the collection's name to go on, and
-                # a name does not say who is excluded: asked for "Vendors" over a folder
-                # of agreements, it filed the buyer — the other party to every one of
-                # them — as one of its own vendors.
-                f"Collection: {collection_name}\n"
-                + (f"One record is: {collection_description}\n" if collection_description else "")
-                # The records a relationship may point at, by the name they are filed
-                # under. Without them the model writes whatever the sentence calls the
-                # thing and the link resolves only when the two spellings happen to
-                # agree — the join that returned null for every contract in the
-                # collections eval. Offered, not enforced: a document may be the first
-                # to mention something, and refusing it would lose the record.
-                + (
-                    "\nRecords that already exist in the collections this one points at, "
-                    "by the name they are filed under:\n"
-                    + "\n".join(f"  {line}" for line in known_records)
-                    + "\n"
-                    if known_records
-                    else ""
-                )
-                + f"\nDocument{f' titled {title}' if title else ''}:\n{text[:char_limit]}"
+                "Collections to fill:\n"
+                + "\n".join(described)
+                + f"\n\nDocument{f' titled {title}' if title else ''}:\n{text}"
             ),
         },
     ]
     try:
         result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_records")
         content = result.content
-        records = content.records if isinstance(content, BaseModel) else (content or {}).get("records") or []
     except Exception as e:
         logger.warning("knowledge record derivation failed for %s: %s", doc_id, e)
-        return []
+        return {}
 
-    out: list[dict[str, Any]] = []
-    for record in records:
-        if isinstance(record, BaseModel):
-            values, evidence = jsonable(record.values.model_dump()), _evidence_map(record.evidence)
-        elif isinstance(record, dict):
-            values, evidence = jsonable(record.get("values") or {}), _evidence_map(record.get("evidence"))
-        else:
-            continue
-        if values:
-            out.append({"values": values, "evidence": {k: v for k, v in evidence.items() if k in values}})
+    out: dict[str, list[dict[str, Any]]] = {}
+    for spec in specs:
+        raw = (
+            getattr(content, spec.collection_id, None)
+            if isinstance(content, BaseModel)
+            else (content or {}).get(spec.collection_id)
+        )
+        records = []
+        for record in raw or []:
+            if isinstance(record, BaseModel):
+                values, evidence = jsonable(record.values.model_dump()), _evidence_map(record.evidence)
+            elif isinstance(record, dict):
+                values, evidence = jsonable(record.get("values") or {}), _evidence_map(record.get("evidence"))
+            else:
+                continue
+            if values:
+                records.append({"values": values, "evidence": {k: v for k, v in evidence.items() if k in values}})
+        if records:
+            out[spec.collection_id] = records
     return out
+
+
+def _model_name(collection_id: str) -> str:
+    """A collection id as a python identifier, for the model class it builds."""
+    cleaned = "".join(part.capitalize() for part in re.split(r"[^0-9a-zA-Z]+", collection_id) if part)
+    return cleaned or "Collection"
 
 
 # ---- proposing collections
@@ -552,3 +576,82 @@ def _parse_proposals(result: Any) -> list[ProposedCollection]:
             except Exception as e:  # noqa: BLE001 - one bad change must not lose the others
                 logger.warning("knowledge collection chat: unusable change %s: %s", change, e)
     return proposals
+
+
+_LINK_SYSTEM = (
+    "You match records to the records they point at. You are given a list of records that "
+    "have no value for one field, the closed list of records that field may point at, and "
+    "the text the records were read from. Answer for every record you can, and leave out "
+    "the ones the text does not place — a wrong link is worse than an empty one: an empty "
+    "one is a gap somebody can see, a wrong one is a join that returns a confident wrong "
+    "row. Read the whole list before answering: the text usually separates them as a set "
+    "(these are one household's servants, those are the prince's kinsmen) rather than "
+    "stating each one on its own."
+)
+
+
+class _Link(BaseModel):
+    """One record, the record it points at, and the sentence that says so."""
+
+    record: str = Field(description="The record being linked, exactly as it was listed")
+    points_at: str = Field(description="One of the candidates, exactly as it was listed")
+    quote: str = Field(default="", description="The sentence that says so, quoted from the text")
+
+
+async def resolve_links(
+    llm: Any,
+    *,
+    collection_name: str,
+    field_name: str,
+    field_description: str | None,
+    target_name: str,
+    records: list[str],
+    candidates: list[str],
+    evidence: str,
+) -> list[_Link]:
+    """Which record each unlinked record points at, decided for the whole set at once.
+
+    Derivation reads one slice at a time, so a relationship stated elsewhere — a cast
+    list, a contract's preamble, a header — is not in front of the model when the record
+    is written: on thirty pages of a play, five characters the cast list places in a
+    house came back with none, because that list and their scenes are different slices.
+
+    One call for the whole set rather than one per gap. It is cheaper, and it is also
+    better: the model sees the records together, and a text that never says "Tybalt is a
+    Capulet" in so many words still says it by listing him among them.
+    """
+    if not records or not candidates:
+        return []
+    batch_model = create_model(
+        "Links",
+        links=(list[_Link], Field(default_factory=list, description="One entry per record you can place")),
+    )
+    messages = [
+        {"role": "system", "content": _LINK_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"Collection: {collection_name}\n"
+                f"Field: {field_name}"
+                + (f" — {field_description}" if field_description else "")
+                + f" → a record of {target_name!r}\n\n"
+                f"Records with no {field_name}:\n" + "\n".join(f"  {record}" for record in records) + "\n\n"
+                "It may point at exactly one of:\n" + "\n".join(f"  {c}" for c in candidates) + "\n\n"
+                f"What the documents say:\n{evidence}"
+            ),
+        },
+    ]
+    try:
+        result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_links")
+        content = result.content
+    except Exception as e:
+        logger.warning("knowledge link pass failed for %s.%s: %s", collection_name, field_name, e)
+        return []
+    raw = content.links if isinstance(content, BaseModel) else (content or {}).get("links") or []
+    out: list[_Link] = []
+    for item in raw:
+        if isinstance(item, _Link):
+            out.append(item)
+        elif isinstance(item, dict) and item.get("record") and item.get("points_at"):
+            out.append(_Link.model_validate(item))
+    return out

@@ -296,7 +296,7 @@ async def test_records_are_derived_from_documents_with_their_evidence(kb_client,
         if scope != "knowledge_records":
             return {}
         return {
-            "records": [
+            "vendors": [
                 {
                     "values": {"name": "acme", "country": "de", "tier": "gold"},
                     "evidence": {"country": "Acme Ltd is a German supplier."},
