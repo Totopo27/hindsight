@@ -68,6 +68,7 @@ from hindsight_system_evals.collections import (
     cases,
     correction_documents,
     documents,
+    waves,
 )
 from hindsight_system_evals.knowledge_banks import KnowledgeBank
 from hindsight_system_evals.report import RECORDED, EvalRecord
@@ -102,14 +103,21 @@ def _payload(document: Document) -> dict[str, str]:
     return {"id": document.doc_id, "title": document.title, "text": document.text}
 
 
-async def _seed(bank: KnowledgeBank, corpus: list[Document]) -> None:
-    """Create the bank, define both collections, write the folder, derive both tables."""
+async def _seed(bank: KnowledgeBank, corpus: list[Document] | list[list[Document]]) -> None:
+    """Create the bank, define both collections, write the folder, derive both tables.
+
+    The folder is written in waves, because a folder accumulates: an amendment reaches
+    the bank after the agreement it amends, and that order is what makes it the later
+    word. Written in one batch every document is equally recent.
+    """
     await bank.create(name="Procurement folder")
     # Vendors first: a contract's `vendor` field points at a vendor record, and a
     # relationship cannot be defined against a collection that does not exist.
     await bank.put_collection("vendors", VENDORS)
     await bank.put_collection("contracts", CONTRACTS)
-    await bank.write([_payload(document) for document in corpus])
+    batches = corpus if corpus and isinstance(corpus[0], list) else [corpus]
+    for batch in batches:
+        await bank.write([_payload(document) for document in batch])  # type: ignore[union-attr]
     await bank.derive("vendors")
     await bank.derive("contracts")
 
@@ -121,7 +129,7 @@ async def _folder(target, bank_prefix: str) -> dict[str, object]:
         bank = KnowledgeBank(target.url, f"{bank_prefix}folder", target.api_key)
         _BANKS.append(bank.bank_id)
         try:
-            await _seed(bank, documents())
+            await _seed(bank, waves())
             _FOLDER.update(
                 {
                     "bank_id": bank.bank_id,
@@ -247,7 +255,14 @@ async def _grade(case_id: str, target, bank_prefix: str) -> None:
                 graded.trapped("C-1041 still reads the superseded 120,000")
             elif value != 185000:
                 graded.fails(f"C-1041 value is {value!r}, expected 185000")
-            cited = [item.get("doc_id") for item in (contract.get("evidence") or {}).get("value", [])]
+            bank = KnowledgeBank(target.url, bank_id, target.api_key)
+            try:
+                # A list page carries no evidence by design — every quote of every field
+                # would make the page enormous. One record does.
+                full = await bank.record("contracts", "c 1041")
+            finally:
+                await bank.aclose()
+            cited = [item.get("doc_id") for item in (full.get("evidence") or {}).get("value", [])]
             if cited and "amendment-acme-2" not in cited:
                 graded.fails(f"the amended value cites {cited}, not the amendment")
 
@@ -298,13 +313,14 @@ async def _grade(case_id: str, target, bank_prefix: str) -> None:
             checks = [
                 ("contracts", "c 1041", "value", "the committed annual value of contract C-1041 is EUR 185,000"),
                 ("contracts", "c 2207", "value", "the committed annual value of contract C-2207 is EUR 64,000"),
-                ("vendors", "acme", "country", "Acme is registered in Ireland"),
+                ("vendors", "acme", "country", "Acme is in Ireland"),
             ]
             for collection, record_id, field_name, claim in checks:
-                record = (contracts if collection == "contracts" else vendors).get(record_id)
-                if record is None:
+                if (contracts if collection == "contracts" else vendors).get(record_id) is None:
                     graded.fails(f"{collection}/{record_id} is missing")
                     continue
+                # Evidence lives on the single-record endpoint, not on the list page.
+                record = await bank.record(collection, record_id)
                 cited = [item.get("doc_id") for item in (record.get("evidence") or {}).get(field_name, [])]
                 if not cited:
                     graded.fails(f"{collection}/{record_id}.{field_name} cites no document")
@@ -409,7 +425,7 @@ async def test_deleting_a_document_takes_its_contribution(target, bank_prefix: s
         if "c 2207" not in before:
             graded.fails("C-2207 was never derived, so its deletion proves nothing")
         await bank.delete_document(DELETED_DOCUMENT_ID)
-        after = _by_id(await bank.records("contracts"))
+        after = {rid: await bank.record("contracts", rid) for rid in _by_id(await bank.records("contracts"))}
         for record in after.values():
             citing = [
                 field_name

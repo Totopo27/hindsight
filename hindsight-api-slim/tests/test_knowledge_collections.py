@@ -338,28 +338,43 @@ async def test_records_of_one_bank_are_invisible_to_another(kb_client, bank):
 
 
 def test_the_record_schema_never_asks_for_a_free_form_dict():
-    """No ``additionalProperties`` anywhere in the schema sent to a provider.
+    """No ``additionalProperties`` key anywhere in the schema sent to a provider.
 
     The Gemini Developer API refuses any schema containing it ("additionalProperties is
     only supported in Gemini Enterprise Agent Platform mode"), and the evidence map used
     to be a ``dict[str, str]`` — so every derivation failed on that provider while the
     tests, which mock the call, passed.
-    """
-    import json
 
+    The check walks for the key rather than grepping the serialised schema: prose is
+    serialised too, and a docstring that *explains* additionalProperties used to fail
+    this.
+    """
     from pydantic import BaseModel, Field, create_model
 
     from hindsight_api.knowledge.extraction import _FieldEvidence
     from hindsight_api.knowledge.fields import extraction_model
 
+    def keys(node: object) -> set[str]:
+        if isinstance(node, dict):
+            return set(node) | {k for value in node.values() for k in keys(value)}
+        if isinstance(node, list):
+            return {k for item in node for k in keys(item)}
+        return set()
+
     values = extraction_model({"name": {"type": "string"}, "value": {"type": "number"}}, name="RecordValues")
     record = create_model(
         "Record",
         values=(values, Field(description="x")),
-        evidence=(list[_FieldEvidence], Field(default_factory=list)),
+        evidence=(list[_FieldEvidence], Field(description="x")),
     )
     batch: type[BaseModel] = create_model("Records", records=(list[record], Field(default_factory=list)))  # type: ignore[valid-type]
-    assert "additionalProperties" not in json.dumps(batch.model_json_schema())
+    assert "additionalProperties" not in keys(batch.model_json_schema())
+    # Evidence is required, and declared after the values: a derived value nobody can
+    # trace is a claim, but asking for the quote first made the model narrate into the
+    # fields it had not filled yet. Extract, then cite.
+    record_schema = batch.model_json_schema()["$defs"]["Record"]
+    assert record_schema["required"] == ["values", "evidence"]
+    assert list(record_schema["properties"]) == ["values", "evidence"]
 
 
 @pytest.mark.asyncio

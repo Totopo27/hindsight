@@ -204,11 +204,20 @@ async def materialize(conn: Any, bank_id: str, collection_id: str, record_id: st
         record_id,
     )
     pinned_values = json.loads(pinned) if isinstance(pinned, str) else (pinned or {})
+    # Ordered by when the bank learned each document, not by when the contribution
+    # happened to be written. A derivation writes a whole corpus in one pass, so every
+    # contribution carries the same `updated_at` and the tiebreaker was `doc_id` —
+    # alphabetical. That decided supersession by filename: "amendment-acme-2" sorts
+    # before "msa-acme", so the agreement's 120,000 overwrote the amendment's 185,000
+    # that replaced it. A document's own created_at is what "later" means to a reader;
+    # the contribution's time only breaks ties between two contributions of one document.
     rows = await conn.fetch(
         f"""
-        SELECT doc_id, values, evidence FROM {fq_table("kb_record_contributions")}
-        WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3
-        ORDER BY updated_at, doc_id
+        SELECT c.doc_id, c.values, c.evidence FROM {fq_table("kb_record_contributions")} c
+        LEFT JOIN {fq_table("kb_documents")} d
+               ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id
+        WHERE c.bank_id = $1 AND c.collection_id = $2 AND c.record_id = $3
+        ORDER BY d.created_at NULLS FIRST, c.updated_at, c.doc_id
         """,
         bank_id,
         collection_id,
@@ -225,19 +234,36 @@ async def materialize(conn: Any, bank_id: str, collection_id: str, record_id: st
 
     values: dict[str, Any] = {}
     evidence: dict[str, list[dict[str, Any]]] = {}
+    #: Which contribution supplied the value the record ends up showing, per field.
+    winner: dict[str, str] = {}
     doc_ids: list[str] = []
     for row in rows:
         row_values = json.loads(row["values"]) if isinstance(row["values"], str) else row["values"]
         row_evidence = json.loads(row["evidence"]) if isinstance(row["evidence"], str) else row["evidence"]
-        values.update({k: v for k, v in (row_values or {}).items() if v is not None})
+        for name, value in (row_values or {}).items():
+            if value is None:
+                continue
+            values[name] = value
+            winner[name] = row["doc_id"]
         for name, quote in (row_evidence or {}).items():
             evidence.setdefault(name, []).append({"doc_id": row["doc_id"], "quote": quote})
         if row["doc_id"]:
             doc_ids.append(row["doc_id"])
     values.update(pinned_values)
-    # Keep the most recent quotes per field: contributions are folded oldest first, so
-    # the tail is the newest, and the newest is what a reader wants to see first.
-    evidence = {name: quotes[-MAX_EVIDENCE_PER_FIELD:] for name, quotes in evidence.items()}
+
+    # The citation has to justify the value the record shows, so the quote from the
+    # contribution that *won* the field comes first — not simply the newest quote.
+    # Globex's annual value came from its agreement while the first citation shown was
+    # its quarterly invoice, which states a different number: a reader checking the
+    # figure found a document that contradicted it (the collections eval's col-evidence).
+    # The rest follow as supporting quotes, newest first.
+    def _ordered(name: str, quotes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        won_by = winner.get(name)
+        first = [quote for quote in quotes if quote["doc_id"] == won_by]
+        rest = [quote for quote in reversed(quotes) if quote["doc_id"] != won_by]
+        return (first + rest)[:MAX_EVIDENCE_PER_FIELD]
+
+    evidence = {name: _ordered(name, quotes) for name, quotes in evidence.items()}
 
     await conn.execute(
         f"""

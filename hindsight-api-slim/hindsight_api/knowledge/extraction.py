@@ -170,13 +170,29 @@ _RECORDS_SYSTEM = (
     "You pull structured records out of a document. One record is one real-world thing — "
     "a vendor, a contract, a person — not one per document: a document may describe "
     "several, or add detail to one you have seen before. Fill only the fields the text "
-    "supports, quote the sentence each value came from, and return nothing at all rather "
-    "than inventing a record the document does not describe."
+    "supports, and return nothing at all rather than inventing a record the document does "
+    "not describe.\n\n"
+    "Two ways that goes wrong, both of which produce rows nobody wants:\n"
+    "- A phrase that mentions the thing is not the thing. 'the Acme logistics agreement' "
+    "names the agreement, and the party is 'Acme' — do not turn the phrase into a record "
+    "of its own. Use the thing's own name, as the document writes it when naming it.\n"
+    "- Only things the collection is about. A document usually names others — the reader, "
+    "the author, the other party to an agreement — and they belong in this collection only "
+    "if the collection's definition says they do.\n\n"
+    "Every field you fill needs an evidence entry: the field's name and the sentence you "
+    "read it from, quoted from the document. A value nobody can trace is a claim, not data."
 )
 
 
 class _FieldEvidence(BaseModel):
-    """One field of a record, and the sentence the model read it from."""
+    """One field of a record, and the sentence the model read it from.
+
+    A list of these rather than a ``{field: quote}`` dict: a free-form dict becomes
+    ``additionalProperties`` in the JSON schema, and the Gemini Developer API refuses any
+    schema containing it ("additionalProperties is only supported in Gemini Enterprise
+    Agent Platform mode"), which failed every derivation on that provider. A closed shape
+    every provider accepts costs one comprehension to fold back.
+    """
 
     field: str
     quote: str
@@ -200,6 +216,7 @@ async def derive_records(
     fields: dict[str, dict[str, Any]],
     *,
     collection_name: str,
+    collection_description: str | None = None,
     doc_id: str,
     title: str | None,
     text: str,
@@ -217,15 +234,17 @@ async def derive_records(
         return []
     record_model = create_model(
         "Record",
+        # Values first, evidence second, and evidence required. Declared optional it was
+        # omitted on every record by gemini-2.5-flash and nothing derived could be
+        # traced. Declared *before* the values it was worse than either: the model wrote
+        # commentary into the fields it was quoting for ("Ireland (Ireland is a country -
+        # so just Ireland here.)") and left most values null, because it was asked to
+        # quote for fields it had not decided on yet. Extract, then cite what you
+        # extracted.
         values=(value_model, Field(description="The record's fields")),
-        # A list of pairs rather than a dict: a free-form dict becomes
-        # `additionalProperties` in the JSON schema, and the Gemini Developer API refuses
-        # any schema containing it ("additionalProperties is only supported in Gemini
-        # Enterprise Agent Platform mode"), which failed every derivation on that provider.
-        # A closed shape every provider accepts costs one comprehension to fold back.
         evidence=(
             list[_FieldEvidence],
-            Field(default_factory=list, description="For each field filled, the sentence it came from"),
+            Field(description="For each field you filled in values, the sentence you read it from. Required."),
         ),
     )
     # list[record_model] is a type built at runtime, which the checker cannot follow: the
@@ -240,7 +259,14 @@ async def derive_records(
         {
             "role": "user",
             "content": (
-                f"Collection: {collection_name}\n\nDocument{f' titled {title}' if title else ''}:\n{text[:char_limit]}"
+                # The operator's own definition of what one record IS, when they wrote
+                # one. Without it the model has only the collection's name to go on, and
+                # a name does not say who is excluded: asked for "Vendors" over a folder
+                # of agreements, it filed the buyer — the other party to every one of
+                # them — as one of its own vendors.
+                f"Collection: {collection_name}\n"
+                + (f"One record is: {collection_description}\n" if collection_description else "")
+                + f"\nDocument{f' titled {title}' if title else ''}:\n{text[:char_limit]}"
             ),
         },
     ]

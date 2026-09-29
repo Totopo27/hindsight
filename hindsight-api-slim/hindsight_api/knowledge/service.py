@@ -836,7 +836,9 @@ class KnowledgeService:
         written = 0
         async with acquire_with_retry(await self._pool()) as conn:
             for record in records:
-                values = record.get("values") or {}
+                values = await self._resolved_relationships(
+                    conn, bank_id, collection, record.get("values") or {}, config=config
+                )
                 record_id = await self._record_id(conn, collection, record.get("record_id"), values, config=config)
                 doc_ids = record.get("doc_ids") or [""]
                 for doc_id in doc_ids:
@@ -920,6 +922,43 @@ class KnowledgeService:
             # precedence question is answered by, not because it was written last.
             await collections_store.materialize(conn, bank_id, collection_id, record_id)
         return await self.get_record(bank_id, collection_id, record_id)
+
+    async def _resolved_relationships(
+        self, conn: Any, bank_id: str, collection: dict[str, Any], values: dict[str, Any], *, config: Any
+    ) -> dict[str, Any]:
+        """Point every relationship at a record of the collection it names.
+
+        A relationship field is a foreign key: the query compiler joins it straight
+        against the other collection's ``record_id``. So it has to be written in the
+        same alphabet record ids are written in — ``normalise`` plus the resolver, the
+        same pair :meth:`_record_id` uses — and not the lowercased name the model or the
+        caller happened to say. Two normalisations for one concept is how "Acme Ltd"
+        came to point at nothing while the record sat there as "acme" (the join returned
+        null for every contract in the collections eval).
+
+        Resolution runs against the target collection even when it is empty: the
+        resolver then hands back the normalised key, so the link starts dangling and
+        lands the moment that record is derived, rather than being wrong forever.
+        """
+        relationships = collections_store.relationships(collection.get("fields") or {})
+        if not relationships:
+            return values
+        similarity = float(getattr(config, "kb_record_identity_similarity", 0.82)) if config else 0.82
+        resolved = dict(values)
+        for name, target in relationships.items():
+            raw = resolved.get(name)
+            if raw in (None, ""):
+                continue
+            key = normalise(raw)
+            if not key:
+                # A value that normalises away names nothing; a blank is honest, a
+                # record id of "" would collide with every other nameless one.
+                resolved[name] = None
+                continue
+            resolved[name] = await collections_store.resolve_record_id(
+                conn, bank_id, target, key, similarity=similarity
+            )
+        return resolved
 
     async def _record_id(
         self, conn: Any, collection: dict[str, Any], given: str | None, values: dict[str, Any], *, config: Any = None
@@ -1015,11 +1054,14 @@ class KnowledgeService:
         derivable = {name: spec for name, spec in (collection["fields"] or {}).items() if not spec.get("collection")}
         relationship_fields = collections_store.relationships(collection["fields"] or {})
         records_written = 0
+        records_skipped = 0
+        identity_field = collection.get("identity")
         for row in documents:
             derived = await derive_records(
                 llm,
                 {**derivable, **{name: {"type": "string"} for name in relationship_fields}},
                 collection_name=collection.get("name") or collection_id,
+                collection_description=collection.get("description"),
                 doc_id=row["doc_id"],
                 title=row["title"],
                 text=row["text"],
@@ -1038,10 +1080,19 @@ class KnowledgeService:
                 if replace:
                     await collections_store.drop_contributions_of(conn, bank_id, row["doc_id"], collection_id)
                 for record in derived:
-                    values = dict(record["values"])
-                    for name in relationship_fields:
-                        if values.get(name) is not None:
-                            values[name] = str(values[name]).strip().lower()
+                    # A collection with an identity field says what one of its records
+                    # IS. A derived record with no value for it is not a thing, it is
+                    # half a sentence — and hashing its values into an id files it as a
+                    # row of its own: one run produced 14 contract rows for 3 contracts,
+                    # rows like {"value": 120000} with no reference, which then carried
+                    # their numbers into every aggregate. Dropping it loses nothing: a
+                    # document that really describes the record says which one.
+                    if identity_field and record["values"].get(identity_field) in (None, ""):
+                        records_skipped += 1
+                        continue
+                    values = await self._resolved_relationships(
+                        conn, bank_id, collection, dict(record["values"]), config=config
+                    )
                     record_id = await self._record_id(conn, collection, None, values, config=config)
                     await collections_store.contribute(
                         conn,
@@ -1060,7 +1111,13 @@ class KnowledgeService:
                 for record_id in stale:
                     await collections_store.materialize(conn, bank_id, collection_id, record_id)
 
-        counts = {"documents_read": len(documents), "records_written": records_written}
+        counts = {
+            "documents_read": len(documents),
+            "records_written": records_written,
+            # Reported, not swallowed: a derivation that drops most of what the model
+            # returned is a prompt or schema problem the operator should see.
+            "records_skipped": records_skipped,
+        }
         operation_id = task.get("operation_id")
         if operation_id:
             async with acquire_with_retry(pool) as conn:

@@ -85,8 +85,16 @@ class Case:
 # ---- the folder
 
 
+#: Which documents the folder held first. A folder accumulates: the agreements are
+#: signed, and the amendments, notices and invoices that qualify them arrive later. The
+#: suite writes it in those two waves because "later" has to mean something for
+#: supersession to be gradeable at all — written in one batch, every document is equally
+#: recent and the only thing left to order them by is their filename.
+FIRST_WAVE = ("msa-acme", "msa-globex", "msa-initech")
+
+
 def documents() -> list[Document]:
-    """The thirteen documents, in the order they would have arrived.
+    """The documents, in the order they would have arrived.
 
     Acme is named three ways across four documents; its contract is amended once.
     Northwind is discussed without anyone ever writing down where it is registered.
@@ -177,6 +185,15 @@ def documents() -> list[Document]:
             "INVOICE\n\nFrom: Globex SA, Lyon, France\nTo: Northbridge Manufacturing BV\nPeriod: Q1 2026\n"
             "Against agreement C-2207\n\nPackaging materials, quarterly instalment: EUR 16,000.",
         ),
+    ]
+
+
+def waves() -> list[list[Document]]:
+    """The folder in the order it accumulated: agreements, then what qualified them."""
+    corpus = documents()
+    return [
+        [document for document in corpus if document.doc_id in FIRST_WAVE],
+        [document for document in corpus if document.doc_id not in FIRST_WAVE],
     ]
 
 
