@@ -99,7 +99,7 @@ only on purpose — every earlier baseline then measured a different bank:
 ```bash
 uv run python -m hindsight_system_evals.refresh_cost build
 # measure a candidate archive before replacing the committed one
-HINDSIGHT_EVAL_REFRESH_COST_FIXTURE=/tmp/new.zip uv run pytest evals/test_05_refresh_cost.py
+HINDSIGHT_EVAL_REFRESH_COST_FIXTURE=/tmp/new.zip uv run pytest evals/memory_banks/test_05_refresh_cost.py
 ```
 
 `--cost-output DIR` writes `refresh-cost.json` (every call, every prompt), a
@@ -114,7 +114,7 @@ To A/B a server setting, `HINDSIGHT_EVAL_SET_<X>=v` reaches the server as
 `HINDSIGHT_API_<X>=v` (the server's environment is otherwise wiped):
 
 ```bash
-HINDSIGHT_EVAL_SET_REFLECT_PROMPT_CACHE_ENABLED=true uv run pytest evals/test_05_refresh_cost.py
+HINDSIGHT_EVAL_SET_REFLECT_PROMPT_CACHE_ENABLED=true uv run pytest evals/memory_banks/test_05_refresh_cost.py
 ```
 
 **`test_06` — reflect reads the page it was given.** The only suite where the
@@ -131,7 +131,7 @@ pages whole, and now returns the best hit whole plus a snippet of the others, wi
 model answer from a snippet without ever reading the page, which is why the best
 hit still arrives in full.
 
-**`test_08` — collections.** The first suite over a *knowledge* bank rather than a
+**`knowledge_banks/test_01` — collections.** The first suite over a *knowledge* bank rather than a
 memory bank: a procurement folder of thirteen short documents, two collections
 (vendors, contracts), and the table derived from them. Every vendor in this space
 sells the same picture — Hebbia's Matrix (a row per entity, a column per question,
@@ -203,6 +203,11 @@ A failing run is still published: for a quality metric the red run is the data
 point. `scripts/benchmarks/publish-system-evals-results.sh` does the push.
 
 ## Two modes
+
+The suites are split by what they measure: `evals/memory_banks/` for facts,
+reflect and pages, `evals/knowledge_banks/` for documents, collections and the
+tables derived from them. Both run together — `pytest evals` collects the tree —
+and either half runs alone by naming its directory.
 
 ```bash
 # minimum acceptance: the cases that have actually regressed
