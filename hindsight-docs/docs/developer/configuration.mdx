@@ -1696,6 +1696,8 @@ so two banks on one server can chunk differently.
 | `HINDSIGHT_API_KB_SEARCH_CANDIDATES` | Candidates each arm (vector, keyword) contributes before fusion, and the depth the reranker sees. A deeper pool only pays off with a reranker good enough to sort it. | `50` |
 | `HINDSIGHT_API_KB_SEARCH_RERANK` | Whether search reranks the fused candidates with the configured [reranker](#reranker). | `true` |
 | `HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY` | Trigram prefilter for matching a misspelled record name to an existing one; an edit-distance check decides. `0` turns typo matching off, leaving exact keys and explicit merges. See [which record is which](#knowledge-bank-identity). | `0.45` |
+| `HINDSIGHT_API_KB_LINK_PASS` | After a derivation, place the relationships no single slice of a document could see: one LLM call per relationship over the records that have none, given the closed list of what they may point at. Off leaves those records unlinked, and the run still reports how many. Hierarchical. | `true` |
+| `HINDSIGHT_API_KB_LINK_PASS_MAX` | The most records one link pass will try to place per relationship. Hierarchical. | `200` |
 | `HINDSIGHT_API_KB_SCHEMA_CLASSIFICATION` | With several schemas in a bank and no `schema_id` on the write, ask the LLM which schema the document is. Off means no fields rather than the wrong ones. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
