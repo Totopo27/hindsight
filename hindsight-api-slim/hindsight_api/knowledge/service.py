@@ -19,6 +19,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -57,6 +58,8 @@ MAX_BATCH_DOCUMENTS = 500
 #: cast list live there, and a slice is all the model sees.
 _SLICE_HEAD_CHARS = 2000
 _LINK_EVIDENCE_CHARS = 24000
+#: How long a derivation waits before trying again when another one holds the bank.
+_DERIVE_DEFER_SECONDS = 5
 #: How much of a document's opening travels with every later window of it. Enough for a
 #: contract's parties or a play's cast list, small enough that repeating it is cheaper
 #: than the second pass that would otherwise have to go and find it.
@@ -1269,6 +1272,36 @@ class KnowledgeService:
         pool = await self._pool()
         llm = self._field_extraction_llm(bank_id, config)
 
+        # One derivation per bank at a time. `dedupe_by_bank` coalesces what is *pending*;
+        # it says nothing about what is already running, and two runs over one bank fight:
+        # with `replace` each drops the other's contributions before re-reading, and the
+        # loser leaves the table as whatever it managed to write. Seen in the evals — a
+        # write's automatic run and an explicit one two seconds apart, and the table came
+        # out empty. The later run stands down and queues itself again, so nothing is lost.
+        operation_id = task.get("operation_id")
+        async with acquire_with_retry(pool) as conn:
+            running = await conn.fetchval(
+                f"""
+                SELECT count(*) FROM {store.fq_table("async_operations")}
+                WHERE bank_id = $1 AND operation_type = 'knowledge_derive_records'
+                  AND status = 'processing' AND ($2::uuid IS NULL OR operation_id <> $2::uuid)
+                """,
+                bank_id,
+                uuid.UUID(operation_id) if operation_id else None,
+            )
+        if running:
+            # Deferred, not completed. Finishing here would tell a caller who asked for a
+            # derivation and waited for it that the work was done when it was not — the
+            # collections eval read an empty table that way. DeferOperation puts it back
+            # on the queue without counting a failure, so it runs when the other is done.
+            from ..worker.exceptions import DeferOperation
+
+            logger.info("knowledge derivation deferred bank=%s: another run is in flight", bank_id)
+            raise DeferOperation(
+                exec_date=datetime.now(UTC) + timedelta(seconds=_DERIVE_DEFER_SECONDS),
+                reason="another derivation for this bank is running",
+            )
+
         async with acquire_with_retry(pool) as conn:
             every = await collections_store.list_collections(conn, bank_id)
         collections = [
@@ -1299,16 +1332,25 @@ class KnowledgeService:
         size = int(config.kb_field_extraction_max_chars)
         semaphore = asyncio.Semaphore(max(1, int(config.kb_field_extraction_concurrency)))
         calls = 0
+        failed = 0
 
         async def read(row: Any) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
-            nonlocal calls
+            nonlocal calls, failed
             found: dict[str, dict[str, dict[str, Any]]] = {}
             for text in await self._slices(pool, bank_id, row, size):
                 async with semaphore:
                     calls += 1
-                    derived = await extraction.derive_records(
-                        llm, specs, doc_id=row["doc_id"], title=row["title"], text=text
-                    )
+                    try:
+                        derived = await extraction.derive_records(
+                            llm, specs, doc_id=row["doc_id"], title=row["title"], text=text
+                        )
+                    except Exception as e:  # noqa: BLE001 - one slice must not lose the rest
+                        # Counted, not swallowed. A slice that fails is part of the
+                        # document nobody read, and the run has to say so rather than
+                        # report the records it did get as the whole answer.
+                        failed += 1
+                        logger.warning("knowledge derivation slice failed doc=%s: %s", row["doc_id"], e)
+                        continue
                 for collection_id, records in derived.items():
                     identity = (by_id.get(collection_id) or {}).get("identity")
                     merged = found.setdefault(collection_id, {})
@@ -1403,9 +1445,19 @@ class KnowledgeService:
             # notices: the join simply returns no row.
             "unresolved_links": dangling,
             "llm_calls": calls,
+            # Slices whose call failed. Not cosmetic: with `replace` the contributions
+            # are dropped before the document is re-read, so a run where everything
+            # failed would leave the table empty and call it a success.
+            "slices_failed": failed,
         }
         logger.info("knowledge records derived bank=%s %s", bank_id, counts)
-        await self._record_derivation(task.get("operation_id"), counts, pool)
+        if failed and not written:
+            # Nothing was read and nothing was written: the operation failed, whatever
+            # the individual exceptions were. Raising lets the worker retry it instead of
+            # leaving an emptied table behind a completed job.
+            await self._record_derivation(operation_id, counts, pool)
+            raise KnowledgeBankError(502, f"every derivation slice failed ({failed} of them); nothing was written")
+        await self._record_derivation(operation_id, counts, pool)
         return counts
 
     async def _record_derivation(self, operation_id: str | None, counts: dict[str, Any], pool: Any) -> None:
@@ -1811,7 +1863,13 @@ class KnowledgeService:
                 # hundred documents written in a row leave one job rather than a hundred
                 # — the same rule retain uses for consolidation. Running it inline here
                 # instead would put an LLM pass for every collection inside the write.
-                await self.submit_derive_records(bank_id, None, None, replace=True)
+                try:
+                    await self.submit_derive_records(bank_id, None, None, replace=True)
+                except Exception as e:  # noqa: BLE001 - the documents are already stored
+                    # The write is done and its documents are safe; a derivation that
+                    # cannot start (or, under the inline task backend, cannot finish) is
+                    # its own operation's failure to report and retry, not the write's.
+                    logger.warning("knowledge write: derivation could not be queued for %s: %s", bank_id, e)
 
         counts = {"documents_written": written, "documents_unchanged": skipped, "passages": passage_total}
         operation_id = task.get("operation_id")

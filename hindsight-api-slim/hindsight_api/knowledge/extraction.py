@@ -298,12 +298,14 @@ async def derive_records(
             ),
         },
     ]
-    try:
-        result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_records")
-        content = result.content
-    except Exception as e:
-        logger.warning("knowledge record derivation failed for %s: %s", doc_id, e)
-        return {}
+    # Deliberately not caught here. A slice that fails is a slice of the document that
+    # was never read, and swallowing it returns {} — which the caller cannot tell from
+    # "this slice describes nothing". That silence lost a whole derivation once: two runs
+    # collided, every call failed, and the operation reported success with 0 records
+    # written over a table that had just been emptied. The caller counts the failures and
+    # decides; see run_derive_records.
+    result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_records")
+    content = result.content
 
     out: dict[str, list[dict[str, Any]]] = {}
     for spec in specs:
