@@ -465,3 +465,30 @@ async def test_a_knowledge_bank_is_not_in_the_memory_bank_list(kb_client):
     knowledge_ids = {bank["bank_id"] for bank in knowledge["items"]}
     assert kb in knowledge_ids
     assert memory_bank not in knowledge_ids
+
+
+def test_a_passage_knows_the_section_it_sits_under():
+    """A table's rows never repeat their statement's title; the heading above them does."""
+    text = (
+        "# Annual report\n\nOverview of the year.\n\n## **Consolidated Statements of Cash Flows**\n\n"
+        + "\n".join(f"| Line item {i} | {i * 10} |" for i in range(200))
+        + "\n\n## Notes\n\nNote one."
+    )
+    passages = split_into_passages(text, passage_size=64, passage_overlap=8)
+
+    assert passages[0].section is None, "nothing precedes the first heading"
+    table = [p for p in passages if "| Line item 150 |" in p.text]
+    assert table and table[0].section == "Consolidated Statements of Cash Flows"
+
+
+@pytest.mark.asyncio
+async def test_a_nul_character_does_not_fail_the_write(kb_client):
+    kb = f"kb-{uuid.uuid4().hex[:8]}"
+    assert (await kb_client.post("/v1/default/knowledge-banks", json={"id": kb})).status_code == 201
+    write = await kb_client.post(
+        f"/v1/default/knowledge-banks/{kb}/documents",
+        json={"documents": [{"id": "nul", "title": "a\u0000b", "text": "before\u0000after"}]},
+    )
+    assert write.status_code == 202, write.text
+    doc = (await kb_client.get(f"/v1/default/knowledge-banks/{kb}/documents/nul")).json()
+    assert doc["text"] == "beforeafter" and doc["title"] == "ab"

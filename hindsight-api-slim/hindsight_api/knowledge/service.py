@@ -24,6 +24,7 @@ from ..config import get_config
 from ..engine.db_utils import acquire_with_retry
 from ..engine.llm_wrapper import sanitize_llm_output
 from ..engine.retain.bank_utils import DEFAULT_DISPOSITION
+from ..engine.schema import fq_table
 from ..engine.storage import bank_storage_prefix
 from . import collections as collections_store
 from . import store
@@ -38,10 +39,10 @@ from .extraction import (
 from .fields import SchemaError, extract_only, filterable_names, validate_field_schema, validate_values
 from .filters import FilterError
 from .identity import normalise
-from .transfer import KnowledgeTransferScope
 from .passages import split_into_passages
 from .query import CompiledQuery, Limits, compile_query, json_safe
 from .records_query import compile_record_query
+from .transfer import KnowledgeTransferScope
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,15 @@ def query_terms(query: str) -> list[str]:
     return [t for t in re.findall(r"\w+", query.lower()) if len(t) > 1][:32]
 
 
+def passage_heading(title: str | None, section: str | None) -> str | None:
+    """What a passage is indexed under: its document's title, then the section it sits in.
+
+    Both arms read it — it is embedded with the passage and it is the ``heading`` column
+    the keyword index is generated from.
+    """
+    return " — ".join(part for part in (title, section) if part) or None
+
+
 def embedding_text(title: str | None, passage_text: str, indexed: dict[str, Any] | None = None) -> str:
     """What gets embedded for a passage: indexed field values, the title, then the passage.
 
@@ -151,9 +161,17 @@ class KnowledgeService:
 
     def __init__(self, memory: Any) -> None:
         self.memory = memory
+        self._bm25: dict[str, bool] = {}
 
     async def _pool(self) -> Any:
         return await self.memory._get_pool()
+
+    async def _has_bm25(self, conn: Any) -> bool:
+        # ponytail: checked once per schema per process; an index created later needs a restart.
+        key = fq_table("kb_passages")
+        if key not in self._bm25:
+            self._bm25[key] = await store.has_bm25_index(conn)
+        return self._bm25[key]
 
     async def _config(self, bank_id: str, request_context: Any) -> Any:
         return await self.memory._config_resolver.resolve_full_config(bank_id, request_context)
@@ -1134,8 +1152,10 @@ class KnowledgeService:
             payload_docs.append(
                 {
                     "doc_id": document.doc_id,
-                    "text": document.text,
-                    "title": document.title,
+                    # Postgres stores no NUL character in text or JSON, and one in a
+                    # document fails the whole batch; it carries nothing, so it goes.
+                    "text": document.text.replace("\x00", ""),
+                    "title": document.title.replace("\x00", "") if document.title else document.title,
                     "metadata": document.metadata or {},
                     "fields": document.fields or {},
                     "schema_id": document.schema_id,
@@ -1371,7 +1391,7 @@ class KnowledgeService:
             # their title).
             texts = [
                 embedding_text(
-                    document.title,
+                    passage_heading(document.title, passage.section),
                     passage.text,
                     indexed_values(
                         document_schemas.get(document.doc_id),
@@ -1393,7 +1413,7 @@ class KnowledgeService:
                                 document.doc_id,
                                 passage.index,
                                 passage.text,
-                                document.title,
+                                passage_heading(document.title, passage.section),
                                 passage.token_count,
                                 store.vector_literal(vectors[offset + i]),
                                 None,
@@ -1490,6 +1510,11 @@ class KnowledgeService:
             )
         return {"items": items, "total": total, "limit": limit}
 
+    async def passage_counts(self, bank_id: str, doc_ids: list[str]) -> dict[str, int]:
+        """How many passages each document has — so a reader of one knows there is more."""
+        async with acquire_with_retry(await self._pool()) as conn:
+            return await store.passage_counts(conn, bank_id, doc_ids)
+
     async def get_document(self, bank_id: str, doc_id: str) -> dict[str, Any]:
         await self._require_bank(bank_id)
         async with acquire_with_retry(await self._pool()) as conn:
@@ -1541,8 +1566,36 @@ class KnowledgeService:
                     arms["vector"] = await store.search_semantic(conn, bank_id, vector, candidates, fields, schema_id)
                 if mode in ("hybrid", "keyword"):
                     arms["keyword"] = await store.search_keyword(
-                        conn, bank_id, query_terms(query), candidates, fields, schema_id
+                        conn,
+                        bank_id,
+                        query_terms(query),
+                        candidates,
+                        fields,
+                        schema_id,
+                        bm25=await self._has_bm25(conn),
                     )
+                # A query that names a document ("the agreement between X and Y") is also
+                # searched inside that document. Across a corpus of near-identical NDAs the
+                # global arms rank on the clause and cannot tell the agreements apart, and
+                # in a 300-page merger agreement the right clause can sit below the
+                # candidate cut; the routed arms put that document's best passages in the
+                # pool either way, and the fusion and the reranker decide from there.
+                routed = (
+                    await store.documents_named_in(
+                        conn, bank_id, query, float(config.kb_search_title_routing_similarity)
+                    )
+                    if config.kb_search_title_routing
+                    else []
+                )
+                if routed:
+                    if "vector" in arms:
+                        arms["routed_vector"] = await store.search_semantic(
+                            conn, bank_id, vector, candidates, fields, schema_id, routed
+                        )
+                    if "keyword" in arms:
+                        arms["routed_keyword"] = await store.search_keyword(
+                            conn, bank_id, query_terms(query), candidates, fields, schema_id, routed
+                        )
         except FilterError as e:
             # A filter the caller cannot have meant is a 400, not a 500.
             raise KnowledgeBankError(400, str(e)) from e
@@ -1551,7 +1604,12 @@ class KnowledgeService:
         # is what stops a long query's keyword arm from out-voting the vector arm: every
         # word of the query is OR-ed, so a paragraph-length query matches on topic alone.
         vector_weight = min(max(float(config.kb_search_vector_weight), 0.0), 1.0)
-        weights = {"vector": vector_weight, "keyword": 1.0 - vector_weight}
+        weights = {
+            "vector": vector_weight,
+            "keyword": 1.0 - vector_weight,
+            "routed_vector": vector_weight,
+            "routed_keyword": 1.0 - vector_weight,
+        }
         scores: dict[tuple[str, int], float] = {}
         ranks: dict[tuple[str, int], dict[str, int]] = {}
         texts: dict[tuple[str, int], str] = {}
@@ -1568,7 +1626,16 @@ class KnowledgeService:
         pool = ordered[:candidates] if use_rerank else ordered
 
         if use_rerank and pool:
-            reranked = await self._rerank(query, pool, texts)
+            # The reranker reads the document's title with each passage, as the embedding
+            # does (see embedding_text): a clause is only relevant in the agreement the
+            # query names, and the clause alone rarely says which agreement it is in.
+            async with acquire_with_retry(await self._pool()) as conn:
+                titles = await store.document_titles(conn, bank_id, sorted({key[0] for key in pool}))
+            rerank_texts = {
+                key: embedding_text(titles.get(key[0]), texts[key]) if titles.get(key[0]) else texts[key]
+                for key in pool
+            }
+            reranked = await self._rerank(query, pool, rerank_texts)
             if reranked is not None:
                 pool = [key for key, _ in reranked]
                 final_scores = dict(reranked)

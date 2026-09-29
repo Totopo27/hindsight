@@ -784,6 +784,8 @@ ENV_KB_RECORD_IDENTITY_SIMILARITY = "HINDSIGHT_API_KB_RECORD_IDENTITY_SIMILARITY
 ENV_KB_FIELD_EXTRACTION_MAX_CHARS = "HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS"
 ENV_KB_FIELD_EXTRACTION_CONCURRENCY = "HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY"
 ENV_KB_SEARCH_RERANK = "HINDSIGHT_API_KB_SEARCH_RERANK"
+ENV_KB_SEARCH_TITLE_ROUTING = "HINDSIGHT_API_KB_SEARCH_TITLE_ROUTING"
+ENV_KB_SEARCH_TITLE_ROUTING_SIMILARITY = "HINDSIGHT_API_KB_SEARCH_TITLE_ROUTING_SIMILARITY"
 
 # Retain settings
 ENV_RETAIN_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"
@@ -1654,6 +1656,8 @@ DEFAULT_KB_FIELD_EXTRACTION_MAX_CHARS = 12000
 # Chunk-level extraction is one call per chunk; this is how many run at once per document.
 DEFAULT_KB_FIELD_EXTRACTION_CONCURRENCY = 4
 DEFAULT_KB_SEARCH_RERANK = True  # Rerank the fused candidates with the configured cross-encoder
+DEFAULT_KB_SEARCH_TITLE_ROUTING = True  # Also search inside the documents whose title the query names
+DEFAULT_KB_SEARCH_TITLE_ROUTING_SIMILARITY = 0.6  # How much of a title must appear in the query to route to it
 
 # Retain settings
 DEFAULT_RETAIN_MAX_COMPLETION_TOKENS = 64000  # Max tokens for fact extraction LLM call
@@ -3365,6 +3369,8 @@ class HindsightConfig:
     kb_field_extraction_max_chars: int
     kb_field_extraction_concurrency: int
     kb_search_rerank: bool
+    kb_search_title_routing: bool
+    kb_search_title_routing_similarity: float
 
     # Retain settings
     retain_max_completion_tokens: int
@@ -3769,6 +3775,8 @@ class HindsightConfig:
         "kb_field_extraction_max_chars",
         "kb_field_extraction_concurrency",
         "kb_search_rerank",
+        "kb_search_title_routing",
+        "kb_search_title_routing_similarity",
         "retain_chunk_size",
         "retain_structured_chunk_size",
         "retain_extraction_mode",
@@ -4937,6 +4945,11 @@ class HindsightConfig:
             ),
             kb_search_rerank=os.getenv(ENV_KB_SEARCH_RERANK, str(DEFAULT_KB_SEARCH_RERANK)).lower()
             in ("true", "1", "yes"),
+            kb_search_title_routing=os.getenv(ENV_KB_SEARCH_TITLE_ROUTING, str(DEFAULT_KB_SEARCH_TITLE_ROUTING)).lower()
+            in ("true", "1", "yes"),
+            kb_search_title_routing_similarity=float(
+                os.getenv(ENV_KB_SEARCH_TITLE_ROUTING_SIMILARITY, str(DEFAULT_KB_SEARCH_TITLE_ROUTING_SIMILARITY))
+            ),
             retain_chunk_size=int(os.getenv(ENV_RETAIN_CHUNK_SIZE, str(DEFAULT_RETAIN_CHUNK_SIZE))),
             retain_structured_chunk_size=_parse_optional_positive_int(
                 ENV_RETAIN_STRUCTURED_CHUNK_SIZE,

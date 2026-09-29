@@ -728,6 +728,208 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/transfer/export": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Export a knowledge bank (async)",
+        "description": "Submit an async export as a ZIP archive. include_config carries the bank, its schemas and its collection definitions \u2014 config alone is the template format, a bank someone else can start from. include_data carries the documents (text, fields, metadata) and the records, as the per-document contributions they were folded from. Passages and embeddings are never carried: the import re-passages and re-embeds with the target bank's own settings. Returns an operation_id; poll the bank's operations endpoint, then fetch the archive from the download_url in its result_metadata.",
+        "operationId": "transfer_export_v1_default_knowledge_banks__kb__transfer_export_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "include_data",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Carry the documents and the records",
+              "default": true,
+              "title": "Include Data"
+            },
+            "description": "Carry the documents and the records"
+          },
+          {
+            "name": "include_config",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Carry the bank, its schemas and its collections",
+              "default": true,
+              "title": "Include Config"
+            },
+            "description": "Carry the bank, its schemas and its collections"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/knowledge-banks/{kb}/transfer/import": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Import a knowledge bank (async)",
+        "description": "Submit an archive produced by the export endpoint. mode=restore (default) writes it into target_bank_id, which must NOT exist; mode=merge folds it into an existing bank, which is how a template is applied. The include flags narrow what is restored to a subset of what the archive holds \u2014 they cannot add what the producer did not export. The operation is recorded against {kb}, because in restore mode the target does not exist yet.",
+        "operationId": "transfer_import_v1_default_knowledge_banks__kb__transfer_import_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "restore (into a fresh bank) | merge (into an existing one)",
+              "default": "restore",
+              "title": "Mode"
+            },
+            "description": "restore (into a fresh bank) | merge (into an existing one)"
+          },
+          {
+            "name": "target_bank_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The bank to write into; defaults to the archive's source bank",
+              "title": "Target Bank Id"
+            },
+            "description": "The bank to write into; defaults to the archive's source bank"
+          },
+          {
+            "name": "include_data",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Restore the documents and the records",
+              "default": true,
+              "title": "Include Data"
+            },
+            "description": "Restore the documents and the records"
+          },
+          {
+            "name": "include_config",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Restore the schemas and the collections",
+              "default": true,
+              "title": "Include Config"
+            },
+            "description": "Restore the schemas and the collections"
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_transfer_import_v1_default_knowledge_banks__kb__transfer_import_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/operations": {
       "get": {
         "tags": [
@@ -12364,6 +12566,21 @@
           "file"
         ],
         "title": "Body_import_documents"
+      },
+      "Body_transfer_import_v1_default_knowledge_banks__kb__transfer_import_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "title": "File",
+            "description": "Knowledge transfer ZIP archive",
+            "format": "binary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_transfer_import_v1_default_knowledge_banks__kb__transfer_import_post"
       },
       "Body_write_files_v1_default_knowledge_banks__kb__files_post": {
         "properties": {

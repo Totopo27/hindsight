@@ -26,6 +26,18 @@ class Chunk:
     index: int
     text: str
     token_count: int
+    #: The markdown heading the passage sits under, when the document has headings. A
+    #: table's rows rarely repeat the title of the statement they belong to ("Consolidated
+    #: Statements of Cash Flows"), so the heading is what makes them findable by it.
+    section: str | None = None
+
+
+_HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
+
+
+def _heading_text(raw: str) -> str:
+    text = re.sub(r"[*_`]+", "", raw).strip()
+    return re.sub(r"\s+", " ", text)[:200]
 
 
 def _split_on(text: str, separator: str) -> list[str]:
@@ -104,9 +116,18 @@ def split_into_passages(text: str, *, passage_size: int, passage_overlap: int = 
         return []
     pieces = _split_recursive(cleaned, passage_size, SEPARATORS)
     merged = _merge(pieces, passage_size, passage_overlap)
+    headings = [(m.start(), _heading_text(m.group(1))) for m in _HEADING.finditer(cleaned)]
     passages: list[Chunk] = []
+    cursor = 0
     for raw in merged:
         stripped = re.sub(r"\s+\Z", "", raw).lstrip()
-        if stripped:
-            passages.append(Chunk(index=len(passages), text=stripped, token_count=count_tokens(stripped)))
+        if not stripped:
+            continue
+        # Passages are slices of the text in order; overlap means the next one starts
+        # before the previous one ends, so the search starts at the previous start.
+        found = cleaned.find(stripped, cursor)
+        start = found if found >= 0 else cursor
+        cursor = start
+        section = next((text for pos, text in reversed(headings) if pos < start and text), None)
+        passages.append(Chunk(index=len(passages), text=stripped, token_count=count_tokens(stripped), section=section))
     return passages

@@ -7,6 +7,7 @@ lands in the caller's tenant schema, exactly like the memory tables.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -430,16 +431,20 @@ def _scope(
     fields: dict[str, Any] | None,
     params: list[Any],
     schema_id: str | None = None,
+    doc_ids: list[str] | None = None,
 ) -> SearchScope:
-    """The JOIN and the WHERE additions for the schema and field filters.
+    """The JOIN and the WHERE additions for the schema, field and document filters.
 
     Field filters read the document row, so they need it joined rather than probed with
     EXISTS; the schema then comes off the same join instead of another subquery.
     """
-    if not fields and schema_id is None:
-        return SearchScope(join="", where="")
-    join = f" JOIN {fq_table('kb_documents')} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id"
     where = ""
+    if doc_ids:
+        params.append(list(doc_ids))
+        where += f" AND c.doc_id = ANY(${len(params)}::text[])"
+    if not fields and schema_id is None:
+        return SearchScope(join="", where=where)
+    join = f" JOIN {fq_table('kb_documents')} d ON d.bank_id = c.bank_id AND d.doc_id = c.doc_id"
     if schema_id is not None:
         # "none" is a real answer, not a missing filter: it selects the documents no
         # schema applied to, which is how you find what was never extracted.
@@ -452,6 +457,50 @@ def _scope(
     return SearchScope(join=join, where=where)
 
 
+async def documents_named_in(conn: Any, bank_id: str, query: str, min_similarity: float, limit: int = 3) -> list[str]:
+    """The documents whose title the query names — "the NDA between CEII and NDA".
+
+    ``word_similarity(title, query)`` is how much of the title appears somewhere in the
+    query, so a query that names a document scores near 1 on it whatever else it says.
+    Titles are compared as words (``Eidos_Therapeutics`` and ``ceii-and-nda`` included),
+    and only the documents within 0.1 of the best match count: a query that names one
+    agreement is not routed to its three nearest neighbours.
+    """
+    rows = await conn.fetch(
+        f"""
+        SELECT doc_id, word_similarity(regexp_replace(lower(title), '[^a-z0-9]+', ' ', 'g'), $2) AS s
+        FROM {fq_table("kb_documents")}
+        WHERE bank_id = $1 AND title IS NOT NULL AND title <> ''
+        ORDER BY s DESC
+        LIMIT {int(limit)}
+        """,
+        bank_id,
+        re.sub(r"[^a-z0-9]+", " ", query.lower()),
+    )
+    if not rows or rows[0]["s"] < min_similarity:
+        return []
+    best = rows[0]["s"]
+    return [r["doc_id"] for r in rows if r["s"] >= max(min_similarity, best - 0.1)]
+
+
+async def passage_counts(conn: Any, bank_id: str, doc_ids: list[str]) -> dict[str, int]:
+    rows = await conn.fetch(
+        f"SELECT doc_id, passage_count FROM {fq_table('kb_documents')} WHERE bank_id = $1 AND doc_id = ANY($2::text[])",
+        bank_id,
+        doc_ids,
+    )
+    return {r["doc_id"]: r["passage_count"] for r in rows}
+
+
+async def document_titles(conn: Any, bank_id: str, doc_ids: list[str]) -> dict[str, str]:
+    rows = await conn.fetch(
+        f"SELECT doc_id, title FROM {fq_table('kb_documents')} WHERE bank_id = $1 AND doc_id = ANY($2::text[])",
+        bank_id,
+        doc_ids,
+    )
+    return {r["doc_id"]: r["title"] for r in rows if r["title"]}
+
+
 async def search_semantic(
     conn: Any,
     bank_id: str,
@@ -459,9 +508,10 @@ async def search_semantic(
     limit: int,
     fields: dict[str, Any] | None = None,
     schema_id: str | None = None,
+    doc_ids: list[str] | None = None,
 ) -> list[PassageHit]:
     params: list[Any] = [bank_id]
-    scope = _scope(fields, params, schema_id)
+    scope = _scope(fields, params, schema_id, doc_ids)
     params.append(vector_literal(query_vector))
     rows = await conn.fetch(
         f"""
@@ -476,6 +526,11 @@ async def search_semantic(
     return [PassageHit(r["doc_id"], r["passage_index"], r["text"], i + 1) for i, r in enumerate(rows)]
 
 
+async def has_bm25_index(conn: Any) -> bool:
+    """Whether the passages carry the pg_textsearch index ``search_keyword(bm25=True)`` reads."""
+    return bool(await conn.fetchval(f"SELECT to_regclass('{fq_table('idx_kb_passages_bm25')}') IS NOT NULL"))
+
+
 async def search_keyword(
     conn: Any,
     bank_id: str,
@@ -483,12 +538,34 @@ async def search_keyword(
     limit: int,
     fields: dict[str, Any] | None = None,
     schema_id: str | None = None,
+    doc_ids: list[str] | None = None,
+    bm25: bool = False,
 ) -> list[PassageHit]:
-    """Keyword arm. Terms are OR-ed: a question rarely has every word in one passage."""
+    """Keyword arm. Terms are OR-ed: a question rarely has every word in one passage.
+
+    ``bm25`` reads the pg_textsearch index instead, which returns the top passages without
+    scoring every match: ``ts_rank_cd`` ranks each passage that shares any word with the
+    query, so on a million passages one search costs seconds. The index is global, so a
+    scoped search (fields, schema, named documents) stays on the tsvector path — its
+    filter makes the match set small, and a post-filtered top-k could come back empty.
+    """
     if not terms:
         return []
     params: list[Any] = [bank_id]
-    scope = _scope(fields, params, schema_id)
+    if bm25 and not (fields or schema_id or doc_ids):
+        params.append(" ".join(terms))
+        rows = await conn.fetch(
+            f"""
+            SELECT c.doc_id, c.passage_index, c.text
+            FROM {fq_table("kb_passages")} c
+            WHERE c.bank_id = $1
+            ORDER BY c.search_text <@> to_bm25query($2, '{fq_table("idx_kb_passages_bm25")}')
+            LIMIT {int(limit)}
+            """,
+            *params,
+        )
+        return [PassageHit(r["doc_id"], r["passage_index"], r["text"], i + 1) for i, r in enumerate(rows)]
+    scope = _scope(fields, params, schema_id, doc_ids)
     params.append(" | ".join(terms))
     rows = await conn.fetch(
         f"""

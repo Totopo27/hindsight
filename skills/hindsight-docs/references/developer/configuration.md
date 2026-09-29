@@ -1693,6 +1693,7 @@ so two banks on one server can chunk differently.
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION` | Whether writes fill the bank's [metadata schema](#knowledge-bank-metadata) with the LLM. Only does anything where a schema is defined, so leaving it on costs nothing until one is. | `true` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION_MAX_CHARS` | How much of a document (and of a chunk) the extraction LLM reads. | `12000` |
 | `HINDSIGHT_API_KB_FIELD_EXTRACTION_CONCURRENCY` | Chunk-level extraction is one LLM call per chunk; this many run at once per document. | `4` |
+| `HINDSIGHT_API_KB_AGENT_LLM_MODEL` | Model the [knowledge-bank agent](#knowledge-bank-agent) answers with. Only the model changes: it runs on the default LLM provider, key and base URL. Unset, the agent uses the default model. Hierarchical (per-bank overridable). | unset |
 | `HINDSIGHT_API_KB_SEARCH_VECTOR_WEIGHT` | Weight of the vector arm in the fusion; the keyword arm gets the rest (`1 - weight`). `0.5` is an even split. The keyword arm ORs every word of the query, so paragraph-length queries do better with more weight on the vector arm. Ignored for single-arm searches (`mode: vector` / `keyword`). | `0.5` |
 
 #### Metadata extraction {#knowledge-bank-metadata}
@@ -1992,6 +1993,24 @@ curl -X POST "$HINDSIGHT_API_URL/v1/default/knowledge-banks/fields-demo-kb/colle
 fields are then `<alias>.<field>`, in `select`, `where`, `group_by` and `order_by` alike.
 Joins are LEFT joins — a contract with no vendor is still a contract and still counts — and
 a query is capped at four of them.
+
+#### Asking the bank: the agent {#knowledge-bank-agent}
+
+`POST /v1/default/knowledge-banks/{kb}/agent` answers a question in plain words by calling
+the bank's own read tools — passage search, a field filter over documents, the query DSL
+over documents and over a collection's records, and reading one document. There is no
+fixed workflow: the model picks the tools, and the response carries each call and what it
+returned as `trace`.
+
+```json
+{"question": "What is the total value of all signed contracts?"}
+```
+
+Send `question` for a one-shot answer, or `messages` (the earlier turns, ending in the
+user's) to continue a chat — the server keeps no session. `max_steps` (default 6, at most
+12) caps the tool rounds; the last one must answer with what it has. Every tool answer is
+cut at 6,000 characters and the chat at its last 12 messages, so a turn's prompt stays
+bounded. The model is `HINDSIGHT_API_KB_AGENT_LLM_MODEL`.
 
 ### Retain
 
