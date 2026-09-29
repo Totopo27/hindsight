@@ -13,8 +13,18 @@ with the bank's hybrid search — the like-for-like comparison against `qdrant`
     HINDSIGHT_KB_SEND_TITLE       false to write documents with no title at all (ablation)
     HINDSIGHT_KB_WRITE_BATCH      documents per write operation (default 100, max 500)
     HINDSIGHT_KB_INGEST_TIMEOUT_S how long the whole ingest may take (default 1800)
+    HINDSIGHT_KB_COLLAPSE         false to return passages rather than one per document
+    HINDSIGHT_KB_CONFIG           JSON of bank config overrides, applied after creation
+                                  (e.g. {"kb_passage_size": 128, "kb_passage_overlap": 0})
+    HINDSIGHT_KB_KEEP             true to keep an existing bank (resume an ingest: identical
+                                  documents are skipped server-side by content hash)
+    HINDSIGHT_KB_TOPK             fixed passages per retrieval, overriding the mode's k
+    HINDSIGHT_KB_SCHEMA           JSON schema (document_fields) created as schema "doc";
+                                  a document's "key:value" tags are written as its fields.
+                                  Unset, those tags are written as metadata (still filterable).
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -30,6 +40,16 @@ from .base import MemoryProvider
 _SEND_TITLE = os.environ.get("HINDSIGHT_KB_SEND_TITLE", "true").strip().lower() not in ("0", "false", "no")
 _WRITE_BATCH = int(os.environ.get("HINDSIGHT_KB_WRITE_BATCH", "100"))
 _OPERATION_TIMEOUT_S = int(os.environ.get("HINDSIGHT_KB_INGEST_TIMEOUT_S", "1800"))
+_COLLAPSE = os.environ.get("HINDSIGHT_KB_COLLAPSE", "true").strip().lower() not in ("0", "false", "no")
+_CONFIG = json.loads(os.environ.get("HINDSIGHT_KB_CONFIG") or "{}")
+_KEEP = os.environ.get("HINDSIGHT_KB_KEEP", "false").strip().lower() in ("1", "true", "yes")
+_TOPK = int(os.environ["HINDSIGHT_KB_TOPK"]) if os.environ.get("HINDSIGHT_KB_TOPK") else None
+_SCHEMA = json.loads(os.environ.get("HINDSIGHT_KB_SCHEMA") or "null")
+
+
+def _tag_values(doc: Document) -> dict[str, str]:
+    """``["company:3M", "period:2018"]`` -> ``{"company": "3M", "period": "2018"}``."""
+    return dict(tag.split(":", 1) for tag in (doc.tags or []) if ":" in tag)
 
 
 class HindsightKnowledgeBankProvider(MemoryProvider):
@@ -61,11 +81,16 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
         return f"/v1/default/knowledge-banks/{self._bank}{suffix}"
 
     def prepare(self, store_dir: Path, unit_ids: set[str] | None = None, reset: bool = True) -> None:
-        if reset:
+        if reset and not _KEEP:
             self._http.delete(self._kb())
         created = self._http.post("/v1/default/knowledge-banks", json={"id": self._bank})
         if created.status_code not in (201, 409):
             created.raise_for_status()
+        if _CONFIG:
+            self._http.patch(f"/v1/default/banks/{self._bank}/config", json={"updates": _CONFIG}).raise_for_status()
+        if _SCHEMA:
+            schema = self._http.put(self._kb("/schemas/doc"), json=_SCHEMA)
+            schema.raise_for_status()
 
     def cleanup(self) -> None:
         self._http.close()
@@ -84,9 +109,11 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
                     # ids are opaque numbers and slugs, and prepending one to every chunk
                     # poisons its embedding.
                     "title": doc.context if _SEND_TITLE else None,
-                    # The per-user scope is a metadata value, filtered with the same
-                    # field filter a schema field uses — knowledge banks have no tags.
-                    "metadata": {"user_id": doc.user_id} if doc.user_id else {},
+                    "metadata": {
+                        **({} if _SCHEMA else _tag_values(doc)),
+                        **({"user_id": doc.user_id} if doc.user_id else {}),
+                    },
+                    **({"fields": _tag_values(doc), "schema_id": "doc"} if _SCHEMA else {}),
                 }
                 for doc in documents[start : start + _WRITE_BATCH]
             ]
@@ -118,8 +145,9 @@ class HindsightKnowledgeBankProvider(MemoryProvider):
         k: int = 10,
         user_id: str | None = None,
         query_timestamp: str | None = None,
+        filters: dict | None = None,
     ) -> tuple[list[Document], dict | None]:
-        body: dict = {"query": query, "top_k": k, "mode": self._mode, "collapse_documents": True}
+        body: dict = {"query": query, "top_k": min(_TOPK or k, 200), "mode": self._mode, "collapse_documents": _COLLAPSE}
         if user_id:
             body["fields"] = {"user_id": user_id}
         if self._rerank is not None:

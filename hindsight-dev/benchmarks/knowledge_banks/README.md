@@ -270,3 +270,119 @@ A join is a hash join on the relationship's record id, so it costs little over t
 ungrouped scan (260 ms vs 173 ms). Filtering *on the joined collection* is the slow shape
 (950 ms) because the filter cannot be pushed to the index on either side — the same thing
 SQL would do, and the first place to look if this becomes a hot path.
+
+## Published head-to-heads: LegalBench-RAG, FinanceBench, PageIndex-OSS (2026-09-28)
+
+> **The rows marked "agent" were measured against a knowledge-bank agent endpoint that has
+> since been removed from the product** (`POST /knowledge-banks/{kb}/agent`, dropped on
+> 2026-09-29). They are kept because they are what was measured, not because they can be
+> reproduced as the code now stands: reproducing them means bringing that endpoint back.
+> Every retrieval row — LegalBench-RAG, and the top-k rows of FinanceBench — is unaffected
+> and still runs.
+
+Three benchmarks with published numbers from vendors we are compared against, each run
+the way that vendor ran it. All three are AMB datasets (branch `kbbench-agent`, copies
+here: `amb_dataset_legalbench_rag.py`, `amb_dataset_financebench.py`,
+`amb_dataset_pageindex_oss.py`); PDFs are converted once with `convert_pdfs.py`
+(pymupdf4llm markdown, tables kept, a page marker per page).
+
+**Server.** One knowledge bank per corpus; `text-embedding-3-large` (1536d) for the
+FinanceBench / PageIndex runs, `bge-base-en-v1.5` for LegalBench-RAG; TypeSafe `jev`
+reranker; 100 candidates per arm. Question answering is the bank's own agent
+(`POST /knowledge-banks/{kb}/agent`), which picks its tools itself.
+
+What the search learned on the way (each is on by default now, and generic):
+
+| Change | Where it showed |
+|---|---|
+| The reranker reads the document title with each passage (as the embedding already did) | LegalBench-RAG ContractNLI top-1 document 29% → 94%: near-identical NDAs are told apart by title |
+| **Title routing** — a query that names a document (`word_similarity(title, query)` ≥ 0.6) is also searched inside it | LegalBench-RAG MAUD recall@64 72.2 → 81.7 (hit), precision@1 67.5 → 71.1 |
+| **Section headings** — each passage is indexed under the markdown heading it sits in | FinanceBench: a statement's table rows become findable by the statement's name |
+
+And the agent: the bank map lists each free-text field's stored values (filters match
+the stored spelling), filters/queries are JSON-string parameters (Gemini mangles free-form
+object arguments), `read_passages` reads around a hit, the last step and an empty turn
+are told to answer, and whole passages (not 600-character cuts) reach the model.
+
+### LegalBench-RAG — beats the paper and Ragie on every published number
+
+LegalBench-RAG-mini (194 queries per set, the official `SORT_BY_DOCUMENT` sampler), 776
+queries over 72 documents. Two metrics because the two publishers use two:
+**char** is the paper's (character overlap with gold spans, verbatim from its
+`run_benchmark.py`; recall over the union of retrieved spans); **hit** is Ragie's reading
+("measured slightly differently due to Ragie's chunking approach") — a passage counts when
+it overlaps a gold span. 768-token passages, 64 overlap.
+
+| Set | char P@1 (paper) | char R@64 (paper) | hit P@1 (Ragie) | hit R@64 (Ragie) |
+|---|---|---|---|---|
+| PrivacyQA | **18.64** (14.38) | **100.00** (84.19) | **91.2** (62.3) | **100.0** (99.1) |
+| ContractNLI | **12.42** (6.63) | **99.48** (61.72) | **94.8** (68.0) | **99.5** (99.4) |
+| MAUD | **25.82** (2.65) | **88.46** (28.28) | **73.7** (58.2) | **87.5** (84.6) |
+| CUAD | **11.18** (1.97) | **100.00** (74.70) | **81.4** (26.2) | **100.0** (97.1) |
+| All | **17.01** (6.41) | **96.99** (62.22) | 85.3 | 96.8 |
+
+Passage size trades the two: 512 tokens wins char precision harder (22.1 overall) but
+misses Ragie's MAUD recall@64 (81.7 vs 84.6); 1024 wins hit recall (MAUD 90.8) but loses
+PrivacyQA char P@1 to the paper (12.3 vs 14.4). 768 is the one setting that wins all 18.
+
+### FinanceBench — beats Ragie and the paper; within 1.4 points of PageIndex
+
+150 open questions over 84 filings (10-K/10-Q/8-K/earnings). Grading is PageIndex's
+published judge (`financebench_rejudge.py`, its prompt verbatim, gpt-4o-2024-11-20, OR
+with o3-mini; o1-mini is retired). **PageIndex protocol** is the number to compare with
+Mafin 2.5's 98.7%: their `eval.py` counts a wrong answer only on the 136 questions they
+label `AL`; the 14 they re-labelled by hand (benchmark error, multiple valid approaches…)
+cannot be wrong. The single-judge column holds every question to the judge.
+
+| Setup | Answering | Single judge | PageIndex protocol | Published |
+|---|---|---|---|---|
+| Shared store, top-8 passages → one answer (Ragie's method) | GPT-4o | 77.3% | 85.3% | Ragie 27%, paper 19% |
+| Single store, top-32 passages → one answer (Ragie's method) | GPT-4o | 83.3% | 90.0% | Ragie 51% |
+| Shared store, agent | gemini-3.1-flash-lite | 90.0% | 95.3% | — |
+| Single store, agent | gemini-3.1-flash-lite | 89.3% | 95.3% | — |
+| Shared store, agent, 16 steps | gemini-3-flash | 90.7% | 95.3% | — |
+| Single store, agent | gemini-3-flash | 93.3% | **97.3%** | PageIndex (Mafin 2.5, GPT-4o) 98.7% |
+| Single store, agent | gpt-4o | 77.3% | 85.3% | — |
+
+**Where this leaves the PageIndex comparison: 97.3% best, 96.7% mean, against 98.7%.**
+Five single-store gemini-3-flash runs across four variants — 12 or 16 steps, with the
+self-check pass (`kb_agent_self_check`), with analyst instructions for the bank
+(`kb_agent_instructions`) — scored 97.3, 97.3, 96.7, 96.0 and 96.0 (gemini-3.1-pro: 96.7):
+the spread is the noise, and none of the variants moved it. The questions it keeps missing are readings, not
+retrieval: Netflix EBITDA with or without content amortization as D&A, J&J's guidance
+midpoint vs the gold's 3.5%, PepsiCo's $411M restructuring found but called "not on the
+income statement", AES's ROA. Tuning the prompt to those golds would be fitting the
+benchmark, not the product, so it stops here.
+
+Two readings worth keeping. The agent on **GPT-4o** — PageIndex's model — scores 85.3%
+on the same bank: the gap to Mafin is not the answering model, it is ours being generic and
+theirs being a finance product built on a document tree. And **Ragie's own method on our
+retrieval** (a fixed top-k into GPT-4o, no agent) is 85–90%, against the 27% and 51% Ragie
+published for it: the retrieval, not the agent, is most of the distance to them.
+
+### PageIndex-OSS-Benchmark — ties PageIndex's best cheap-model row
+
+VectifyAI's own benchmark for open-source PageIndex: 62 questions over 34 PDFs, each
+answered against its own document, graded by MMLongBench-Doc-V2's judge (their script,
+gpt-5.6-luna, effort high). Their table is per chat model; ours is the bank's agent.
+
+| System | Accuracy |
+|---|---|
+| Hindsight agent, gemini-3.1-flash-lite | 56/62 · 90.3% |
+| Hindsight agent, gemini-3-flash (three runs) | 60/62 · **96.8%**, 58/62 · 93.5%, 60/62 · 96.8% (mean 95.7%) |
+| PageIndex, gpt-5.6-luna none / low / medium / high | 85.5% / 85.5% / 91.9% / 96.8% |
+| PageIndex, gpt-5.6-terra none … high | 90.3% … 100% |
+
+### Reproducing
+
+```bash
+# convert the PDFs once (FinanceBench: all 368 filings; PageIndex-OSS: 34)
+uv run python convert_pdfs.py 8
+# a server per the table above, then e.g.
+HINDSIGHT_HTTP_URL=http://localhost:8912 HINDSIGHT_KB_BANK=fb-single HINDSIGHT_KB_COLLAPSE=false \
+HINDSIGHT_KB_SCHEMA='{"document_fields":{"company":{"type":"string","source":"request"},"period":{"type":"string","source":"request"},"doc_type":{"type":"string","source":"request"}}}' \
+  uv run amb run --dataset financebench --split open-single --mode agent --memory hindsight-kb
+uv run python scripts/financebench_rejudge.py outputs/financebench/<run>/agent/open-single.json
+HINDSIGHT_KB_COLLAPSE=false HINDSIGHT_KB_CONFIG='{"kb_passage_size":768,"kb_passage_overlap":64}' \
+  uv run amb run --dataset legalbench-rag --split mini --mode retrieval --memory hindsight-kb
+```
