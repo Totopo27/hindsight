@@ -26,8 +26,8 @@ from hindsight_system_evals import (
     wait_until_settled,
 )
 from hindsight_system_evals.pages import SettleFn
-from hindsight_system_evals.target import ENV_API_KEY, ENV_API_URL
 from hindsight_system_evals.report import RECORDED, ModelConfig, ModelRef, RunReport, summarise
+from hindsight_system_evals.target import ENV_API_KEY, ENV_API_URL
 
 BANK_PREFIX = "syseval-"
 

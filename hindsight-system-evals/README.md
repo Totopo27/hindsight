@@ -131,6 +131,32 @@ pages whole, and now returns the best hit whole plus a snippet of the others, wi
 model answer from a snippet without ever reading the page, which is why the best
 hit still arrives in full.
 
+**`test_08` — collections.** The first suite over a *knowledge* bank rather than a
+memory bank: a procurement folder of thirteen short documents, two collections
+(vendors, contracts), and the table derived from them. Every vendor in this space
+sells the same picture — Hebbia's Matrix (a row per entity, a column per question,
+a citation under every cell), V7 Go's data-room diligence, LlamaExtract's schema
+plus citations — and they all demo the easy half: clean documents, one fact each,
+extracted once. This grades the other half: identity (the same vendor written
+three ways is one row), supersession (an amendment beats what it amends),
+absence (a field nobody wrote stays empty), and change (a corrected document moves
+its row, a deleted one takes its contribution with it).
+
+It went red on its first honest run, and the failures are the product: supersession
+is decided by filename order (contributions fold `ORDER BY updated_at, doc_id` and
+`amendment-acme-2` sorts before `msa-acme`, so 120,000 overwrites 185,000);
+half-extracted records become rows under a random hex id, so one run produced 14
+contract rows for 3 contracts and filed the buyer as its own vendor; relationships
+store `str(value).lower()` while record ids come from `identity.normalise`, so every
+join returns null; and `evidence` is optional on the derivation schema, so nothing
+is cited. Minimum acceptance is the three that have passed — identity, supersession,
+absence — and they are not yet stable run to run, which is itself the measurement.
+
+It drives the knowledge-bank HTTP API directly (`hindsight_system_evals/knowledge_banks.py`)
+rather than the published client, because the client has no knowledge-banks surface
+until `scripts/generate-clients.sh` runs again. Same blackbox rule otherwise: no
+engine import, no SQL.
+
 **`test_07` — source priority.** One bank holding a handbook AND the
 conversations about it, which is what a bank someone has actually used looks
 like. After extraction both are flat assertions — "a pull request needs two
