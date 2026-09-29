@@ -179,6 +179,9 @@ _RECORDS_SYSTEM = (
     "- Only things the collection is about. A document usually names others — the reader, "
     "the author, the other party to an agreement — and they belong in this collection only "
     "if the collection's definition says they do.\n\n"
+    "A field that points at another collection's record takes that record's name, exactly "
+    "as the list of known records writes it, when the thing is one of them. Say it in the "
+    "document's own words only when it is not.\n\n"
     "Every field you fill needs an evidence entry: the field's name and the sentence you "
     "read it from, quoted from the document. A value nobody can trace is a claim, not data."
 )
@@ -217,6 +220,7 @@ async def derive_records(
     *,
     collection_name: str,
     collection_description: str | None = None,
+    known_records: list[str] | None = None,
     doc_id: str,
     title: str | None,
     text: str,
@@ -266,6 +270,20 @@ async def derive_records(
                 # them — as one of its own vendors.
                 f"Collection: {collection_name}\n"
                 + (f"One record is: {collection_description}\n" if collection_description else "")
+                # The records a relationship may point at, by the name they are filed
+                # under. Without them the model writes whatever the sentence calls the
+                # thing and the link resolves only when the two spellings happen to
+                # agree — the join that returned null for every contract in the
+                # collections eval. Offered, not enforced: a document may be the first
+                # to mention something, and refusing it would lose the record.
+                + (
+                    "\nRecords that already exist in the collections this one points at, "
+                    "by the name they are filed under:\n"
+                    + "\n".join(f"  {line}" for line in known_records)
+                    + "\n"
+                    if known_records
+                    else ""
+                )
                 + f"\nDocument{f' titled {title}' if title else ''}:\n{text[:char_limit]}"
             ),
         },

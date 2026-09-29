@@ -12,6 +12,7 @@ resolved the same way memory-bank settings are.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -923,6 +924,84 @@ class KnowledgeService:
             await collections_store.materialize(conn, bank_id, collection_id, record_id)
         return await self.get_record(bank_id, collection_id, record_id)
 
+    async def _derivation_windows(self, pool: Any, bank_id: str, row: Any, char_limit: int) -> list[str]:
+        """One document as the windows a derivation reads, largest that still fit.
+
+        Passages are what the bank already cut the document into, so they are the unit:
+        consecutive ones are packed up to ``char_limit`` and each pack is one prompt. A
+        document with no passages yet (or one short enough to fit) is a single window of
+        its own text, which is what the whole corpus used to be.
+        """
+        if len(row["text"] or "") <= char_limit:
+            return [row["text"] or ""]
+        async with acquire_with_retry(pool) as conn:
+            passages = await conn.fetch(
+                f"SELECT text FROM {store.fq_table('kb_passages')} "
+                "WHERE bank_id = $1 AND doc_id = $2 ORDER BY passage_index",
+                bank_id,
+                row["doc_id"],
+            )
+        if not passages:
+            return [row["text"][:char_limit]]
+        windows: list[str] = []
+        current = ""
+        for passage in passages:
+            text = passage["text"] or ""
+            if current and len(current) + len(text) + 2 > char_limit:
+                windows.append(current)
+                current = text
+            else:
+                current = f"{current}\n\n{text}" if current else text
+        if current:
+            windows.append(current)
+        return windows
+
+    async def _relationship_candidates(
+        self, conn: Any, bank_id: str, collection: dict[str, Any], limit: int = 200
+    ) -> list[str]:
+        """The records this collection's relationships may point at, as ``field: name``.
+
+        Capped: a prompt cannot carry a million records, and past a point the list stops
+        helping a model choose. Beyond the cap the value falls back to what the document
+        says, which resolution still tries to match.
+        """
+        lines: list[str] = []
+        for name, target in collections_store.relationships(collection.get("fields") or {}).items():
+            rows = await conn.fetch(
+                f"SELECT record_id FROM {store.fq_table('kb_records')} "
+                "WHERE bank_id = $1 AND collection_id = $2 ORDER BY record_id LIMIT $3",
+                bank_id,
+                target,
+                limit,
+            )
+            lines.extend(f"{name}: {row['record_id']}" for row in rows)
+        return lines
+
+    async def _unresolved_relationships(self, conn: Any, bank_id: str, collection: dict[str, Any]) -> int:
+        """How many relationship values name no record in the collection they point at."""
+        unresolved = 0
+        for name, target in collections_store.relationships(collection.get("fields") or {}).items():
+            unresolved += (
+                await conn.fetchval(
+                    f"""
+                    SELECT count(*) FROM {store.fq_table("kb_records")} r
+                    WHERE r.bank_id = $1 AND r.collection_id = $2
+                      AND r.values ? $3
+                      AND NOT EXISTS (
+                        SELECT 1 FROM {store.fq_table("kb_records")} t
+                        WHERE t.bank_id = r.bank_id AND t.collection_id = $4
+                          AND t.record_id = (r.values -> $3 #>> '{{}}')
+                      )
+                    """,
+                    bank_id,
+                    collection["collection_id"],
+                    name,
+                    target,
+                )
+                or 0
+            )
+        return unresolved
+
     async def _resolved_relationships(
         self, conn: Any, bank_id: str, collection: dict[str, Any], values: dict[str, Any], *, config: Any
     ) -> dict[str, Any]:
@@ -1047,26 +1126,56 @@ class KnowledgeService:
                 f"SELECT doc_id, title, text FROM {store.fq_table('kb_documents')} WHERE {where} ORDER BY doc_id",
                 *params,
             )
+            # The records a relationship may point at, offered to the model so it names
+            # one instead of inventing a spelling that resolves to nothing.
+            known_records = await self._relationship_candidates(conn, bank_id, collection)
 
-        # A relationship's value is another record's id, and the model is told the field
-        # by name; it is not asked to invent ids, so relationships come from whatever the
-        # text names and are resolved by the same identity rule the other collection uses.
         derivable = {name: spec for name, spec in (collection["fields"] or {}).items() if not spec.get("collection")}
         relationship_fields = collections_store.relationships(collection["fields"] or {})
+        fields_for_model = {**derivable, **{name: {"type": "string"} for name in relationship_fields}}
+        char_limit = int(config.kb_field_extraction_max_chars)
         records_written = 0
         records_skipped = 0
         identity_field = collection.get("identity")
-        for row in documents:
-            derived = await derive_records(
-                llm,
-                {**derivable, **{name: {"type": "string"} for name in relationship_fields}},
-                collection_name=collection.get("name") or collection_id,
-                collection_description=collection.get("description"),
-                doc_id=row["doc_id"],
-                title=row["title"],
-                text=row["text"],
-                char_limit=int(config.kb_field_extraction_max_chars),
-            )
+
+        async def read(row: Any) -> tuple[Any, list[dict[str, Any]]]:
+            """Every record one document describes, read a window at a time.
+
+            A document is not one prompt. It used to be sent whole and truncated at
+            ``kb_field_extraction_max_chars``, so a contract longer than that lost
+            everything past the cut with nothing said about it — invisible on a corpus of
+            paragraphs, total on a real one. Its passages are already stored, so they are
+            read in windows of the same budget and what each window found is merged.
+            """
+            windows = await self._derivation_windows(pool, bank_id, row, char_limit)
+            merged: dict[str, dict[str, Any]] = {}
+            for window in windows:
+                async with semaphore:
+                    derived = await derive_records(
+                        llm,
+                        fields_for_model,
+                        collection_name=collection.get("name") or collection_id,
+                        collection_description=collection.get("description"),
+                        known_records=known_records,
+                        doc_id=row["doc_id"],
+                        title=row["title"],
+                        text=window,
+                        char_limit=char_limit,
+                    )
+                for record in derived:
+                    # Windows of one document are one contribution per record, not one
+                    # each: a contribution is keyed by (record, document), so writing
+                    # them separately would leave only the last window's values.
+                    key = normalise(record["values"].get(identity_field)) if identity_field else str(len(merged))
+                    into = merged.setdefault(key, {"values": {}, "evidence": {}})
+                    into["values"].update({k: v for k, v in record["values"].items() if v is not None})
+                    into["evidence"].update(record["evidence"] or {})
+            return row, list(merged.values())
+
+        # The model calls run together; the writes do not. Two documents folding the same
+        # record would otherwise race each other through materialize.
+        semaphore = asyncio.Semaphore(max(1, int(config.kb_field_extraction_concurrency)))
+        for row, derived in await asyncio.gather(*(read(row) for row in documents)):
             async with acquire_with_retry(pool) as conn:
                 stale = (
                     {
@@ -1111,12 +1220,19 @@ class KnowledgeService:
                 for record_id in stale:
                     await collections_store.materialize(conn, bank_id, collection_id, record_id)
 
+        async with acquire_with_retry(pool) as conn:
+            dangling = await self._unresolved_relationships(conn, bank_id, collection)
+
         counts = {
             "documents_read": len(documents),
             "records_written": records_written,
             # Reported, not swallowed: a derivation that drops most of what the model
             # returned is a prompt or schema problem the operator should see.
             "records_skipped": records_skipped,
+            # A relationship whose value names no record in the collection it points at.
+            # The link is kept — the record may arrive later — but a join over it returns
+            # nothing, and silence there is the failure nobody notices.
+            "unresolved_links": dangling,
         }
         operation_id = task.get("operation_id")
         if operation_id:
