@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
@@ -227,6 +227,11 @@ class CollectionSpec:
     #: as ``field: record`` lines. Offered so the model names an existing record rather
     #: than a spelling that resolves to nothing.
     candidates: list[str]
+    #: Records this collection already holds. Offered for the same reason, one level in:
+    #: a slice that meets "County Paris" should write the name Paris is already filed
+    #: under, because nothing downstream can tell a title from a different person —
+    #: identity resolution catches misspellings, not honorifics.
+    existing: list[str] = field(default_factory=list)
 
 
 async def derive_records(
@@ -285,6 +290,13 @@ async def derive_records(
         if spec.description:
             line += f": {spec.description}"
         described.append(line)
+        if spec.existing:
+            described.append(
+                # Wording kept free of common words like "one": a slice's prompt is
+                # matched by substring in the tests' fixtures, and prose that happens to
+                # contain a marker answers the wrong question.
+                "    already recorded (reuse the same name when the text refers to it): " + ", ".join(spec.existing)
+            )
         described.extend(f"    may point at: {candidate}" for candidate in spec.candidates)
 
     messages = [
@@ -656,4 +668,84 @@ async def resolve_links(
             out.append(item)
         elif isinstance(item, dict) and item.get("record") and item.get("points_at"):
             out.append(_Link.model_validate(item))
+    return out
+
+
+_MATCH_SYSTEM = (
+    "You decide whether a name a document used is a record you already have. For each "
+    "name you are given the records that came closest to it. Answer with the record it "
+    "means, or with nothing when none of them is that thing.\n\n"
+    "The names worth matching are the ones a person would read as the same thing written "
+    "differently: a title in front of it (County Paris is Paris), a legal suffix, an "
+    "initial, an abbreviation, a misspelling, a maiden name. The names worth leaving "
+    "alone are the ones that merely look alike: two people who share a surname, two "
+    "products in a series, a parent company and its subsidiary. When the two could be "
+    "either, leave it alone — a wrong match silently merges two things and no later "
+    "document can take it apart, while an unmatched name is a new record somebody can "
+    "still merge by hand."
+)
+
+
+class _Match(BaseModel):
+    """One name, and the record it turned out to be."""
+
+    name: str = Field(description="The name being matched, exactly as it was listed")
+    record: str = Field(description="The record it means, exactly as it was listed among the candidates")
+
+
+async def match_records(
+    llm: Any,
+    *,
+    collection_name: str,
+    what_a_record_is: str | None,
+    proposals: dict[str, list[str]],
+) -> dict[str, str]:
+    """Which existing record each unfamiliar name means, decided in one call.
+
+    ``proposals`` is ``{name: [candidate record ids]}`` — the names a derivation could
+    not place by an exact key or a known alias, each with what similarity search found
+    near it. Returns only the ones it placed.
+
+    One call for the whole batch rather than one per name: the cost of asking is the
+    prompt, and the names in a batch disambiguate each other — a list holding both
+    "paris" and "county paris" tells the model more than either alone.
+    """
+    if not proposals:
+        return {}
+    listed = "\n".join(
+        f"  {name} → candidates: {', '.join(candidates)}" for name, candidates in proposals.items() if candidates
+    )
+    if not listed:
+        return {}
+    batch_model = create_model(
+        "Matches",
+        matches=(list[_Match], Field(default_factory=list, description="Only the names you could place")),
+    )
+    messages = [
+        {"role": "system", "content": _MATCH_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"Collection: {collection_name}\n"
+                + (f"One record is: {what_a_record_is}\n" if what_a_record_is else "")
+                + f"\nNames to place:\n{listed}"
+            ),
+        },
+    ]
+    try:
+        result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_match")
+        content = result.content
+    except Exception as e:  # noqa: BLE001 - an unmatched name becomes its own record
+        logger.warning("knowledge record matching failed for %s: %s", collection_name, e)
+        return {}
+    raw = content.matches if isinstance(content, BaseModel) else (content or {}).get("matches") or []
+    out: dict[str, str] = {}
+    for item in raw:
+        match = item if isinstance(item, _Match) else _Match.model_validate(item) if isinstance(item, dict) else None
+        if match is None:
+            continue
+        # Both ends have to be ones we offered: anything else is the model inventing a
+        # pairing, which is the failure this whole step exists to avoid.
+        if match.name in proposals and match.record in proposals[match.name]:
+            out[match.name] = match.record
     return out

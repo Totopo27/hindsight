@@ -58,9 +58,14 @@ class Derivation:
     def _answer(self, messages: list[dict], scope: str):
         if scope != "knowledge_records":
             return {}
+        # Only the document half of the prompt. The rest of it now lists the records the
+        # collection already holds, and a marker that is also a record name ("acme")
+        # would match the scaffolding instead of the text — answering about the wrong
+        # document, which is how this fixture read "globex" and returned Acme.
         content = messages[-1]["content"]
+        _, _, document = content.partition("\nDocument")
         for marker, (collection, records) in self.by_marker.items():
-            if marker in content:
+            if marker in (document or content):
                 # One slice is read for every collection at once, so the answer is keyed
                 # by collection rather than a bare list of records.
                 return {collection: records}
@@ -620,7 +625,6 @@ async def test_one_document_feeding_two_collections_stays_consistent_in_both(kb_
     def answer(messages, scope):
         if scope != "knowledge_records":
             return {}
-        content = messages[-1]["content"]
         # Both collections are asked for in the same call now, so both are answered.
         return {
             "vendors": [{"values": {"name": "acme", "country": "de"}, "evidence": {}}],

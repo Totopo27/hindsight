@@ -536,23 +536,25 @@ async def resolve_record_id(
     # Stage one: the trigram index narrows thousands of records to a handful. It is a
     # prefilter, not the verdict — a low threshold on purpose, because the verdict is the
     # edit distance below and a prefilter that is too strict hides the typos from it.
+    # It used to also require the ids be within two characters of each other, which is
+    # the same rule `is_typo_of` applies as part of its verdict: keeping it here only
+    # meant candidates never reached the thing that decides.
     candidates = await conn.fetch(
         f"""
         SELECT record_id FROM {fq_table("kb_records")}
         WHERE bank_id = $1 AND collection_id = $2
-          AND length(record_id) BETWEEN $4 AND $5
-          AND similarity(record_id, $3) >= $6
+          AND similarity(record_id, $3) >= $4
         ORDER BY similarity(record_id, $3) DESC
         LIMIT 5
         """,
         bank_id,
         collection_id,
         key,
-        len(key) - 2,
-        len(key) + 2,
         similarity,
     )
-    # Stage two: the decision. Nearly the same length, a couple of characters apart.
+    # Stage two: the certain cases only — nearly the same length, a couple of characters
+    # apart. Everything else is a judgement ("County Paris" is Paris, "Acme Holdings" is
+    # not Acme), which no string rule settles: the caller collects those and asks.
     for row in candidates:
         if is_typo_of(key, str(row["record_id"])):
             # Remember it, so the next document spelled that way costs a lookup instead of
@@ -704,3 +706,30 @@ async def repoint_relationships(conn: Any, bank_id: str, collection_id: str, sou
                     field_name,
                     target_id,
                 )
+
+async def resolution_candidates(
+    conn: Any, bank_id: str, collection_id: str, key: str, *, limit: int = 8
+) -> list[str]:
+    """The records nearest this key, for a model to choose between.
+
+    Trigram order, unfiltered by length: a title in front of a name ("county paris" for
+    "paris") is not a typo and every length rule excluded it. The verdict is not made
+    here — `is_typo_of` decides the cases that are certain, and everything else is a
+    judgement, which is the caller's to ask for.
+    """
+    if not key:
+        return []
+    rows = await conn.fetch(
+        f"""
+        SELECT record_id FROM {fq_table("kb_records")}
+        WHERE bank_id = $1 AND collection_id = $2 AND record_id <> $3
+        ORDER BY similarity(record_id, $3) DESC
+        LIMIT $4
+        """,
+        bank_id,
+        collection_id,
+        key,
+        limit,
+    )
+    return [str(row["record_id"]) for row in rows]
+

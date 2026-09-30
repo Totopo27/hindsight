@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-
 from ..config import get_config
 from ..engine.db_utils import acquire_with_retry
 from ..engine.llm_wrapper import sanitize_llm_output
@@ -1003,6 +1002,15 @@ class KnowledgeService:
                     target,
                 )
                 candidates.extend(f"{name} -> {row['record_id']}" for row in rows)
+            existing = [
+                row["record_id"]
+                for row in await conn.fetch(
+                    f"SELECT record_id FROM {store.fq_table('kb_records')} "
+                    "WHERE bank_id = $1 AND collection_id = $2 ORDER BY record_id LIMIT 200",
+                    bank_id,
+                    collection["collection_id"],
+                )
+            ]
             specs.append(
                 extraction.CollectionSpec(
                     collection_id=collection["collection_id"],
@@ -1015,6 +1023,7 @@ class KnowledgeService:
                         **{name: {"type": "string"} for name in relationships},
                     },
                     candidates=candidates,
+                    existing=existing,
                 )
             )
         return specs
@@ -1150,7 +1159,14 @@ class KnowledgeService:
         return unresolved
 
     async def _resolved_relationships(
-        self, conn: Any, bank_id: str, collection: dict[str, Any], values: dict[str, Any], *, config: Any
+        self,
+        conn: Any,
+        bank_id: str,
+        collection: dict[str, Any],
+        values: dict[str, Any],
+        *,
+        config: Any,
+        unplaced: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Point every relationship at a record of the collection it names.
 
@@ -1181,13 +1197,89 @@ class KnowledgeService:
                 # record id of "" would collide with every other nameless one.
                 resolved[name] = None
                 continue
-            resolved[name] = await collections_store.resolve_record_id(
-                conn, bank_id, target, key, similarity=similarity
-            )
+            landed = await collections_store.resolve_record_id(conn, bank_id, target, key, similarity=similarity)
+            resolved[name] = landed
+            if unplaced is not None and landed == key:
+                # Nothing matched by key, alias or typo. Remembered so the whole batch
+                # can be put to the model at once rather than one name at a time.
+                unplaced.setdefault(target, {})[key] = str(raw)
         return resolved
 
+    async def _adjudicate(
+        self,
+        pool: Any,
+        bank_id: str,
+        pending: dict[str, dict[str, str]],
+        *,
+        collections: dict[str, dict[str, Any]],
+        llm: Any,
+    ) -> LinkPassOutcome:
+        """Decide which existing record each unplaced name means, one call per collection.
+
+        ``pending`` is ``{collection_id: {normalised name: the name as written}}`` — only
+        the names that matched no key and no alias, which is the point: an exact hit and
+        a remembered variant cost nothing, and the model is asked about the residue.
+
+        Every decision is written as an alias, so the same spelling is a lookup next time
+        rather than a judgement made again. That is what keeps a table from changing
+        between two derivations over an unchanged corpus.
+        """
+        placed = 0
+        calls = 0
+        for collection_id, names in pending.items():
+            if not names:
+                continue
+            collection = collections.get(collection_id) or {}
+            async with acquire_with_retry(pool) as conn:
+                proposals = {
+                    key: await collections_store.resolution_candidates(conn, bank_id, collection_id, key)
+                    for key in names
+                }
+            proposals = {key: candidates for key, candidates in proposals.items() if candidates}
+            if not proposals:
+                continue
+            calls += 1
+            matches = await extraction.match_records(
+                llm,
+                collection_name=collection.get("name") or collection_id,
+                what_a_record_is=collection.get("description"),
+                proposals=proposals,
+            )
+            if not matches:
+                continue
+            async with acquire_with_retry(pool) as conn:
+                for key, record_id in matches.items():
+                    exists = await conn.fetchval(
+                        f"SELECT 1 FROM {store.fq_table('kb_records')} "
+                        "WHERE bank_id = $1 AND collection_id = $2 AND record_id = $3",
+                        bank_id,
+                        collection_id,
+                        key,
+                    )
+                    if exists:
+                        # A row of its own until now: fold it in. merge_records carries
+                        # its contributions over, writes the alias, and repoints whatever
+                        # pointed at it — a contract whose vendor was merged still has one.
+                        await collections_store.merge_records(conn, bank_id, collection_id, key, record_id)
+                    else:
+                        # A foreign key naming something that never became a row here.
+                        # The alias settles it, and the references move to the record.
+                        await collections_store.add_alias(
+                            conn, bank_id, collection_id, key, record_id, source="variant"
+                        )
+                        await collections_store.repoint_relationships(conn, bank_id, collection_id, key, record_id)
+                    placed += 1
+        return LinkPassOutcome(placed=placed, calls=calls)
+
     async def _record_id(
-        self, conn: Any, collection: dict[str, Any], given: str | None, values: dict[str, Any], *, config: Any = None
+        self,
+        conn: Any,
+        collection: dict[str, Any],
+        given: str | None,
+        values: dict[str, Any],
+        *,
+        config: Any = None,
+        unplaced: dict[str, dict[str, str]] | None = None,
     ) -> str:
         """Which record this is.
 
@@ -1206,9 +1298,14 @@ class KnowledgeService:
                 # not become the record every nameless thing falls into.
                 return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:24]
             similarity = float(getattr(config, "kb_record_identity_similarity", 0.82)) if config else 0.82
-            return await collections_store.resolve_record_id(
+            landed = await collections_store.resolve_record_id(
                 conn, collection["bank_id"], collection["collection_id"], key, similarity=similarity
             )
+            # A record's own name is the same question as a foreign key's, one level up:
+            # "County Paris" is a row of its own until something decides it is Paris.
+            if unplaced is not None and landed == key:
+                unplaced.setdefault(collection["collection_id"], {})[key] = str(values[identity])
+            return landed
         return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()[:24]
 
     async def merge_records(self, bank_id: str, collection_id: str, record_id: str, into: str) -> dict[str, Any]:
@@ -1370,6 +1467,9 @@ class KnowledgeService:
             return row, {collection_id: list(v.values()) for collection_id, v in found.items()}
 
         written = skipped = 0
+        #: Names that matched nothing by key, alias or typo, per collection. They are put
+        #: to the model once, after the corpus is read, so the batch disambiguates itself.
+        unplaced: dict[str, dict[str, str]] = {}
         #: Per collection, the slice text each record was read from — the evidence the
         #: link pass is shown for the records it has to place.
         seen: dict[str, dict[str, list[str]]] = {}
@@ -1399,9 +1499,11 @@ class KnowledgeService:
                             skipped += 1
                             continue
                         values = await self._resolved_relationships(
-                            conn, bank_id, collection, dict(record["values"]), config=config
+                            conn, bank_id, collection, dict(record["values"]), config=config, unplaced=unplaced
                         )
-                        record_id = await self._record_id(conn, collection, None, values, config=config)
+                        record_id = await self._record_id(
+                            conn, collection, None, values, config=config, unplaced=unplaced
+                        )
                         seen.setdefault(collection_id, {}).setdefault(record_id, []).extend(record.get("slices") or [])
                         await collections_store.contribute(
                             conn,
@@ -1419,6 +1521,9 @@ class KnowledgeService:
                     # it, which removes it when nothing else was ever behind it.
                     for record_id in stale:
                         await collections_store.materialize(conn, bank_id, collection_id, record_id)
+
+        matched = await self._adjudicate(pool, bank_id, unplaced, collections=by_id, llm=llm)
+        calls += matched.calls
 
         linked = 0
         for collection in by_id.values():
@@ -1441,6 +1546,10 @@ class KnowledgeService:
             # returned is a prompt or schema problem the operator should see.
             "records_skipped": skipped,
             "links_placed": linked,
+            # Names a string rule could not settle and the model placed onto an existing
+            # record: "County Paris" onto Paris. Each one is remembered as an alias, so
+            # the judgement is made once rather than on every derivation.
+            "names_matched": matched.placed,
             # A relationship that joins to nothing. Silence here is the failure nobody
             # notices: the join simply returns no row.
             "unresolved_links": dangling,
@@ -1455,7 +1564,7 @@ class KnowledgeService:
             # Nothing was read and nothing was written: the operation failed, whatever
             # the individual exceptions were. Raising lets the worker retry it instead of
             # leaving an emptied table behind a completed job.
-            await self._record_derivation(operation_id, counts, pool)
+            await self._record_derivation(task.get("operation_id"), counts, pool)
             raise KnowledgeBankError(502, f"every derivation slice failed ({failed} of them); nothing was written")
         await self._record_derivation(operation_id, counts, pool)
         return counts

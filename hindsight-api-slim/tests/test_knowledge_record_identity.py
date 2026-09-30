@@ -540,3 +540,58 @@ def test_an_article_or_conjunction_that_is_the_name_is_kept():
     # "The" inside a name is part of it, not an article to strip.
     assert normalise("Save The Children") == "save the children"
     assert normalise("Save Children") != normalise("Save The Children")
+
+
+@pytest.mark.asyncio
+async def test_a_title_in_front_of_a_name_is_matched_to_the_record_it_means(kb_client, memory, bank):
+    """"County Paris" is Paris — a judgement no string rule makes.
+
+    The normalised keys differ, the lengths differ by seven, and the edit distance is
+    nowhere near a typo's, so every deterministic rule correctly declines. What settles
+    it is similarity search for the nearest records and one call to choose between them,
+    and the decision is kept as an alias so the next document spelled that way costs a
+    lookup rather than another judgement.
+    """
+    from hindsight_api.knowledge.identity import is_typo_of, normalise
+
+    # The premise: nothing deterministic can join these two.
+    assert normalise("County Paris") != normalise("Paris")
+    assert not is_typo_of("county paris", "paris")
+
+    await _write_records(kb_client, bank, [{"values": {"name": "Paris", "country": "it"}}])
+
+    def answer(messages, scope):
+        if scope == "knowledge_records":
+            return {"vendors": [{"values": {"name": "County Paris"}, "evidence": {}}]}
+        if scope == "knowledge_match":
+            # What the model is asked is which existing record the new name means; it is
+            # only allowed to answer with one it was offered.
+            assert "county paris" in messages[-1]["content"]
+            return {"matches": [{"name": "county paris", "record": "paris"}]}
+        return {}
+
+    memory._llm_config._provider_impl.set_response_callback(answer)
+    await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={"documents": [{"id": "d1", "text": "Enter Capulet, County Paris, and a Servingman."}]},
+    )
+    await kb_client.post(f"/v1/default/knowledge-banks/{bank}/collections/vendors/derive", json={})
+
+    records = await _records(kb_client, bank)
+    assert [r["record_id"] for r in records] == ["paris"], "one record, not two spellings of one thing"
+    # Folded in, not replaced: what the original record knew survives the merge.
+    assert (await _record(kb_client, bank, "paris"))["values"]["country"] == "it"
+
+    # And the judgement is remembered: the same spelling again costs no call.
+    def refuse_to_match(messages, scope):
+        if scope == "knowledge_match":
+            raise AssertionError("the alias should have answered this without asking")
+        return answer(messages, scope)
+
+    memory._llm_config._provider_impl.set_response_callback(refuse_to_match)
+    await kb_client.post(
+        f"/v1/default/knowledge-banks/{bank}/documents",
+        json={"documents": [{"id": "d2", "text": "County Paris speaks again."}]},
+    )
+    await kb_client.post(f"/v1/default/knowledge-banks/{bank}/collections/vendors/derive", json={})
+    assert [r["record_id"] for r in await _records(kb_client, bank)] == ["paris"]
