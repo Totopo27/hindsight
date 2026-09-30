@@ -707,9 +707,8 @@ async def repoint_relationships(conn: Any, bank_id: str, collection_id: str, sou
                     target_id,
                 )
 
-async def resolution_candidates(
-    conn: Any, bank_id: str, collection_id: str, key: str, *, limit: int = 8
-) -> list[str]:
+
+async def resolution_candidates(conn: Any, bank_id: str, collection_id: str, key: str, *, limit: int = 8) -> list[str]:
     """The records nearest this key, for a model to choose between.
 
     Trigram order, unfiltered by length: a title in front of a name ("county paris" for
@@ -732,4 +731,3 @@ async def resolution_candidates(
         limit,
     )
     return [str(row["record_id"]) for row in rows]
-

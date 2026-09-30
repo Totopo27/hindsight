@@ -544,7 +544,7 @@ def test_an_article_or_conjunction_that_is_the_name_is_kept():
 
 @pytest.mark.asyncio
 async def test_a_title_in_front_of_a_name_is_matched_to_the_record_it_means(kb_client, memory, bank):
-    """"County Paris" is Paris — a judgement no string rule makes.
+    """ "County Paris" is Paris — a judgement no string rule makes.
 
     The normalised keys differ, the lengths differ by seven, and the edit distance is
     nowhere near a typo's, so every deterministic rule correctly declines. What settles
