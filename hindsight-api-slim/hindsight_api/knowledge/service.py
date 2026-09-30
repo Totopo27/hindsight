@@ -1522,6 +1522,11 @@ class KnowledgeService:
                     for record_id in stale:
                         await collections_store.materialize(conn, bank_id, collection_id, record_id)
 
+        # Before the link/adjudication passes add their own calls: at this point `calls`
+        # is one per slice attempt, which is what says whether a document was read whole
+        # and whether its slices were read once for all collections or once per collection.
+        slices_read = calls - failed
+
         matched = await self._adjudicate(pool, bank_id, unplaced, collections=by_id, llm=llm)
         calls += matched.calls
 
@@ -1554,6 +1559,10 @@ class KnowledgeService:
             # notices: the join simply returns no row.
             "unresolved_links": dangling,
             "llm_calls": calls,
+            # Slices the model actually answered for. ``llm_calls`` cannot stand in for
+            # this: it also carries the link and adjudication passes, so a test that
+            # wants to know the document was read whole would be reading a sum.
+            "slices_read": slices_read,
             # Slices whose call failed. Not cosmetic: with `replace` the contributions
             # are dropped before the document is re-read, so a run where everything
             # failed would leave the table empty and call it a success.

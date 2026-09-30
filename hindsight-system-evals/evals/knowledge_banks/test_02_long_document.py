@@ -7,15 +7,25 @@ that cuts a prompt at twelve thousand.
 
 That gap is the whole point. Before derivation read a document in slices it sent the
 document whole and truncated it, so everything past the cut was never read and nothing
-said so: on the full thirty pages the cast simply stopped. Here Paris first appears at
-character 13,599. If the table has Paris, the second slice was read.
+said so: on the full thirty pages the cast simply stopped.
 
-The rest of what it grades follows from the same shape:
+**What can and cannot prove that.** An earlier version of this suite asserted that
+Paris — who speaks only in Scene 2, past the cut — is in the table. That proves
+nothing, for two reasons the fixture makes plain: the play's cast list names Paris at
+character 901, and every slice after the first is prefixed with the document's opening
+two thousand characters by design, so the cast list is in front of the model on every
+call. No character in this fixture is reachable only from the second slice. Worse, the
+probe is a coin flip on the model's own recall: consecutive runs of the identical bank
+did and did not return Paris, with both slices answered.
 
-* **the cast list is in the first slice and the scenes are in the second**, so a
-  character's house has to reach a slice that never states it;
-* **two collections, one pass**, so the run's own ``llm_calls`` says whether a slice
-  was read once or once per collection.
+So the run reports the fact directly instead — ``slices_read`` — and the cases here
+grade arithmetic over what came back:
+
+* **the document was read whole**, i.e. as many slices as its length demands;
+* **the cast list places people the scenes do not**, so a character's house has to
+  reach a slice that never states it;
+* **two collections, one pass**, so ``slices_read`` says whether a slice was read once
+  or once per collection.
 
 Gold comes from the play's cast list, which the document contains: Romeo, Benvolio and
 Abram are Montagues, Tybalt, Sampson and Gregory are Capulets. It is not a judgement
@@ -56,9 +66,8 @@ CHARACTERS = {
     },
 }
 
-#: Where each one first appears in the fixture. Paris is the case: past the point a
-#: single extraction prompt would have stopped.
-PARIS_AT = 13_599
+#: ``kb_field_extraction_max_chars``: where one extraction prompt is cut, and so how
+#: many slices a document of a given length is read in.
 EXTRACTION_LIMIT = 12_000
 
 #: The cast list places these, in the document's own words.
@@ -131,25 +140,37 @@ def _record(case_id: str, category: str, bank_id: str, problems: list[str], trap
     )
 
 
-async def test_a_character_past_the_prompt_limit_is_in_the_table(target, play_bank_prefix: str) -> None:
-    """Paris appears once, at character 13,599 of a 16,000-character document.
+def _slices_for(length: int) -> int:
+    return -(-length // EXTRACTION_LIMIT)
 
-    A single prompt stops at 12,000. So this asserts the one thing a truncated
-    derivation can never do, on a document short enough to run in a minute.
+
+async def test_the_whole_document_is_read_not_just_the_first_prompt(target, play_bank_prefix: str) -> None:
+    """A 16,000-character document against a 12,000-character limit is two slices.
+
+    The run says how many it answered, so this is the one thing a truncated
+    derivation can never report — and it reports it deterministically, which a
+    character-name probe could not.
     """
     built = await _built(target, play_bank_prefix)
-    characters = built["characters"]  # type: ignore[assignment]
+    counts = built["counts"]  # type: ignore[assignment]
     bank_id = str(built["bank_id"])
-    assert int(built["length"]) > EXTRACTION_LIMIT, "the fixture must not fit in one prompt"
+    length = int(built["length"])
+    assert length > EXTRACTION_LIMIT, "the fixture must not fit in one prompt"
 
-    found = [rid for rid in characters if "paris" in rid]
-    problems = [] if found else [f"Paris is missing; the table has {sorted(characters)}"]
-    trap = "" if found else f"nothing past character {PARIS_AT} reached the table"
-    _record("play-window", "windows", bank_id, problems, trap)
-    assert found, (
-        f"Paris first appears at character {PARIS_AT}, past the {EXTRACTION_LIMIT}-character "
-        f"extraction limit, and is not in the table — the document was read to the cut and no "
-        f"further.\ntable: {sorted(characters)}\nbank {bank_id}"
+    expected = _slices_for(length)
+    read = int(counts.get("slices_read", 0))
+    failed = int(counts.get("slices_failed", 0))
+
+    problems: list[str] = []
+    if read < expected:
+        problems.append(f"{read} of {expected} slices were read")
+    if failed:
+        problems.append(f"{failed} slice(s) failed, so part of the document reached nothing")
+    log.info("derivation counts: %s", counts)
+    _record("play-window", "windows", bank_id, problems, "; ".join(problems))
+    assert not problems, (
+        f"{'; '.join(problems)}\nA {length}-character document against a {EXTRACTION_LIMIT}-character "
+        f"limit is {expected} slices.\ncounts: {counts}\nbank {bank_id}"
     )
 
 
@@ -180,26 +201,24 @@ async def test_the_cast_list_places_people_the_scenes_do_not(target, play_bank_p
 async def test_a_slice_is_read_once_for_every_collection(target, play_bank_prefix: str) -> None:
     """Two collections over one document must not cost two passes over its slices.
 
-    The run reports what it spent. A 16,000-character document is two slices, so
-    reading it once per collection would be four extraction calls before any linking;
-    reading it once for both is two. The ceiling here is deliberately loose — it is
-    guarding the shape, not a particular model's behaviour.
+    ``slices_read`` is the count to assert on, not ``llm_calls``: the latter also
+    carries the adjudication and link passes, so it grew when those were added and
+    said nothing about whether a slice had been read twice.
     """
     built = await _built(target, play_bank_prefix)
     counts = built["counts"]  # type: ignore[assignment]
     bank_id = str(built["bank_id"])
-    calls = int(counts.get("llm_calls", 0))
-    slices = -(-int(built["length"]) // EXTRACTION_LIMIT)
-    ceiling = slices + 2  # the slices, plus one link pass per relationship, plus slack
+    slices = _slices_for(int(built["length"]))
+    read = int(counts.get("slices_read", 0))
 
     problems = (
         []
-        if 0 < calls <= ceiling
-        else [f"{calls} LLM calls for {slices} slices and 2 collections; one pass would be at most {ceiling}"]
+        if read == slices
+        else [f"{read} slice reads for {slices} slices and 2 collections; one pass over each is {slices}"]
     )
     log.info("derivation counts: %s", counts)
     _record("play-cost", "cost", bank_id, problems, "")
     assert problems == [], (
-        f"{problems}\nA slice read once per collection would cost {slices * 2} calls before linking.\n"
+        f"{problems}\nA slice read once per collection would be {slices * 2} reads.\n"
         f"counts: {counts}\nbank {bank_id}"
     )
