@@ -18,7 +18,7 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -63,6 +63,32 @@ _DERIVE_DEFER_SECONDS = 5
 #: contract's parties or a play's cast list, small enough that repeating it is cheaper
 #: than the second pass that would otherwise have to go and find it.
 _WINDOW_HEAD_CHARS = 2000
+
+
+@dataclass
+class _MergedRecord:
+    """One record as the slices of a single document together describe it.
+
+    A contribution is keyed by (record, document), so the slices of one document have to
+    be folded here before anything is written — writing them one at a time would keep
+    only the last slice's view of the record.
+    """
+
+    #: Keyed by the collection's own field names, which are defined at runtime.
+    values: dict[str, Any] = field(default_factory=dict)
+    #: field -> the sentence it was read from.
+    evidence: dict[str, str] = field(default_factory=dict)
+    #: The slice texts this record was read from, so the link pass can be shown the text
+    #: that mentions it instead of guessing. A document's first page is often boilerplate.
+    slices: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _DocumentRecords:
+    """What one document's slices yielded, per collection."""
+
+    row: Any
+    per_collection: dict[str, list[_MergedRecord]]
 
 
 class KnowledgeBankError(Exception):
@@ -1431,9 +1457,9 @@ class KnowledgeService:
         calls = 0
         failed = 0
 
-        async def read(row: Any) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
+        async def read(row: Any) -> _DocumentRecords:
             nonlocal calls, failed
-            found: dict[str, dict[str, dict[str, Any]]] = {}
+            found: dict[str, dict[str, _MergedRecord]] = {}
             for text in await self._slices(pool, bank_id, row, size):
                 async with semaphore:
                     calls += 1
@@ -1455,16 +1481,13 @@ class KnowledgeService:
                         # Slices of one document are one contribution per record, not
                         # one each: a contribution is keyed by (record, document), so
                         # writing them separately would keep only the last slice.
-                        key = normalise(record["values"].get(identity)) if identity else str(len(merged))
-                        into = merged.setdefault(key, {"values": {}, "evidence": {}, "slices": []})
-                        into["values"].update({k: v for k, v in record["values"].items() if v is not None})
-                        into["evidence"].update(record["evidence"] or {})
-                        # Where this record was read from, so the link pass can be shown
-                        # the text that mentions it rather than a guess at where the
-                        # answer lives. A document's first page is often boilerplate.
-                        if text not in into["slices"]:
-                            into["slices"].append(text)
-            return row, {collection_id: list(v.values()) for collection_id, v in found.items()}
+                        key = normalise(record.values.get(identity)) if identity else str(len(merged))
+                        into = merged.setdefault(key, _MergedRecord())
+                        into.values.update({k: v for k, v in record.values.items() if v is not None})
+                        into.evidence.update(record.evidence)
+                        if text not in into.slices:
+                            into.slices.append(text)
+            return _DocumentRecords(row=row, per_collection={cid: list(v.values()) for cid, v in found.items()})
 
         written = skipped = 0
         #: Names that matched nothing by key, alias or typo, per collection. They are put
@@ -1473,9 +1496,10 @@ class KnowledgeService:
         #: Per collection, the slice text each record was read from — the evidence the
         #: link pass is shown for the records it has to place.
         seen: dict[str, dict[str, list[str]]] = {}
-        for row, per_collection in await asyncio.gather(*(read(row) for row in documents)):
+        for read_document in await asyncio.gather(*(read(row) for row in documents)):
+            row = read_document.row
             async with acquire_with_retry(pool) as conn:
-                for collection_id, records in per_collection.items():
+                for collection_id, records in read_document.per_collection.items():
                     collection = by_id[collection_id]
                     identity = collection.get("identity")
                     stale = (
@@ -1495,16 +1519,16 @@ class KnowledgeService:
                         # values into an id files it as a row of its own: one run made 14
                         # contract rows for 3 contracts, fragments like {"value": 120000}
                         # that then fed every aggregate.
-                        if identity and record["values"].get(identity) in (None, ""):
+                        if identity and record.values.get(identity) in (None, ""):
                             skipped += 1
                             continue
                         values = await self._resolved_relationships(
-                            conn, bank_id, collection, dict(record["values"]), config=config, unplaced=unplaced
+                            conn, bank_id, collection, dict(record.values), config=config, unplaced=unplaced
                         )
                         record_id = await self._record_id(
                             conn, collection, None, values, config=config, unplaced=unplaced
                         )
-                        seen.setdefault(collection_id, {}).setdefault(record_id, []).extend(record.get("slices") or [])
+                        seen.setdefault(collection_id, {}).setdefault(record_id, []).extend(record.slices)
                         await collections_store.contribute(
                             conn,
                             bank_id,
@@ -1512,7 +1536,7 @@ class KnowledgeService:
                             record_id,
                             doc_id=row["doc_id"],
                             values=values,
-                            evidence=record["evidence"] or {},
+                            evidence=record.evidence,
                         )
                         await collections_store.materialize(conn, bank_id, collection_id, record_id)
                         stale.discard(record_id)

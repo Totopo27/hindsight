@@ -2105,6 +2105,73 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/collections/derive": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Derive every automatic collection from the documents",
+        "description": "One run over the bank: each slice of each document is read once for every collection at once, rather than once per collection, and the records that no single slice could place are linked afterwards from what the whole run saw. This is the path a write takes automatically \u2014 a write queues exactly this, coalesced, so a hundred documents leave one job. Collections with derive_on_write=false are left alone.",
+        "operationId": "derive_bank_v1_default_knowledge_banks__kb__collections_derive_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeriveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/derive": {
       "post": {
         "tags": [
@@ -12993,8 +13060,8 @@
           "derive_on_write": {
             "type": "boolean",
             "title": "Derive On Write",
-            "description": "Re-derive this collection's records whenever a document is written",
-            "default": false
+            "description": "Include this collection when a write triggers the bank's derivation. On by default: a collection nobody derives is an empty table. Turn it off for one that is written directly through the records endpoint, or is expensive and derived on a schedule of your own.",
+            "default": true
           }
         },
         "type": "object",

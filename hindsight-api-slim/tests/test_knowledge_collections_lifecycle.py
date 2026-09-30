@@ -21,6 +21,12 @@ from hindsight_api.api import create_app
 
 VENDORS = {"name": "Vendors", "identity": "name", "fields": {"name": {"type": "string"}, "country": {"type": "string"}}}
 
+CONTRACTS = {
+    "name": "Contracts",
+    "identity": "reference",
+    "fields": {"reference": {"type": "string"}, "value": {"type": "number"}},
+}
+
 
 @pytest_asyncio.fixture
 async def kb_client(memory):
@@ -53,7 +59,11 @@ class Derivation:
         self.provider.set_response_callback(self._answer)
 
     def says(self, marker: str, records: list[dict], collection: str = "vendors") -> None:
-        self.by_marker[marker] = (collection, records)
+        self.by_marker[marker] = {collection: records}
+
+    def says_many(self, marker: str, by_collection: dict[str, list[dict]]) -> None:
+        """One slice's answer covering several collections, which is what a real one is."""
+        self.by_marker[marker] = dict(by_collection)
 
     def _answer(self, messages: list[dict], scope: str):
         if scope != "knowledge_records":
@@ -64,11 +74,11 @@ class Derivation:
         # document, which is how this fixture read "globex" and returned Acme.
         content = messages[-1]["content"]
         _, _, document = content.partition("\nDocument")
-        for marker, (collection, records) in self.by_marker.items():
+        for marker, by_collection in self.by_marker.items():
             if marker in (document or content):
                 # One slice is read for every collection at once, so the answer is keyed
                 # by collection rather than a bare list of records.
-                return {collection: records}
+                return dict(by_collection)
         return {}
 
 
@@ -88,6 +98,12 @@ async def _collection(client, kb: str, collection_id: str, body: dict, **params)
 async def _derive(client, kb: str, collection_id: str, **body) -> None:
     response = await client.post(f"/v1/default/knowledge-banks/{kb}/collections/{collection_id}/derive", json=body)
     assert response.status_code == 202, response.text
+
+
+async def _derive_bank(client, kb: str, **body) -> dict:
+    response = await client.post(f"/v1/default/knowledge-banks/{kb}/collections/derive", json=body)
+    assert response.status_code == 202, response.text
+    return response.json()
 
 
 async def _record(client, kb: str, collection_id: str, record_id: str) -> dict | None:
@@ -849,3 +865,60 @@ async def test_derivation_updates_a_record_a_caller_wrote_by_hand(kb_client, mem
     llm.says("acme", [{"values": {"name": "acme", "country": "it"}, "evidence": {}}])
     await _derive(kb_client, bank, "vendors", replace=True)
     assert (await _record(kb_client, bank, "vendors", "acme"))["values"]["country"] == "de"
+
+
+@pytest.mark.asyncio
+async def test_a_bank_derive_reads_each_slice_once_for_every_automatic_collection(kb_client, memory, bank):
+    """One run over the bank, not one per collection — and it honours derive_on_write.
+
+    The per-collection endpoint next to it re-reads the corpus for each collection it is
+    called for. This one reads a slice once and asks about every automatic collection in
+    the same call, so a bank of ten collections costs a tenth of the calls. What that
+    must not do is quietly pick up a collection someone turned off.
+    """
+    llm = Derivation(memory)
+    await _collection(kb_client, bank, "vendors", VENDORS)
+    await _collection(kb_client, bank, "contracts", CONTRACTS)
+    await _collection(kb_client, bank, "manual", {**VENDORS, "name": "Manual", "derive_on_write": False})
+
+    llm.says_many(
+        "folder",
+        {
+            "vendors": [{"values": {"name": "acme", "country": "de"}, "evidence": {}}],
+            "contracts": [{"values": {"reference": "c-1", "value": 120000}, "evidence": {}}],
+            # Answered for anyway: the collection is off, so it must not be asked about
+            # and its records must not land even when the model volunteers them.
+            "manual": [{"values": {"name": "globex", "country": "fr"}, "evidence": {}}],
+        },
+    )
+    await _write(kb_client, bank, [{"id": "d1", "text": "folder: Acme of Germany, contract C-1 at 120000."}])
+
+    submitted = await _derive_bank(kb_client, bank, doc_ids=[], replace=True)
+    assert submitted["operation_id"], submitted
+
+    assert (await _record(kb_client, bank, "vendors", "acme"))["values"]["country"] == "de"
+    assert (await _record(kb_client, bank, "contracts", "c-1"))["values"]["value"] == 120000
+    assert await _count(kb_client, bank, "manual") == 0, "a collection with derive_on_write=false is left alone"
+
+
+@pytest.mark.asyncio
+async def test_a_collection_is_derived_on_write_unless_it_says_otherwise(kb_client, memory, bank):
+    """The default is on, and it is the default that makes a bank work out of the box.
+
+    It used to be off, which meant a collection created through the API stayed an empty
+    table until someone found the derive endpoint. Asserted here rather than left to the
+    cases that pass the flag explicitly — every one of those would still pass if the
+    default flipped back.
+    """
+    created = await _collection(kb_client, bank, "vendors", VENDORS)
+    assert created["derive_on_write"] is True
+
+    llm = Derivation(memory)
+    llm.says("acme", [{"values": {"name": "acme", "country": "de"}, "evidence": {}}])
+    await _write(kb_client, bank, [{"id": "d1", "text": "acme: German supplier."}])
+    assert await _record(kb_client, bank, "vendors", "acme") is not None, "the write derived it with no flag passed"
+
+    off = await _collection(kb_client, bank, "quiet", {**VENDORS, "name": "Quiet", "derive_on_write": False})
+    assert off["derive_on_write"] is False
+    await _write(kb_client, bank, [{"id": "d2", "text": "acme: German supplier."}])
+    assert await _count(kb_client, bank, "quiet") == 0

@@ -215,6 +215,17 @@ def _evidence_map(evidence: Any) -> dict[str, str]:
     return out
 
 
+class DerivedRecord(BaseModel):
+    """One record a slice described, and the sentence each of its fields was read from.
+
+    ``values`` is keyed by the collection's own field names, which the schema defines at
+    runtime, so it stays a dict; the pair around it does not.
+    """
+
+    values: dict[str, Any]
+    evidence: dict[str, str]
+
+
 @dataclass(frozen=True)
 class CollectionSpec:
     """One collection as a slice of a document is asked about it."""
@@ -241,11 +252,11 @@ async def derive_records(
     doc_id: str,
     title: str | None,
     text: str,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, list[DerivedRecord]]:
     """Every record one slice of a document describes, for several collections at once.
 
-    Returns ``{collection_id: [{"values": {...}, "evidence": {field: quote}}]}``. The
-    quote is what makes a derived number auditable: a total nobody can trace is a claim.
+    Returns ``{collection_id: [DerivedRecord, ...]}``. The quote on each field is what
+    makes a derived number auditable: a total nobody can trace is a claim.
 
     One call covers up to the whole set rather than one call per collection. A slice
     already has to be read to answer "which vendors are here"; asking "and which
@@ -319,7 +330,7 @@ async def derive_records(
     result = await llm.call(messages=messages, response_format=batch_model, scope="knowledge_records")
     content = result.content
 
-    out: dict[str, list[dict[str, Any]]] = {}
+    out: dict[str, list[DerivedRecord]] = {}
     for spec in specs:
         raw = (
             getattr(content, spec.collection_id, None)
@@ -335,7 +346,9 @@ async def derive_records(
             else:
                 continue
             if values:
-                records.append({"values": values, "evidence": {k: v for k, v in evidence.items() if k in values}})
+                records.append(
+                    DerivedRecord(values=values, evidence={k: v for k, v in evidence.items() if k in values})
+                )
         if records:
             out[spec.collection_id] = records
     return out

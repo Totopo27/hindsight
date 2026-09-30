@@ -2105,6 +2105,73 @@
         }
       }
     },
+    "/v1/default/knowledge-banks/{kb}/collections/derive": {
+      "post": {
+        "tags": [
+          "Knowledge Banks"
+        ],
+        "summary": "Derive every automatic collection from the documents",
+        "description": "One run over the bank: each slice of each document is read once for every collection at once, rather than once per collection, and the records that no single slice could place are linked afterwards from what the whole run saw. This is the path a write takes automatically \u2014 a write queues exactly this, coalesced, so a hundred documents leave one job. Collections with derive_on_write=false are left alone.",
+        "operationId": "derive_bank_v1_default_knowledge_banks__kb__collections_derive_post",
+        "parameters": [
+          {
+            "name": "kb",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeriveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/knowledge-banks/{kb}/collections/{collection_id}/derive": {
       "post": {
         "tags": [
@@ -2239,75 +2306,6 @@
             "content": {
               "application/json": {
                 "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/default/knowledge-banks/{kb}/agent": {
-      "post": {
-        "tags": [
-          "Knowledge Banks"
-        ],
-        "summary": "Ask the bank a question; the model answers by calling the bank's read tools",
-        "description": "No fixed workflow: the model searches passages, filters documents, and queries documents and collections as it sees fit, then answers citing ids. Send `question` for a one-shot answer, or `messages` (ending in the user's turn) to continue a chat. The response carries every tool call and what it returned, as `trace`.",
-        "operationId": "agent_v1_default_knowledge_banks__kb__agent_post",
-        "parameters": [
-          {
-            "name": "kb",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Kb"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AgentRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentAnswer"
-                }
               }
             }
           },
@@ -10840,102 +10838,6 @@
           "update_disposition": true
         }
       },
-      "AgentAnswer": {
-        "properties": {
-          "answer": {
-            "type": "string",
-            "title": "Answer"
-          },
-          "model": {
-            "type": "string",
-            "title": "Model"
-          },
-          "steps": {
-            "type": "integer",
-            "title": "Steps"
-          },
-          "trace": {
-            "items": {
-              "$ref": "#/components/schemas/ToolTrace"
-            },
-            "type": "array",
-            "title": "Trace"
-          },
-          "usage": {
-            "items": {
-              "$ref": "#/components/schemas/StepUsage"
-            },
-            "type": "array",
-            "title": "Usage"
-          }
-        },
-        "type": "object",
-        "required": [
-          "answer",
-          "model",
-          "steps",
-          "trace",
-          "usage"
-        ],
-        "title": "AgentAnswer"
-      },
-      "AgentMessage": {
-        "properties": {
-          "role": {
-            "type": "string",
-            "enum": [
-              "user",
-              "assistant"
-            ],
-            "title": "Role"
-          },
-          "content": {
-            "type": "string",
-            "title": "Content"
-          }
-        },
-        "type": "object",
-        "required": [
-          "role",
-          "content"
-        ],
-        "title": "AgentMessage"
-      },
-      "AgentRequest": {
-        "properties": {
-          "question": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Question",
-            "description": "One-shot: the question alone"
-          },
-          "messages": {
-            "items": {
-              "$ref": "#/components/schemas/AgentMessage"
-            },
-            "type": "array",
-            "maxItems": 60,
-            "title": "Messages"
-          },
-          "max_steps": {
-            "type": "integer",
-            "maximum": 12.0,
-            "minimum": 1.0,
-            "title": "Max Steps",
-            "description": "Tool rounds at most",
-            "default": 6
-          }
-        },
-        "type": "object",
-        "title": "AgentRequest",
-        "description": "A question, or a conversation ending in one. The server keeps no session: send the\nearlier turns back to continue a chat, or only the question for a one-shot answer."
-      },
       "AsyncOperationSubmitResponse": {
         "properties": {
           "operation_id": {
@@ -13158,8 +13060,8 @@
           "derive_on_write": {
             "type": "boolean",
             "title": "Derive On Write",
-            "description": "Re-derive this collection's records whenever a document is written",
-            "default": false
+            "description": "Include this collection when a write triggers the bank's derivation. On by default: a collection nobody derives is an empty table. Turn it off for one that is written directly through the records endpoint, or is expensive and derived on a schedule of your own.",
+            "default": true
           }
         },
         "type": "object",
@@ -21729,34 +21631,6 @@
         "title": "SourceFactsIncludeOptions",
         "description": "Options for including source facts for observation-type results."
       },
-      "StepUsage": {
-        "properties": {
-          "step": {
-            "type": "integer",
-            "title": "Step"
-          },
-          "input_tokens": {
-            "type": "integer",
-            "title": "Input Tokens"
-          },
-          "output_tokens": {
-            "type": "integer",
-            "title": "Output Tokens"
-          },
-          "tool_calls": {
-            "type": "integer",
-            "title": "Tool Calls"
-          }
-        },
-        "type": "object",
-        "required": [
-          "step",
-          "input_tokens",
-          "output_tokens",
-          "tool_calls"
-        ],
-        "title": "StepUsage"
-      },
       "StrategyPreview": {
         "properties": {
           "active": {
@@ -22190,63 +22064,6 @@
         "type": "object",
         "title": "ToolCallsIncludeOptions",
         "description": "Options for including tool calls in reflect results."
-      },
-      "ToolTrace": {
-        "properties": {
-          "step": {
-            "type": "integer",
-            "title": "Step"
-          },
-          "tool": {
-            "type": "string",
-            "title": "Tool"
-          },
-          "arguments": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Arguments"
-          },
-          "ok": {
-            "type": "boolean",
-            "title": "Ok"
-          },
-          "summary": {
-            "type": "string",
-            "title": "Summary",
-            "description": "One line on what came back, e.g. '6 passages from 4 documents'"
-          },
-          "output_chars": {
-            "type": "integer",
-            "title": "Output Chars"
-          },
-          "truncated": {
-            "type": "boolean",
-            "title": "Truncated"
-          },
-          "duration_ms": {
-            "type": "integer",
-            "title": "Duration Ms"
-          },
-          "output": {
-            "type": "string",
-            "title": "Output",
-            "description": "What the model read, as it read it"
-          }
-        },
-        "type": "object",
-        "required": [
-          "step",
-          "tool",
-          "arguments",
-          "ok",
-          "summary",
-          "output_chars",
-          "truncated",
-          "duration_ms",
-          "output"
-        ],
-        "title": "ToolTrace",
-        "description": "One tool call, as the model made it and as the bank answered it."
       },
       "UpdateDirectiveRequest": {
         "properties": {
