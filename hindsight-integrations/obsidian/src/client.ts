@@ -91,8 +91,7 @@ export class HindsightClient {
     });
     if (resp.status >= 200 && resp.status < 300) return;
     if (resp.status === 404) {
-      const detail =
-        (resp.json as { detail?: string } | undefined)?.detail ?? resp.text ?? "";
+      const detail = (resp.json as { detail?: string } | undefined)?.detail ?? resp.text ?? "";
       if (detail.toLowerCase().includes("document not found")) {
         return;
       }
